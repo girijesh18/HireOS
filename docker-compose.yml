@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: swarm_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./output:/app/output
+      - ./.env:/app/.env:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - swarm_net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: swarm_frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+    networks:
+      - swarm_net
+    restart: unless-stopped
+
+  playwright:
+    build:
+      context: ./playwright-bot
+      dockerfile: Dockerfile
+    container_name: swarm_playwright
+    volumes:
+      - ./output:/app/output
+      - ./.env:/app/.env:ro
+    depends_on:
+      - backend
+    networks:
+      - swarm_net
+    restart: unless-stopped
+
+networks:
+  swarm_net:
+    driver: bridge
