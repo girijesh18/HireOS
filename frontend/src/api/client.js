@@ -22,10 +22,13 @@ async function req(method, path, body, isFormData = false) {
 }
 
 async function authReq(method, path, body) {
+  const token = getToken()
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(path, {
     method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
@@ -38,7 +41,7 @@ export const api = {
   // Auth
   signup: (email, password) => authReq('POST', '/auth/signup', { email, password }),
   login: (email, password) => authReq('POST', '/auth/login', { email, password }),
-  me: () => req('GET', '/auth/me'),
+  me: () => authReq('GET', '/auth/me'),
 
   // Health
   health: () => req('GET', '/health'),
