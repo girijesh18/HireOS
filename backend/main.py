@@ -20,6 +20,7 @@ from pathlib import Path
 import shutil
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from pydantic import BaseModel as _BaseModel
 
 from database import (
     init_db, get_db, Job, ApplicationEvent, ResumeVersion,
@@ -107,10 +108,15 @@ app.include_router(search_router)
 
 # ── Auth endpoints ─────────────────────────────────────────────────────────────
 
+class _AuthBody(_BaseModel):
+    email: str
+    password: str
+
+
 @app.post("/auth/signup")
-def signup(data: dict, db: Session = Depends(get_db)):
-    email = data.get("email", "").lower().strip()
-    password = data.get("password", "")
+def signup(data: _AuthBody, db: Session = Depends(get_db)):
+    email = data.email.lower().strip()
+    password = data.password
     if not email or not password:
         raise HTTPException(400, "Email and password required")
     if len(password) < 6:
@@ -124,9 +130,9 @@ def signup(data: dict, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/login")
-def login(data: dict, db: Session = Depends(get_db)):
-    email = data.get("email", "").lower().strip()
-    password = data.get("password", "")
+def login(data: _AuthBody, db: Session = Depends(get_db)):
+    email = data.email.lower().strip()
+    password = data.password
     user = db.query(User).filter(User.email == email).first()
     if not user or not pwd_ctx.verify(password, user.password_hash):
         raise HTTPException(401, "Invalid email or password")
