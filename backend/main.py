@@ -115,18 +115,25 @@ class _AuthBody(_BaseModel):
 
 @app.post("/auth/signup")
 def signup(data: _AuthBody, db: Session = Depends(get_db)):
-    email = data.email.lower().strip()
-    password = data.password
-    if not email or not password:
-        raise HTTPException(400, "Email and password required")
-    if len(password) < 6:
-        raise HTTPException(400, "Password must be at least 6 characters")
-    if db.query(User).filter(User.email == email).first():
-        raise HTTPException(400, "Email already registered")
-    user = User(email=email, password_hash=pwd_ctx.hash(password))
-    db.add(user)
-    db.commit()
-    return {"token": _create_token(email), "email": email}
+    try:
+        email = data.email.lower().strip()
+        password = data.password
+        if not email or not password:
+            raise HTTPException(400, "Email and password required")
+        if len(password) < 6:
+            raise HTTPException(400, "Password must be at least 6 characters")
+        if db.query(User).filter(User.email == email).first():
+            raise HTTPException(400, "Email already registered")
+        hashed = pwd_ctx.hash(password)
+        user = User(email=email, password_hash=hashed)
+        db.add(user)
+        db.commit()
+        return {"token": _create_token(email), "email": email}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Signup error: {type(e).__name__}: {e}")
+        raise HTTPException(500, f"Signup failed: {type(e).__name__}: {e}")
 
 
 @app.post("/auth/login")
