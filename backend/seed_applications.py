@@ -1,5 +1,5 @@
 """
-One-time seed script — imports real applications from Girijesh_Resume_Gemini/ into OP_Job_Hunt.
+One-time seed script — imports real applications from Girijesh_Resume_Gemini/ into HireOS.
 Run from backend/: python seed_applications.py
 """
 import sys, os, json
