@@ -65,8 +65,9 @@ export default function Auth({ onAuth }) {
         backgroundSize: 'cover',
         backgroundPosition: 'center top',
       }}>
-        {/* Dark overlay */}
-        <div style={{ position: 'absolute', inset: 0, background: 'rgba(6,12,26,0.55)', backdropFilter: 'blur(1px)' }} />
+        {/* Dark overlay — heavier at bottom where text sits */}
+        <div style={{ position: 'absolute', inset: 0, background: 'rgba(6,12,26,0.55)' }} />
+        <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(6,12,26,0.92) 0%, rgba(6,12,26,0.3) 50%, rgba(6,12,26,0.2) 100%)' }} />
 
         {/* Logo top-left */}
         <div style={{ position: 'relative', zIndex: 1 }}>
