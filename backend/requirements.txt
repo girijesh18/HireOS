@@ -23,7 +23,7 @@ markdown==3.8
 PyGithub==2.6.1
 # Auth
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+bcrypt==4.3.0
 # Utilities
 loguru==0.7.3
 playwright==1.58.0

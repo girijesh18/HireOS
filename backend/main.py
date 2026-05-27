@@ -19,7 +19,7 @@ import asyncio
 from pathlib import Path
 import shutil
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 from pydantic import BaseModel as _BaseModel
 
 from database import (
@@ -53,8 +53,13 @@ load_dotenv()
 JWT_SECRET = os.getenv("JWT_SECRET", "hireos-dev-secret-change-in-prod")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_DAYS = 30
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _bearer = HTTPBearer(auto_error=False)
+
+def _hash_pw(password: str) -> str:
+    return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
+
+def _verify_pw(password: str, hashed: str) -> bool:
+    return _bcrypt.checkpw(password.encode(), hashed.encode())
 
 def _create_token(email: str) -> str:
     exp = datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS)
@@ -124,7 +129,7 @@ def signup(data: _AuthBody, db: Session = Depends(get_db)):
             raise HTTPException(400, "Password must be at least 6 characters")
         if db.query(User).filter(User.email == email).first():
             raise HTTPException(400, "Email already registered")
-        hashed = pwd_ctx.hash(password)
+        hashed = _hash_pw(password)
         user = User(email=email, password_hash=hashed)
         db.add(user)
         db.commit()
@@ -141,7 +146,7 @@ def login(data: _AuthBody, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
     password = data.password
     user = db.query(User).filter(User.email == email).first()
-    if not user or not pwd_ctx.verify(password, user.password_hash):
+    if not user or not _verify_pw(password, user.password_hash):
         raise HTTPException(401, "Invalid email or password")
     return {"token": _create_token(email), "email": email}
 
