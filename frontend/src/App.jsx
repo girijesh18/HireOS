@@ -289,10 +289,10 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-logo">
           <img src="/logo-full.png" alt="HireOS" style={{
-            width: '100%', height: 'auto', objectFit: 'contain',
-            background: 'white', borderRadius: '10px', padding: '8px 12px',
+            height: '30px', width: 'auto', objectFit: 'contain',
+            background: 'white', borderRadius: '6px', padding: '4px 10px',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
           }} />
-          <p>Autonomous Job Applications</p>
         </div>
         <div className="nav-section-label">Navigation</div>
         {NAV.map(n => (
