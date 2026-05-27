@@ -38,7 +38,7 @@ export const api = {
   // Auth
   signup: (email, password) => authReq('POST', '/auth/signup', { email, password }),
   login: (email, password) => authReq('POST', '/auth/login', { email, password }),
-  me: () => authReq('GET', '/auth/me'),
+  me: () => req('GET', '/auth/me'),
 
   // Health
   health: () => req('GET', '/health'),
