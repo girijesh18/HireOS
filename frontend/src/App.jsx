@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import './index.css'
-import { api } from './api/client'
+import { api, clearToken } from './api/client'
+import Auth from './views/Auth'
 import Dashboard from './views/Dashboard'
 import JobList from './views/JobList'
 import JobDetail from './views/JobDetail'
@@ -252,10 +253,24 @@ const NAV = [
 ]
 
 export default function App() {
+  const [user, setUser] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
   const [view, setView] = useState('dashboard')
   const [selectedJobId, setSelectedJobId] = useState(null)
   const [showTrackModal, setShowTrackModal] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+
+  useEffect(() => {
+    const token = localStorage.getItem('hireos_token')
+    if (!token) { setAuthChecked(true); return }
+    api.me().then(data => { setUser(data.email); setAuthChecked(true) })
+       .catch(() => { clearToken(); setAuthChecked(true) })
+  }, [])
+
+  const logout = () => { clearToken(); setUser(null) }
+
+  if (!authChecked) return null
+  if (!user) return <Auth onAuth={email => setUser(email)} />
 
   const openJob = (id) => { setSelectedJobId(id); setView('job-detail') }
   const goBack = () => { setSelectedJobId(null); setView('jobs') }
@@ -304,6 +319,8 @@ export default function App() {
               <PlusIcon /> Track Job
             </button>
             <button className="btn btn-outline btn-sm" onClick={api.exportCSV}>Export CSV</button>
+            <span style={{ fontSize: '0.78rem', color: 'var(--fg-subtle)' }}>{user}</span>
+            <button className="btn btn-outline btn-sm" onClick={logout}>Logout</button>
           </div>
         </header>
         <div className="content scrollbar-thin">

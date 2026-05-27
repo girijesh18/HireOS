@@ -21,6 +21,9 @@ python-docx==1.1.2
 markdown==3.8
 # GitHub
 PyGithub==2.6.1
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
 # Utilities
 loguru==0.7.3
 playwright==1.58.0

@@ -1,8 +1,14 @@
 // Centralised API client -- all backend calls go through here
 const BASE = '/api'
 
+function getToken() { return localStorage.getItem('hireos_token') }
+export function setToken(t) { localStorage.setItem('hireos_token', t) }
+export function clearToken() { localStorage.removeItem('hireos_token') }
+
 async function req(method, path, body, isFormData = false) {
+  const token = getToken()
   const headers = isFormData ? {} : { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers,
@@ -15,7 +21,25 @@ async function req(method, path, body, isFormData = false) {
   return res.json()
 }
 
+async function authReq(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
+    throw new Error(err.detail || `API error ${res.status}`)
+  }
+  return res.json()
+}
+
 export const api = {
+  // Auth
+  signup: (email, password) => authReq('POST', '/auth/signup', { email, password }),
+  login: (email, password) => authReq('POST', '/auth/login', { email, password }),
+  me: () => authReq('GET', '/auth/me'),
+
   // Health
   health: () => req('GET', '/health'),
 

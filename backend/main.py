@@ -2,10 +2,11 @@
 HireOS — FastAPI Backend
 Includes all CRUD endpoints + live agent endpoints.
 """
-from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
@@ -17,12 +18,14 @@ import json
 import asyncio
 from pathlib import Path
 import shutil
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 from database import (
     init_db, get_db, Job, ApplicationEvent, ResumeVersion,
     CoverLetterVersion, Settings, LLMComparison,
     EvaluationReport, StoryBankEntry, FollowUpLog,
-    MasterResumeComponent, ChatInteraction
+    MasterResumeComponent, ChatInteraction, User
 )
 from schemas import (
     JobCreate, JobUpdate, JobOut,
@@ -45,6 +48,30 @@ from loguru import logger
 
 load_dotenv()
 
+# ── Auth config ───────────────────────────────────────────────────────────────
+JWT_SECRET = os.getenv("JWT_SECRET", "hireos-dev-secret-change-in-prod")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_DAYS = 30
+pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_bearer = HTTPBearer(auto_error=False)
+
+def _create_token(email: str) -> str:
+    exp = datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS)
+    return jwt.encode({"sub": email, "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_bearer), db: Session = Depends(get_db)):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        email = payload.get("sub")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
 app = FastAPI(title="HireOS API", version="2.0.0")
 
 app.add_middleware(
@@ -55,7 +82,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_AUTH_EXEMPT = {"/api/health", "/api/stats"}
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if (
+        path.startswith("/auth/")
+        or not path.startswith("/api/")
+        or path in _AUTH_EXEMPT
+    ):
+        return await call_next(request)
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    try:
+        jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        return JSONResponse({"detail": "Invalid token"}, status_code=401)
+    return await call_next(request)
+
 app.include_router(search_router)
+
+
+# ── Auth endpoints ─────────────────────────────────────────────────────────────
+
+@app.post("/auth/signup")
+def signup(data: dict, db: Session = Depends(get_db)):
+    email = data.get("email", "").lower().strip()
+    password = data.get("password", "")
+    if not email or not password:
+        raise HTTPException(400, "Email and password required")
+    if len(password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(400, "Email already registered")
+    user = User(email=email, password_hash=pwd_ctx.hash(password))
+    db.add(user)
+    db.commit()
+    return {"token": _create_token(email), "email": email}
+
+
+@app.post("/auth/login")
+def login(data: dict, db: Session = Depends(get_db)):
+    email = data.get("email", "").lower().strip()
+    password = data.get("password", "")
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not pwd_ctx.verify(password, user.password_hash):
+        raise HTTPException(401, "Invalid email or password")
+    return {"token": _create_token(email), "email": email}
+
+
+@app.get("/auth/me")
+def me(current_user: User = Depends(get_current_user)):
+    return {"email": current_user.email}
 
 # Lazy-loaded singletons
 _router = None
