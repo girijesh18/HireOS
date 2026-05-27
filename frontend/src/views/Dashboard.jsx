@@ -1,5 +1,99 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api/client'
+
+const STAGES = [
+  { value: 'found',        label: '🔍 Found' },
+  { value: 'pending',      label: '⏳ Resume Prepared' },
+  { value: 'applied',      label: '📤 Applied' },
+  { value: 'screening',    label: '📞 Recruiter Reached' },
+  { value: 'interview_1',  label: '🎤 Interview 1' },
+  { value: 'interview_2',  label: '🎤 Interview 2' },
+  { value: 'offer',        label: '🎉 Offer' },
+  { value: 'rejected',     label: '❌ Rejected' },
+  { value: 'withdrawn',    label: '↩️ Withdrawn' },
+]
+
+function StageDropdown({ job, onUpdate }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, right: 0 })
+  const [saving, setSaving] = useState(false)
+  const btnRef = useRef()
+  const menuRef = useRef()
+
+  useEffect(() => {
+    const handler = e => {
+      if (
+        menuRef.current && !menuRef.current.contains(e.target) &&
+        btnRef.current && !btnRef.current.contains(e.target)
+      ) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const toggle = e => {
+    e.stopPropagation()
+    if (!open) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    }
+    setOpen(o => !o)
+  }
+
+  const change = async (newStatus, e) => {
+    e.stopPropagation()
+    if (newStatus === job.status) { setOpen(false); return }
+    setSaving(true)
+    try {
+      await api.updateJob(job.id, { status: newStatus })
+      onUpdate(job.id, newStatus)
+    } catch(err) { console.error(err) }
+    setSaving(false)
+    setOpen(false)
+  }
+
+  return (
+    <div onClick={e => e.stopPropagation()}>
+      <button ref={btnRef} onClick={toggle}
+        style={{
+          background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)',
+          borderRadius:6, padding:'4px 10px', cursor:'pointer', color:'var(--fg)',
+          fontSize:'0.78rem', fontWeight:500, display:'flex', alignItems:'center', gap:4,
+          opacity: saving ? 0.5 : 1
+        }}>
+        {saving ? '…' : 'Move ▾'}
+      </button>
+      {open && createPortal(
+        <div ref={menuRef}
+          onClick={e => e.stopPropagation()}
+          style={{
+            position:'fixed', top: pos.top, right: pos.right, zIndex:9999,
+            background:'#1e2130', border:'1px solid rgba(255,255,255,0.12)',
+            borderRadius:8, minWidth:190, boxShadow:'0 8px 24px rgba(0,0,0,0.6)',
+            overflow:'hidden'
+          }}>
+          {STAGES.map(s => (
+            <div key={s.value}
+              onClick={e => change(s.value, e)}
+              style={{
+                padding:'8px 14px', fontSize:'0.82rem', cursor:'pointer',
+                color: s.value === job.status ? 'var(--primary)' : 'var(--fg)',
+                background: s.value === job.status ? 'rgba(99,102,241,0.12)' : 'transparent',
+                fontWeight: s.value === job.status ? 600 : 400,
+                transition:'background 0.1s'
+              }}
+              onMouseEnter={e => { if(s.value !== job.status) e.currentTarget.style.background='rgba(255,255,255,0.08)' }}
+              onMouseLeave={e => { if(s.value !== job.status) e.currentTarget.style.background='transparent' }}>
+              {s.label}
+            </div>
+          ))}
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
 
 const MOCK_STATS = {
   total: 24, by_status: { found: 6, pending: 4, applied: 9, interview_1: 2, offer: 1, rejected: 2 },
@@ -50,6 +144,10 @@ export default function Dashboard({ onOpenJob }) {
     api.getFollowupCadence().then(setFollowups).catch(() => {})
     api.getPatternAnalytics().then(setPatterns).catch(() => {})
   }, [])
+
+  const handleStatusUpdate = (jobId, newStatus) => {
+    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: newStatus } : j))
+  }
 
   const STATUS_COLOR = {
     found: 'var(--info)', analyzing: 'var(--purple)', pending: 'var(--warning)',
@@ -151,7 +249,7 @@ export default function Dashboard({ onOpenJob }) {
         <div className="jobs-list">
           {jobs.slice(0, 6).map(job => (
             <div key={job.id} onClick={() => onOpenJob(job.id)}
-                 style={{ padding:'1.25rem', background:'var(--surface)', borderBottom:'1px solid var(--surface-border)', display:'grid', gridTemplateColumns:'1fr auto auto auto auto', gap:'1.5rem', alignItems:'center', cursor:'pointer', transition:'background 0.15s' }}
+                 style={{ padding:'1.25rem', background:'var(--surface)', borderBottom:'1px solid var(--surface-border)', display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:'1.5rem', alignItems:'center', cursor:'pointer', transition:'background 0.15s' }}
                  onMouseEnter={e => e.currentTarget.style.background='var(--surface-hover)'}
                  onMouseLeave={e => e.currentTarget.style.background='var(--surface)'}>
               <div>
@@ -159,7 +257,10 @@ export default function Dashboard({ onOpenJob }) {
                 <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)' }}>{job.company} {job.remote ? '• 🌐 Remote' : ''}</div>
               </div>
               <ScoreRing score={job.match_score} />
-              <span className={`badge badge-${job.status}`}>{BADGE_EMOJI[job.status]} {job.status.replace('_', ' ')}</span>
+              <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>
+                <span className={`badge badge-${job.status}`}>{BADGE_EMOJI[job.status]} {job.status.replace(/_/g, ' ')}</span>
+                <StageDropdown job={job} onUpdate={handleStatusUpdate} />
+              </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-subtle)', textAlign: 'right', minWidth:80 }}>
                 {job.salary_min ? `$${(job.salary_min / 1000).toFixed(0)}K+` : '—'}
               </div>

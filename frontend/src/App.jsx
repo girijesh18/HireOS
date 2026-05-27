@@ -6,6 +6,7 @@ import JobList from './views/JobList'
 import JobDetail from './views/JobDetail'
 import Settings from './views/Settings'
 import StoryBank from './views/StoryBank'
+import Insights from './views/Insights'
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 const Icon = ({ d, size = 18 }) => (
@@ -18,6 +19,7 @@ const ListIcon = () => <Icon d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.0
 const BookIcon = () => <Icon d="M2 3h6a4 4 0 014 4v14a4 4 0 00-4-4H2z M22 3h-6a4 4 0 00-4 4v14a4 4 0 014-4h6z" />
 const SettingsIcon = () => <Icon d="M12 15a3 3 0 100-6 3 3 0 000 6z M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
 
+const PulseIcon = () => <Icon d="M22 12h-4l-3 9L9 3l-3 9H2" />
 const BotIcon = () => <Icon d="M12 2a2 2 0 012 2v1h3a2 2 0 012 2v11a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h3V4a2 2 0 012-2zM9 10v2m6-2v2" size={22} />
 const SendIcon = () => <Icon d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" size={16} />
 const XIcon = () => <Icon d="M18 6L6 18M6 6l12 12" size={18} />
@@ -244,6 +246,7 @@ function FloatingChat() {
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: <HomeIcon /> },
   { id: 'jobs', label: 'All Applications', icon: <ListIcon /> },
+  { id: 'insights', label: 'Insights', icon: <PulseIcon /> },
   { id: 'stories', label: 'Story Bank', icon: <BookIcon /> },
   { id: 'settings', label: 'Settings', icon: <SettingsIcon /> },
 ]
@@ -306,6 +309,7 @@ export default function App() {
         <div className="content scrollbar-thin">
           {view === 'dashboard' && <Dashboard onOpenJob={openJob} key={refreshKey} />}
           {view === 'jobs' && <JobList onOpenJob={openJob} key={refreshKey} />}
+          {view === 'insights' && <Insights />}
           {view === 'stories' && <StoryBank />}
           {view === 'job-detail' && selectedJobId && <JobDetail jobId={selectedJobId} />}
           {view === 'settings' && <Settings />}

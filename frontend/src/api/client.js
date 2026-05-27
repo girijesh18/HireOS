@@ -144,6 +144,13 @@ export const api = {
   getPatternAnalytics: () =>
     req('GET', '/analytics/patterns'),
 
+  // Insights (chat history + AI narrative)
+  getInsights: () => req('GET', '/insights'),
+  getInsightsHistory: (page = 1, limit = 50) =>
+    req('GET', `/insights/history?page=${page}&limit=${limit}`),
+  searchInsights: (q) =>
+    req('GET', `/insights/search?q=${encodeURIComponent(q)}`),
+
   // Master Resume Components
   getResumeComponents: () => req('GET', '/settings/resume-components'),
   addTextResumeComponent: (data) => req('POST', '/settings/resume-components/text', data),
