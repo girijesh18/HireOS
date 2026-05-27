@@ -273,7 +273,7 @@ export default function App() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <h2>OP Job Hunt</h2>
+          <h2>HireOS</h2>
           <p>Autonomous Job Applications</p>
         </div>
         <div className="nav-section-label">Navigation</div>

@@ -1,16 +1,16 @@
-# OP_Job_Hunt Platform Features
+# HireOS Platform Features
 
-This document provides a comprehensive, hierarchical breakdown of all features currently implemented in the **OP_Job_Hunt** platform. 
+This document provides a comprehensive, hierarchical breakdown of all features currently implemented in the **HireOS** platform. 
 
 > [!NOTE]
-> **To AI Assistants:** This is a living document. Whenever a new feature is added to the OP_Job_Hunt project, you must automatically update this file to reflect the newly integrated capabilities. Keep the hierarchy clean and properly categorized.
+> **To AI Assistants:** This is a living document. Whenever a new feature is added to the HireOS project, you must automatically update this file to reflect the newly integrated capabilities. Keep the hierarchy clean and properly categorized.
 
 ---
 
 ## 🌟 Major Features
 
 ### 1. Agentic Tracking Pipeline
-The core mechanic of OP_Job_Hunt is the ability to ingest jobs and track them through an automated background pipeline.
+The core mechanic of HireOS is the ability to ingest jobs and track them through an automated background pipeline.
 * **Smart Ingestion:** Track jobs simply by pasting a URL or dumping unformatted JD text. 
 * **Auto-Extraction:** Agentic parser extracts company name, job title, and full structured job description.
 * **Timeline Events:** Every pipeline state change, agent action, and document generation is historically tracked in an application timeline.

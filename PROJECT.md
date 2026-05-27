@@ -1,6 +1,6 @@
 ---
-id: op-job-hunt
-name: OP Job Hunt
+id: hireos
+name: HireOS
 status: active
 priority: P0
 type: internal_tool
@@ -25,7 +25,7 @@ Full-stack agentic job hunt portal. Ingests job postings (URL or raw JD), runs s
 | Portfolio | false | Private — not for public showcase |
 | GitHub | false | Private repo |
 | Live | true | local (localhost) |
-| Job Hunt | false | This IS the job hunt system |
+| Job Hunt | false | This IS the HireOS system |
 
 ## Skills Demonstrated
 (Internal use — not showcased externally)

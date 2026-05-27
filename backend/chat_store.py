@@ -1,5 +1,5 @@
 """
-ChromaDB-backed interaction store for OP Job Hunt.
+ChromaDB-backed interaction store for HireOS.
 
 Logs every LLM interaction (chat + agent triggers) with embeddings for semantic search.
 Rolling 90-day retention. Embedded, no external server needed.

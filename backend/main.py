@@ -1,5 +1,5 @@
 """
-OP Job Hunt — FastAPI Backend
+HireOS — FastAPI Backend
 Includes all CRUD endpoints + live agent endpoints.
 """
 from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File
@@ -44,7 +44,7 @@ from loguru import logger
 
 load_dotenv()
 
-app = FastAPI(title="OP Job Hunt API", version="2.0.0")
+app = FastAPI(title="HireOS API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -129,7 +129,7 @@ def startup():
             logger.info(f"[ChatStore] Purged {purged} old interactions on startup")
     except Exception as e:
         logger.warning(f"[ChatStore] Startup init failed (non-fatal): {e}")
-    logger.info("OP Job Hunt API started ✓")
+    logger.info("HireOS API started ✓")
 
 
 def _startup_sync_env():
@@ -166,7 +166,7 @@ def root():
     router = get_llm_router()
     return {
         "status": "running",
-        "service": "OP Job Hunt API",
+        "service": "HireOS API",
         "version": "2.0.0",
         "available_llms": router.available_providers(),
     }

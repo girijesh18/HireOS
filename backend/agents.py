@@ -1,5 +1,5 @@
 """
-OP Job Hunt — all 5 specialized agents.
+HireOS — all specialized agents.
 
 Each agent is a standalone async class. They share:
 - LLMRouter for LLM calls
@@ -47,7 +47,7 @@ You write compelling, human, concise cover letters (3-4 paragraphs) that:
 3. Close with confident, forward-looking conviction
 Never use clichés. Write like a real person, not a bot. Return markdown only."""
 
-SYSTEM_CHAT_DISPATCHER = """You are the AI command center for a job application tracking system called OP Job Hunt.
+SYSTEM_CHAT_DISPATCHER = """You are the AI command center for a job application tracking system called HireOS.
 The user gives you natural language instructions. You figure out their intent and respond with a JSON action.
 
 Available actions:
