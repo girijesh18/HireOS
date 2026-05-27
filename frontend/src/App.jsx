@@ -289,8 +289,8 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-logo">
           <img src="/logo-full.png" alt="HireOS" style={{
-            height: '36px', width: 'auto', objectFit: 'contain',
-            background: 'white', borderRadius: '8px', padding: '4px 8px',
+            width: '100%', height: 'auto', objectFit: 'contain',
+            background: 'white', borderRadius: '10px', padding: '8px 12px',
           }} />
           <p>Autonomous Job Applications</p>
         </div>
