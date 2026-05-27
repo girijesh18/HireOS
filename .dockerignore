@@ -1,0 +1,15 @@
+.git
+.github
+backend/.venv
+backend/__pycache__
+backend/*.pyc
+backend/swarm.db
+backend/output/
+frontend/node_modules
+frontend/dist
+output/
+scratch/
+playwright-bot/
+*.md
+.env
+.env.*

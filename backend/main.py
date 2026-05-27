@@ -5,6 +5,7 @@ Includes all CRUD endpoints + live agent endpoints.
 from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
@@ -1849,3 +1850,9 @@ def search_interactions(q: str, n: int = 10, days: int = 90):
         raise HTTPException(400, "Query cannot be empty")
     results = chat_store.search_similar(q, n=n, days=days)
     return {"query": q, "results": results}
+
+
+# ── Serve React frontend (production) ─────────────────────────────────────────
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="frontend")
