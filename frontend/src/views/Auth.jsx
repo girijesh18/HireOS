@@ -35,10 +35,10 @@ export default function Auth({ onAuth }) {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'var(--bg)',
+      background: '#060c1a',
       backgroundImage: `
-        radial-gradient(ellipse 90% 60% at 20% -10%, rgba(59,130,246,0.22) 0%, transparent 60%),
-        radial-gradient(ellipse 70% 50% at 80% 110%, rgba(6,182,212,0.16) 0%, transparent 55%)
+        radial-gradient(ellipse 90% 60% at 20% -10%, rgba(59,130,246,0.30) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 50% at 80% 110%, rgba(6,182,212,0.22) 0%, transparent 55%)
       `,
       padding: '1rem',
     }}>
@@ -55,7 +55,17 @@ export default function Auth({ onAuth }) {
 
         {/* Logo */}
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <img src="/logo.png" alt="HireOS" style={{ height: '48px', objectFit: 'contain', marginBottom: '0.75rem' }} />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+            <img src="/logo.png" alt="HireOS" style={{
+              height: '52px', objectFit: 'contain',
+              filter: 'drop-shadow(0 0 12px rgba(6,182,212,0.5))',
+            }} />
+            <span style={{
+              fontSize: '2rem', fontWeight: 700, fontFamily: 'Outfit, sans-serif',
+              background: 'linear-gradient(135deg, #e8f1ff 0%, #06b6d4 100%)',
+              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+            }}>HireOS</span>
+          </div>
           <p style={{ color: 'var(--fg-subtle)', fontSize: '0.82rem' }}>
             Autonomous Job Applications
           </p>
