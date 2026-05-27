@@ -31,36 +31,68 @@ export default function Auth({ onAuth }) {
 
   return (
     <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'var(--bg)', padding: '1rem',
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'var(--bg)',
+      backgroundImage: `
+        radial-gradient(ellipse 90% 60% at 20% -10%, rgba(59,130,246,0.22) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 50% at 80% 110%, rgba(6,182,212,0.16) 0%, transparent 55%)
+      `,
+      padding: '1rem',
     }}>
       <div style={{
-        width: '100%', maxWidth: '400px',
-        background: 'var(--surface)', border: '1px solid var(--surface-border)',
-        borderRadius: 'var(--radius)', padding: '2rem',
+        width: '100%',
+        maxWidth: '420px',
+        background: 'rgba(15,20,32,0.85)',
+        border: '1px solid rgba(59,130,246,0.2)',
+        borderRadius: '20px',
+        padding: '2.5rem 2rem',
+        backdropFilter: 'blur(20px)',
+        boxShadow: '0 0 0 1px rgba(59,130,246,0.08), 0 24px 64px rgba(0,0,0,0.4), 0 0 80px rgba(59,130,246,0.08)',
       }}>
+
+        {/* Logo */}
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--fg)', margin: 0 }}>HireOS</h1>
-          <p style={{ color: 'var(--fg-subtle)', fontSize: '0.85rem', marginTop: '0.4rem' }}>
+          <img src="/logo.png" alt="HireOS" style={{ height: '48px', objectFit: 'contain', marginBottom: '0.75rem' }} />
+          <p style={{ color: 'var(--fg-subtle)', fontSize: '0.82rem' }}>
             Autonomous Job Applications
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
-          <button
-            className={`btn btn-sm ${mode === 'login' ? 'btn-primary' : 'btn-outline'}`}
-            style={{ flex: 1 }}
-            onClick={() => { setMode('login'); setError('') }}
-          >
-            Sign In
-          </button>
-          <button
-            className={`btn btn-sm ${mode === 'signup' ? 'btn-primary' : 'btn-outline'}`}
-            style={{ flex: 1 }}
-            onClick={() => { setMode('signup'); setError('') }}
-          >
-            Sign Up
-          </button>
+        {/* Mode tabs */}
+        <div style={{
+          display: 'flex',
+          background: 'rgba(255,255,255,0.04)',
+          borderRadius: '10px',
+          padding: '4px',
+          marginBottom: '1.75rem',
+          border: '1px solid rgba(59,130,246,0.15)',
+        }}>
+          {['login', 'signup'].map(m => (
+            <button
+              key={m}
+              onClick={() => { setMode(m); setError('') }}
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                background: mode === m
+                  ? 'linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%)'
+                  : 'transparent',
+                color: mode === m ? '#fff' : 'var(--fg-muted)',
+                boxShadow: mode === m ? '0 2px 12px rgba(59,130,246,0.35)' : 'none',
+              }}
+            >
+              {m === 'login' ? 'Sign In' : 'Sign Up'}
+            </button>
+          ))}
         </div>
 
         <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -73,6 +105,7 @@ export default function Auth({ onAuth }) {
               placeholder="you@example.com"
               required
               autoFocus
+              style={{ borderColor: 'rgba(59,130,246,0.25)' }}
             />
           </div>
 
@@ -84,6 +117,7 @@ export default function Auth({ onAuth }) {
               onChange={e => setPassword(e.target.value)}
               placeholder={mode === 'signup' ? 'Min 6 characters' : '••••••••'}
               required
+              style={{ borderColor: 'rgba(59,130,246,0.25)' }}
             />
           </div>
 
@@ -96,23 +130,45 @@ export default function Auth({ onAuth }) {
                 onChange={e => setConfirm(e.target.value)}
                 placeholder="••••••••"
                 required
+                style={{ borderColor: 'rgba(59,130,246,0.25)' }}
               />
             </div>
           )}
 
           {error && (
-            <p style={{ color: 'var(--danger)', fontSize: '0.82rem', margin: 0 }}>
+            <p style={{
+              color: '#f87171',
+              fontSize: '0.82rem',
+              margin: 0,
+              padding: '0.5rem 0.75rem',
+              background: 'rgba(239,68,68,0.1)',
+              borderRadius: '8px',
+              border: '1px solid rgba(239,68,68,0.2)',
+            }}>
               {error}
             </p>
           )}
 
           <button
             type="submit"
-            className="btn btn-primary"
-            style={{ marginTop: '0.5rem' }}
             disabled={loading}
+            style={{
+              marginTop: '0.5rem',
+              padding: '0.7rem',
+              border: 'none',
+              borderRadius: '10px',
+              fontSize: '0.9rem',
+              fontWeight: 600,
+              cursor: loading ? 'not-allowed' : 'pointer',
+              background: loading
+                ? 'rgba(59,130,246,0.4)'
+                : 'linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%)',
+              color: '#fff',
+              boxShadow: loading ? 'none' : '0 4px 20px rgba(59,130,246,0.4)',
+              transition: 'all 0.2s',
+            }}
           >
-            {loading ? '...' : mode === 'login' ? 'Sign In' : 'Create Account'}
+            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : 'Create Account'}
           </button>
         </form>
       </div>

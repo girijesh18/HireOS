@@ -288,7 +288,7 @@ export default function App() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <h2>HireOS</h2>
+          <img src="/logo.png" alt="HireOS" />
           <p>Autonomous Job Applications</p>
         </div>
         <div className="nav-section-label">Navigation</div>
