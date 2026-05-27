@@ -162,7 +162,7 @@ def _startup_sync_env():
 
 # ── Health ─────────────────────────────────────────────────────────────────────
 
-@app.get("/")
+@app.get("/api/health")
 def root():
     router = get_llm_router()
     return {

@@ -17,7 +17,7 @@ async function req(method, path, body, isFormData = false) {
 
 export const api = {
   // Health
-  health: () => req('GET', '/'),
+  health: () => req('GET', '/health'),
 
   // Stats
   getStats: () => req('GET', '/stats'),
