@@ -58,6 +58,7 @@ export default function Auth({ onAuth }) {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
             <img src="/logo-mark.png" alt="HireOS" style={{
               height: '52px', objectFit: 'contain',
+              mixBlendMode: 'screen',
               filter: 'drop-shadow(0 0 12px rgba(6,182,212,0.5))',
             }} />
             <span style={{
