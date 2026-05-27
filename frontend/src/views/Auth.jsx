@@ -63,7 +63,7 @@ export default function Auth({ onAuth }) {
         position: 'relative',
         backgroundImage: `url('/auth-bg.png')`,
         backgroundSize: 'cover',
-        backgroundPosition: 'center top',
+        backgroundPosition: 'center 35%',
       }}>
         {/* Dark overlay — heavier at bottom where text sits */}
         <div style={{ position: 'absolute', inset: 0, background: 'rgba(6,12,26,0.55)' }} />
@@ -71,10 +71,12 @@ export default function Auth({ onAuth }) {
 
         {/* Logo top-left */}
         <div style={{ position: 'relative', zIndex: 1 }}>
-          <img src="/logo-full.png" alt="HireOS" style={{
-            height: '32px', objectFit: 'contain',
-            background: 'white', borderRadius: '7px', padding: '4px 10px',
-          }} />
+          <span style={{
+            fontFamily: 'Outfit, sans-serif', fontSize: '1.5rem', fontWeight: 800,
+            color: '#fff', letterSpacing: '-0.02em',
+          }}>
+            Hire<span style={{ color: '#22d3ee' }}>OS</span>
+          </span>
         </div>
 
         {/* Bottom copy */}
@@ -134,6 +136,16 @@ export default function Auth({ onAuth }) {
         <div style={{ width: '100%', maxWidth: '360px' }}>
 
           <div style={{ marginBottom: '2rem' }}>
+            <div style={{ marginBottom: '1.25rem' }}>
+              <span style={{
+                fontFamily: 'Outfit, sans-serif', fontSize: '1.75rem', fontWeight: 800,
+                letterSpacing: '-0.03em',
+                background: 'linear-gradient(135deg, #e8f1ff 0%, #22d3ee 100%)',
+                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+              }}>
+                HireOS
+              </span>
+            </div>
             <h2 style={{
               fontSize: '1.6rem', fontWeight: 700,
               color: '#f1f5f9', marginBottom: '0.4rem',
