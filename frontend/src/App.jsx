@@ -289,7 +289,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-logo">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-            <img src="/logo.png" alt="HireOS" />
+            <img src="/logo-mark.png" alt="HireOS" />
             <span style={{
               fontSize: '1.25rem', fontWeight: 700, fontFamily: 'var(--font-display)',
               background: 'linear-gradient(135deg, #e8f1ff 0%, #06b6d4 100%)',

@@ -56,7 +56,7 @@ export default function Auth({ onAuth }) {
         {/* Logo */}
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-            <img src="/logo.png" alt="HireOS" style={{
+            <img src="/logo-mark.png" alt="HireOS" style={{
               height: '52px', objectFit: 'contain',
               filter: 'drop-shadow(0 0 12px rgba(6,182,212,0.5))',
             }} />
