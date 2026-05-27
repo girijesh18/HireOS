@@ -288,14 +288,10 @@ export default function App() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-            <img src="/logo-mark.png" alt="HireOS" />
-            <span style={{
-              fontSize: '1.25rem', fontWeight: 700, fontFamily: 'var(--font-display)',
-              background: 'linear-gradient(135deg, #e8f1ff 0%, #06b6d4 100%)',
-              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
-            }}>HireOS</span>
-          </div>
+          <img src="/logo-full.png" alt="HireOS" style={{
+            height: '36px', width: 'auto', objectFit: 'contain',
+            background: 'white', borderRadius: '8px', padding: '4px 8px',
+          }} />
           <p>Autonomous Job Applications</p>
         </div>
         <div className="nav-section-label">Navigation</div>

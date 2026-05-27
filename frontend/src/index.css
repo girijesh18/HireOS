@@ -110,8 +110,6 @@ input::placeholder, textarea::placeholder { color: var(--fg-subtle); }
   height: 36px;
   width: auto;
   object-fit: contain;
-  mix-blend-mode: screen;
-  filter: drop-shadow(0 0 8px rgba(6,182,212,0.4));
 }
 .sidebar-logo p { font-size: 0.75rem; color: var(--fg-subtle); margin-top: 2px; }
 

@@ -5,9 +5,9 @@ primary_region = "iad"
   dockerfile = "Dockerfile"
 
 [env]
-  DATABASE_URL = "sqlite:////app/data/swarm.db"
   CHROMA_PATH = "/app/data/chroma"
   OUTPUT_DIR = "/app/data/output"
+  DATABASE_URL = "sqlite:////app/data/swarm.db"
 
 [[mounts]]
   source = "hireos_data"
@@ -25,7 +25,7 @@ primary_region = "iad"
     timeout = "10s"
     grace_period = "20s"
     method = "GET"
-    path = "/api/"
+    path = "/api/stats"
 
 [[vm]]
   memory = "1gb"

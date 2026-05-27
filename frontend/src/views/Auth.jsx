@@ -55,17 +55,12 @@ export default function Auth({ onAuth }) {
 
         {/* Logo */}
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-            <img src="/logo-mark.png" alt="HireOS" style={{
-              height: '52px', objectFit: 'contain',
-              mixBlendMode: 'screen',
-              filter: 'drop-shadow(0 0 12px rgba(6,182,212,0.5))',
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '0.5rem' }}>
+            <img src="/logo-full.png" alt="HireOS" style={{
+              height: '56px', objectFit: 'contain',
+              background: 'white', borderRadius: '12px', padding: '6px 14px',
+              boxShadow: '0 4px 24px rgba(59,130,246,0.25)',
             }} />
-            <span style={{
-              fontSize: '2rem', fontWeight: 700, fontFamily: 'Outfit, sans-serif',
-              background: 'linear-gradient(135deg, #e8f1ff 0%, #06b6d4 100%)',
-              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
-            }}>HireOS</span>
           </div>
           <p style={{ color: 'var(--fg-subtle)', fontSize: '0.82rem' }}>
             Autonomous Job Applications
