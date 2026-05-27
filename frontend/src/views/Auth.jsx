@@ -35,22 +35,18 @@ export default function Auth({ onAuth }) {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: '#060c1a',
-      backgroundImage: `
-        radial-gradient(ellipse 90% 60% at 20% -10%, rgba(59,130,246,0.30) 0%, transparent 60%),
-        radial-gradient(ellipse 70% 50% at 80% 110%, rgba(6,182,212,0.22) 0%, transparent 55%)
-      `,
+      background: `url('/auth-bg.png') center/cover no-repeat`,
       padding: '1rem',
     }}>
       <div style={{
         width: '100%',
         maxWidth: '420px',
-        background: 'rgba(15,20,32,0.85)',
-        border: '1px solid rgba(59,130,246,0.2)',
+        background: 'rgba(8,16,36,0.75)',
+        border: '1px solid rgba(255,255,255,0.18)',
         borderRadius: '20px',
         padding: '2.5rem 2rem',
-        backdropFilter: 'blur(20px)',
-        boxShadow: '0 0 0 1px rgba(59,130,246,0.08), 0 24px 64px rgba(0,0,0,0.4), 0 0 80px rgba(59,130,246,0.08)',
+        backdropFilter: 'blur(24px)',
+        boxShadow: '0 8px 48px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.08)',
       }}>
 
         {/* Logo */}
