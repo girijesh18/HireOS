@@ -35,3 +35,6 @@ Thumbs.db
 
 # ChromaDB data
 **/chroma/
+
+# Local deployment docs
+DEPLOYMENT_INFO.md
