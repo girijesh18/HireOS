@@ -1,6 +1,20 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { api } from '../api/client'
 
+const JOB_TABS = ['overview', 'evaluation', 'gap analysis', 'interview prep', 'linkedin', 'research', 'documents', 'timeline', 'compare']
+
+// Persist the active tab in the URL hash (#/job/<id>/<tab-slug>) so refresh keeps the tab.
+const tabToSlug = (t) => t.replace(/ /g, '-')
+const slugToTab = (s) => s.replace(/-/g, ' ')
+function tabFromHash() {
+  const parts = window.location.hash.replace(/^#\/?/, '').split('/')
+  if (parts[0] === 'job' && parts[2]) {
+    const t = slugToTab(parts[2])
+    if (JOB_TABS.includes(t)) return t
+  }
+  return 'overview'
+}
+
 const STATUSES = ['found','analyzing','pending','approved','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
 const BADGE_EMOJI = { found:'🔍', analyzing:'🤖', pending:'⏳', approved:'✅', applied:'📤', screening:'📞', interview_1:'🎤', interview_2:'🎤', offer:'🎉', rejected:'❌', withdrawn:'↩️' }
 const EVENT_ICONS = {
@@ -10,12 +24,19 @@ const EVENT_ICONS = {
 }
 
 const LLM_OPTIONS = [
-  { value:'gemini-2.5-flash', label:'Gemini 2.5 Flash (Fast)' },
-  { value:'gemini-2.5-pro', label:'Gemini 2.5 Pro (Powerful)' },
-  { value:'gemini-1.5-flash', label:'Gemini 1.5 Flash' },
-  { value:'gemini-1.5-pro', label:'Gemini 1.5 Pro' },
+  { value:'gemini-3.5-flash', label:'Gemini 3.5 Flash (Fastest · New)' },
+  { value:'gemini-3.1-pro-preview', label:'Gemini 3.1 Pro Preview (Most Capable)' },
+  { value:'gemini-3-flash-preview', label:'Gemini 3 Flash Preview' },
+  { value:'gemini-3.1-flash-lite', label:'Gemini 3.1 Flash Lite' },
+  { value:'gemini-2.5-flash', label:'Gemini 2.5 Flash (Recommended)' },
+  { value:'gemini-2.5-flash-lite', label:'Gemini 2.5 Flash Lite' },
+  { value:'gemini-2.5-pro', label:'Gemini 2.5 Pro' },
+  { value:'gemini-2.0-flash', label:'Gemini 2.0 Flash' },
+  { value:'gemini-2.0-flash-lite', label:'Gemini 2.0 Flash Lite' },
   { value:'groq', label:'Groq (Llama 3 · Fast)' },
   { value:'openrouter', label:'OpenRouter (Free)' },
+  { value:'nvidia', label:'NVIDIA (MiniMax-M3)' },
+  { value:'claude', label:'Claude Sonnet (Anthropic)' },
   { value:'ollama', label:'Ollama (Local)' },
 ]
 
@@ -31,20 +52,26 @@ function Spinner({ small }) {
 }
 
 function Toast({ message, type = 'success', onClose }) {
-  useEffect(() => { const t = setTimeout(onClose, 4000); return () => clearTimeout(t) }, [onClose])
+  useEffect(() => {
+    if (type === 'error') return  // errors stay until clicked
+    const t = setTimeout(onClose, 4000)
+    return () => clearTimeout(t)
+  }, [onClose, type])
   const colors = { success:'var(--success)', error:'var(--danger)', info:'var(--primary)' }
   return (
-    <div style={{
+    <div onClick={onClose} style={{
       position:'fixed', bottom:'5rem', right:'2rem', zIndex:300,
       background:'var(--bg-2)', border:`1px solid ${colors[type]}`,
       borderRadius:'var(--radius)', padding:'0.875rem 1.25rem',
-      boxShadow:'0 8px 32px rgba(0,0,0,0.5)', maxWidth:400,
-      animation:'slideUp 0.25s ease', color:'var(--fg)', fontSize:'0.875rem'
+      boxShadow:'0 8px 32px rgba(0,0,0,0.5)', maxWidth:420,
+      animation:'slideUp 0.25s ease', color:'var(--fg)', fontSize:'0.875rem',
+      cursor: type === 'error' ? 'pointer' : 'default',
     }}>
       <span style={{color:colors[type], marginRight:8}}>
         {type==='success'?'✅':type==='error'?'❌':'ℹ️'}
       </span>
       {message}
+      {type === 'error' && <span style={{marginLeft:12, opacity:0.5, fontSize:'0.75rem'}}>(click to dismiss)</span>}
     </div>
   )
 }
@@ -54,7 +81,14 @@ export default function JobDetail({ jobId }) {
   const [events, setEvents] = useState([])
   const [resumes, setResumes] = useState([])
   const [coverLetters, setCoverLetters] = useState([])
-  const [activeTab, setActiveTab] = useState('overview')
+  const [activeTab, setActiveTabState] = useState(() => tabFromHash())
+  const setActiveTab = (tab) => {
+    setActiveTabState(tab)
+    const parts = window.location.hash.replace(/^#\/?/, '').split('/')
+    if (parts[0] === 'job' && parts[1]) {
+      window.location.hash = `#/job/${parts[1]}/${tabToSlug(tab)}`
+    }
+  }
   const [editing, setEditing] = useState(false)
   const [edits, setEdits] = useState({})
   const [newEvent, setNewEvent] = useState({ title:'', description:'', event_type:'note' })
@@ -72,6 +106,13 @@ export default function JobDetail({ jobId }) {
   const [researchData, setResearchData] = useState(null)
   const [interviewData, setInterviewData] = useState(null)
   const [expandedBlocks, setExpandedBlocks] = useState({})
+
+  // Sync tab when the user uses browser back/forward or edits the hash
+  useEffect(() => {
+    const onHash = () => setActiveTabState(tabFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
 
   const showToast = (message, type='success') => setToast({ message, type })
   const toggleBlock = (key) => setExpandedBlocks(b => ({ ...b, [key]: !b[key] }))
@@ -123,27 +164,50 @@ export default function JobDetail({ jobId }) {
       try {
         const tasks = await api.getTasks(jobId)
         
-        const isEval = tasks.find(t => t.task_type === 'evaluate' && t.status === 'processing')
-        const isLinkedIn = tasks.find(t => t.task_type === 'linkedin' && t.status === 'processing')
-        const isResearch = tasks.find(t => t.task_type === 'research' && t.status === 'processing')
-        const isPrep = tasks.find(t => t.task_type === 'interview_prep' && t.status === 'processing')
-        const isAnalysis = tasks.find(t => t.task_type === 'analyze' && t.status === 'processing')
-        const isResume = tasks.find(t => t.task_type === 'resume' && t.status === 'processing')
-        const isCover = tasks.find(t => t.task_type === 'cover_letter' && t.status === 'processing')
+        const byType = type => tasks.find(t => t.task_type === type)
+        const isProcessing = type => byType(type)?.status === 'processing'
+        const failMsg = type => byType(type)?.status === 'failed' ? (byType(type)?.error_message || `${type} failed`) : null
+
+        const isEval = isProcessing('evaluate')
+        const isLinkedIn = isProcessing('linkedin')
+        const isResearch = isProcessing('research')
+        const isPrep = isProcessing('interview_prep')
+        const isAnalysis = isProcessing('analyze')
+        const isResume = isProcessing('resume')
+        const isCover = isProcessing('cover_letter')
 
         setLoading(prev => {
-          // Notice transitioning from processing -> complete
-          if (prev.evaluate && !isEval) { showToast('A-G Evaluation Complete!'); load() }
-          if (prev.linkedin && !isLinkedIn) { showToast('LinkedIn Outreach Generated!'); loadAdditionalData() }
-          if (prev.research && !isResearch) { showToast('Deep Research Complete!'); loadAdditionalData() }
-          if (prev.interviewPrep && !isPrep) { showToast('Interview Prep Complete!'); loadAdditionalData() }
-          if (prev.analyze && !isAnalysis) { showToast('Gap Analysis Complete!'); load() }
-          if (prev.resume && !isResume) { showToast('Resume Generation Complete!'); load() }
-          if (prev.cover && !isCover) { showToast('Cover Letter Generation Complete!'); load() }
-
-          return { 
-            ...prev, evaluate: !!isEval, linkedin: !!isLinkedIn, research: !!isResearch, 
-            interviewPrep: !!isPrep, analyze: !!isAnalysis, resume: !!isResume, cover: !!isCover 
+          if (prev.evaluate && !isEval) {
+            const err = failMsg('evaluate')
+            err ? showToast(err, 'error') : (showToast('A-G Evaluation Complete!'), load())
+          }
+          if (prev.linkedin && !isLinkedIn) {
+            const err = failMsg('linkedin')
+            err ? showToast(err, 'error') : (showToast('LinkedIn Outreach Generated!'), loadAdditionalData())
+          }
+          if (prev.research && !isResearch) {
+            const err = failMsg('research')
+            err ? showToast(err, 'error') : (showToast('Deep Research Complete!'), loadAdditionalData())
+          }
+          if (prev.interviewPrep && !isPrep) {
+            const err = failMsg('interview_prep')
+            err ? showToast(err, 'error') : (showToast('Interview Prep Complete!'), loadAdditionalData())
+          }
+          if (prev.analyze && !isAnalysis) {
+            const err = failMsg('analyze')
+            err ? showToast(err, 'error') : (showToast('Gap Analysis Complete!'), load())
+          }
+          if (prev.resume && !isResume) {
+            const err = failMsg('resume')
+            err ? showToast(err, 'error') : (showToast('Resume Generation Complete!'), load())
+          }
+          if (prev.cover && !isCover) {
+            const err = failMsg('cover_letter')
+            err ? showToast(err, 'error') : (showToast('Cover Letter Generation Complete!'), load())
+          }
+          return {
+            ...prev, evaluate: !!isEval, linkedin: !!isLinkedIn, research: !!isResearch,
+            interviewPrep: !!isPrep, analyze: !!isAnalysis, resume: !!isResume, cover: !!isCover
           }
         })
       } catch (e) {}
@@ -287,7 +351,7 @@ export default function JobDetail({ jobId }) {
     showToast('Copied to clipboard!', 'info')
   }
 
-  const TABS = ['overview', 'evaluation', 'gap analysis', 'interview prep', 'linkedin', 'research', 'documents', 'timeline', 'compare']
+  const TABS = JOB_TABS
 
   if (!job) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:300, gap:'1rem' }}>

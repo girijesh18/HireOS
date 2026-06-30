@@ -21,6 +21,25 @@ async function req(method, path, body, isFormData = false) {
   return res.json()
 }
 
+// Fetch a file with the auth header and trigger a browser download (download/export are user-scoped)
+async function downloadBlob(url, filename) {
+  const token = getToken()
+  const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
+    throw new Error(err.detail || `Download failed (${res.status})`)
+  }
+  const blob = await res.blob()
+  const objUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(objUrl)
+}
+
 async function authReq(method, path, body) {
   const token = getToken()
   const headers = { 'Content-Type': 'application/json' }
@@ -41,6 +60,7 @@ export const api = {
   // Auth
   signup: (email, password) => authReq('POST', '/auth/signup', { email, password }),
   login: (email, password) => authReq('POST', '/auth/login', { email, password }),
+  resetPassword: (email, password) => authReq('POST', '/auth/reset-password', { email, password }),
   me: () => authReq('GET', '/auth/me'),
 
   // Health
@@ -118,12 +138,12 @@ export const api = {
   chat: (message, llm = 'gemini', context = null) =>
     req('POST', '/chat', { message, llm, context }),
 
-  // Export
-  exportCSV: () => window.open(`${BASE}/export/csv`, '_blank'),
+  // Export (token-authenticated blob download)
+  exportCSV: () => downloadBlob(`${BASE}/export/csv`, 'job_applications.csv'),
 
-  // File Download
+  // File Download (token-authenticated blob download)
   downloadFile: (jobId, filename) =>
-    window.open(`${BASE}/download/${jobId}/${filename}`, '_blank'),
+    downloadBlob(`${BASE}/download/${jobId}/${filename}`, filename),
 
   // ── Career-Ops Enhanced Agent Endpoints ──────────────────────────────────
 

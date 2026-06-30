@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import './index.css'
-import { api, clearToken } from './api/client'
+import { api, setToken, clearToken } from './api/client'
 import Auth from './views/Auth'
 import Dashboard from './views/Dashboard'
 import JobList from './views/JobList'
@@ -252,25 +252,73 @@ const NAV = [
   { id: 'settings', label: 'Settings', icon: <SettingsIcon /> },
 ]
 
+const TOP_VIEWS = ['dashboard', 'jobs', 'insights', 'stories', 'settings']
+
+// URL-hash routing so the current view survives a page refresh and works with browser back/forward.
+function parseHash() {
+  const h = window.location.hash.replace(/^#\/?/, '')
+  if (!h) return { view: 'dashboard', jobId: null }
+  const [seg, id] = h.split('/')
+  if (seg === 'job' && id && /^\d+$/.test(id)) return { view: 'job-detail', jobId: parseInt(id, 10) }
+  if (TOP_VIEWS.includes(seg)) return { view: seg, jobId: null }
+  return { view: 'dashboard', jobId: null }
+}
+
+function hashFor(view, jobId) {
+  if (view === 'job-detail' && jobId) return `#/job/${jobId}`
+  return `#/${view}`
+}
+
 export default function App() {
   const [user, setUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
-  const [view, setView] = useState('dashboard')
-  const [selectedJobId, setSelectedJobId] = useState(null)
+  const [view, setView] = useState(() => parseHash().view)
+  const [selectedJobId, setSelectedJobId] = useState(() => parseHash().jobId)
   const [showTrackModal, setShowTrackModal] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [authError, setAuthError] = useState('')
 
   useEffect(() => {
+    // Pick up an SSO redirect (?auth_token / ?auth_error) before checking session.
+    const params = new URLSearchParams(window.location.search)
+    const ssoToken = params.get('auth_token')
+    const ssoError = params.get('auth_error')
+    if (ssoToken) setToken(ssoToken)
+    if (ssoError) setAuthError(ssoError)
+    if (ssoToken || ssoError) {
+      window.history.replaceState({}, '', window.location.pathname + window.location.hash)
+    }
+
     const token = localStorage.getItem('hireos_token')
     if (!token) { setAuthChecked(true); return }
     api.me().then(data => { setUser(data.email); setAuthChecked(true) })
        .catch(() => { clearToken(); setAuthChecked(true) })
   }, [])
 
+  // Keep the URL hash in sync with the current view (so refresh restores it).
+  // Skip if the base route already matches — JobDetail owns a sub-segment (#/job/<id>/<tab>)
+  // that we must not clobber.
+  useEffect(() => {
+    const cur = parseHash()
+    if (cur.view === view && cur.jobId === selectedJobId) return
+    window.location.hash = hashFor(view, selectedJobId)
+  }, [view, selectedJobId])
+
+  // React to browser back/forward and manual hash edits
+  useEffect(() => {
+    const onHash = () => {
+      const { view: v, jobId } = parseHash()
+      setView(v)
+      setSelectedJobId(jobId)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
   const logout = () => { clearToken(); setUser(null) }
 
   if (!authChecked) return null
-  if (!user) return <Auth onAuth={email => setUser(email)} />
+  if (!user) return <Auth onAuth={email => setUser(email)} ssoError={authError} />
 
   const openJob = (id) => { setSelectedJobId(id); setView('job-detail') }
   const goBack = () => { setSelectedJobId(null); setView('jobs') }
@@ -288,11 +336,12 @@ export default function App() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <img src="/logo-full.png" alt="HireOS" style={{
-            height: '30px', width: 'auto', objectFit: 'contain',
-            background: 'white', borderRadius: '6px', padding: '4px 10px',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-          }} />
+          <span style={{
+            fontFamily: 'Outfit, sans-serif', fontSize: '1.4rem', fontWeight: 800,
+            color: '#fff', letterSpacing: '-0.02em',
+          }}>
+            Hire<span style={{ color: '#22d3ee' }}>OS</span>
+          </span>
         </div>
         <div className="nav-section-label">Navigation</div>
         {NAV.map(n => (
@@ -331,7 +380,7 @@ export default function App() {
           {view === 'jobs' && <JobList onOpenJob={openJob} key={refreshKey} />}
           {view === 'insights' && <Insights />}
           {view === 'stories' && <StoryBank />}
-          {view === 'job-detail' && selectedJobId && <JobDetail jobId={selectedJobId} />}
+          {view === 'job-detail' && selectedJobId && <JobDetail key={selectedJobId} jobId={selectedJobId} />}
           {view === 'settings' && <Settings />}
         </div>
       </div>

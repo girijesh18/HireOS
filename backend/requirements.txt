@@ -8,7 +8,7 @@ httpx==0.28.1
 aiofiles==24.1.0
 python-multipart==0.0.20
 # LLM providers
-google-generativeai==0.8.4
+google-generativeai>=0.8.4
 groq==0.23.1
 openai==1.75.0
 anthropic>=0.40.0
@@ -24,6 +24,8 @@ PyGithub==2.6.1
 # Auth
 python-jose[cryptography]==3.3.0
 bcrypt==4.3.0
+# PDF parsing
+pypdf>=4.0.0
 # Utilities
 loguru==0.7.3
 playwright==1.58.0

@@ -49,6 +49,7 @@ def log_interaction(
     llm_used: str = "",
     company: str = "",
     title: str = "",
+    user_id: Optional[int] = None,
 ) -> str:
     """Store one interaction. Returns the chroma doc id."""
     try:
@@ -67,6 +68,7 @@ def log_interaction(
             "llm_used": llm_used or "",
             "company": company or "",
             "title": title or "",
+            "user_id": user_id if user_id is not None else -1,
         }
 
         col.add(documents=[document], metadatas=[metadata], ids=[doc_id])
@@ -76,13 +78,21 @@ def log_interaction(
         return ""
 
 
-def get_recent(days: int = 90) -> List[Dict[str, Any]]:
-    """Return all interactions within the last `days` days, newest first."""
+def _scoped_where(cutoff: int, user_id: Optional[int]) -> Dict[str, Any]:
+    """Build a ChromaDB where-filter for a time window, scoped to a user when given."""
+    conds = [{"timestamp_unix": {"$gte": cutoff}}]
+    if user_id is not None:
+        conds.append({"user_id": user_id})
+    return {"$and": conds} if len(conds) > 1 else conds[0]
+
+
+def get_recent(days: int = 90, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Return all interactions within the last `days` days, newest first (per user when given)."""
     try:
         col = _get_collection()
         cutoff = int((datetime.utcnow() - timedelta(days=days)).timestamp())
         results = col.get(
-            where={"timestamp_unix": {"$gte": cutoff}},
+            where=_scoped_where(cutoff, user_id),
             include=["documents", "metadatas"],
         )
         items = []
@@ -97,11 +107,11 @@ def get_recent(days: int = 90) -> List[Dict[str, Any]]:
         return []
 
 
-def get_stats(days: int = 90) -> Dict[str, Any]:
-    """Aggregate stats over the last `days` days."""
+def get_stats(days: int = 90, user_id: Optional[int] = None) -> Dict[str, Any]:
+    """Aggregate stats over the last `days` days (per user when given)."""
     from collections import Counter
 
-    items = get_recent(days)
+    items = get_recent(days, user_id=user_id)
     if not items:
         return {
             "total_interactions": 0,
@@ -140,15 +150,15 @@ def get_stats(days: int = 90) -> Dict[str, Any]:
     }
 
 
-def search_similar(query: str, n: int = 10, days: int = 90) -> List[Dict[str, Any]]:
-    """Semantic search over recent interactions."""
+def search_similar(query: str, n: int = 10, days: int = 90, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Semantic search over recent interactions (per user when given)."""
     try:
         col = _get_collection()
         cutoff = int((datetime.utcnow() - timedelta(days=days)).timestamp())
         results = col.query(
             query_texts=[query],
             n_results=min(n, max(col.count(), 1)),
-            where={"timestamp_unix": {"$gte": cutoff}},
+            where=_scoped_where(cutoff, user_id),
             include=["documents", "metadatas", "distances"],
         )
         items = []
@@ -184,7 +194,7 @@ def purge_old(days: int = 90) -> int:
         return 0
 
 
-def get_recent_samples(days: int = 90, limit: int = 20) -> List[str]:
-    """Return raw document strings for recent interactions (for LLM context)."""
-    items = get_recent(days)[:limit]
+def get_recent_samples(days: int = 90, limit: int = 20, user_id: Optional[int] = None) -> List[str]:
+    """Return raw document strings for recent interactions (for LLM context, per user when given)."""
+    items = get_recent(days, user_id=user_id)[:limit]
     return [item["document"] for item in items]

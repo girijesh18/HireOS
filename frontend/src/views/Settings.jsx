@@ -6,6 +6,7 @@ const LLM_PROVIDERS = [
   { key:'groq_api_key', label:'Groq API Key', provider:'Groq (Free Tier)', placeholder:'gsk_...' },
   { key:'openrouter_api_key', label:'OpenRouter API Key', provider:'OpenRouter (Free Models)', placeholder:'sk-or-...' },
   { key:'together_api_key', label:'Together AI Key', provider:'Together AI', placeholder:'...' },
+  { key:'nvidia_api_key', label:'NVIDIA API Key', provider:'NVIDIA (MiniMax-M3)', placeholder:'nvapi-...' },
   { key:'ollama_base_url', label:'Ollama Base URL', provider:'Local Ollama', placeholder:'http://localhost:11434' },
 ]
 const GITHUB = [
@@ -27,9 +28,28 @@ const HUNT_FILTERS = [
   { key:'hunt_platforms', label:'Target Platforms', placeholder:'linkedin, greenhouse, lever, workday' },
 ]
 
+const DEFAULT_PDF_STYLE = {
+  fontFamily: 'Cambria, Georgia, serif',
+  fontSize: '10.5',
+  sectionColor: '#2E74B5',
+  marginTop: '1.4',
+  marginBottom: '1.4',
+  marginLeft: '1.2',
+  marginRight: '1.2',
+}
+
+const FONT_OPTIONS = [
+  { value: 'Cambria, Georgia, serif', label: 'Cambria (Serif)' },
+  { value: 'Georgia, Times New Roman, serif', label: 'Georgia (Serif)' },
+  { value: 'Arial, Helvetica, sans-serif', label: 'Arial (Sans-serif)' },
+  { value: 'Calibri, Arial, sans-serif', label: 'Calibri (Sans-serif)' },
+  { value: 'Garamond, Times New Roman, serif', label: 'Garamond (Serif)' },
+]
+
 export default function Settings() {
   const [activeCategory, setActiveCategory] = useState('resume')
   const [values, setValues] = useState({})
+  const [pdfStyle, setPdfStyle] = useState(DEFAULT_PDF_STYLE)
   const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(true)
   const [providers, setProviders] = useState([])
@@ -48,13 +68,17 @@ export default function Settings() {
       setValues(s);
       setProviders(p.available || []);
       setResumeComponents(rc);
+      if (s.resume_pdf_style) {
+        try { setPdfStyle({ ...DEFAULT_PDF_STYLE, ...JSON.parse(s.resume_pdf_style) }) } catch {}
+      }
     }).catch(err => {
       console.error("Failed to load settings:", err);
     }).finally(() => setLoading(false))
   }, [])
 
   const save = async () => {
-    const settings = Object.entries(values).map(([key, value]) => ({ key, value: value || '' }))
+    const merged = { ...values, resume_pdf_style: JSON.stringify(pdfStyle) }
+    const settings = Object.entries(merged).map(([key, value]) => ({ key, value: value || '' }))
     try {
       await api.saveSettings(settings)
       setSaved(true)
@@ -220,7 +244,7 @@ export default function Settings() {
                   <div className="flex gap-sm">
                     <label className="btn btn-outline btn-sm" style={{ cursor:'pointer' }}>
                       {isUploading ? '⌛ Extracting...' : '📁 Upload File'}
-                      <input type="file" hidden accept=".pdf,.md,.txt" onChange={handleFileUpload} disabled={isUploading} />
+                      <input type="file" hidden accept=".pdf,.md,.txt,.html,.htm" onChange={handleFileUpload} disabled={isUploading} />
                     </label>
                     <button className="btn btn-primary btn-sm" onClick={() => setIsAddingText(true)}>📝 Add Block</button>
                   </div>
@@ -279,6 +303,116 @@ export default function Settings() {
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Resume Style Guide */}
+              <div className="panel" style={{ padding: '1.5rem' }}>
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: '0.25rem' }}>AI Content Instructions</div>
+                  <p style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', marginBottom: '1rem' }}>
+                    Paste your formatting rules, section order, tone instructions, and content constraints.
+                    The AI follows these exactly every time it generates a resume.
+                  </p>
+                  <textarea
+                    rows={10}
+                    value={values.resume_style_guide || ''}
+                    onChange={e => setValues(v => ({ ...v, resume_style_guide: e.target.value }))}
+                    placeholder={`Example:\n- Section order: Summary → Experience → Technical Expertise → Education → Leadership\n- Bullet points start with strong action verbs\n- Keep to 1 page maximum\n- Dates format: Month YYYY – Month YYYY\n- Quantify every achievement with real metrics`}
+                    style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.82rem' }}
+                  />
+                </div>
+              </div>
+
+              {/* PDF Layout */}
+              <div className="panel" style={{ padding: '1.5rem' }}>
+                <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: '0.25rem' }}>PDF Layout</div>
+                <p style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
+                  Controls the visual appearance of generated PDFs. Adjust to match your preferred resume style.
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Font Family</label>
+                    <select
+                      value={pdfStyle.fontFamily}
+                      onChange={e => setPdfStyle(p => ({ ...p, fontFamily: e.target.value }))}
+                      style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-2)', border: '1px solid var(--surface-border)', borderRadius: 'var(--radius-sm)', color: 'var(--fg)', fontSize: '0.875rem' }}
+                    >
+                      {FONT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Font Size (pt)</label>
+                    <select
+                      value={pdfStyle.fontSize}
+                      onChange={e => setPdfStyle(p => ({ ...p, fontSize: e.target.value }))}
+                      style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-2)', border: '1px solid var(--surface-border)', borderRadius: 'var(--radius-sm)', color: 'var(--fg)', fontSize: '0.875rem' }}
+                    >
+                      {['9.5','10','10.5','11','11.5','12'].map(s => <option key={s} value={s}>{s}pt</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                  {[
+                    { key: 'marginTop', label: 'Top Margin (cm)' },
+                    { key: 'marginBottom', label: 'Bottom Margin (cm)' },
+                    { key: 'marginLeft', label: 'Left Margin (cm)' },
+                    { key: 'marginRight', label: 'Right Margin (cm)' },
+                  ].map(({ key, label }) => (
+                    <div className="form-group" key={key}>
+                      <label className="form-label">{label}</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.5"
+                        max="4"
+                        value={pdfStyle[key]}
+                        onChange={e => setPdfStyle(p => ({ ...p, [key]: e.target.value }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', alignItems: 'end' }}>
+                  <div className="form-group">
+                    <label className="form-label">Section Header Color</label>
+                    <div className="flex items-center gap-sm">
+                      <input
+                        type="color"
+                        value={pdfStyle.sectionColor}
+                        onChange={e => setPdfStyle(p => ({ ...p, sectionColor: e.target.value }))}
+                        style={{ width: 42, height: 36, padding: 2, border: '1px solid var(--surface-border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-2)', cursor: 'pointer' }}
+                      />
+                      <input
+                        type="text"
+                        value={pdfStyle.sectionColor}
+                        onChange={e => setPdfStyle(p => ({ ...p, sectionColor: e.target.value }))}
+                        style={{ flex: 1 }}
+                        placeholder="#2E74B5"
+                      />
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Preview</div>
+                    <div style={{
+                      padding: '4px 8px',
+                      fontWeight: 700,
+                      fontSize: '0.75rem',
+                      letterSpacing: '0.06em',
+                      textTransform: 'uppercase',
+                      color: pdfStyle.sectionColor,
+                      borderBottom: `1.5px solid ${pdfStyle.sectionColor}`,
+                      fontFamily: pdfStyle.fontFamily,
+                    }}>
+                      PROFESSIONAL EXPERIENCE
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '1.25rem', padding: '0.75rem 1rem', background: 'var(--bg-2)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--surface-border)', fontSize: '0.78rem', color: 'var(--fg-muted)' }}>
+                  <strong style={{ color: 'var(--fg)' }}>Note:</strong> The AI uses a fixed structural format internally (section headers, company/date layout). These controls only affect how it looks in the exported PDF — not the content or the order of information.
+                </div>
               </div>
             </div>
           )}

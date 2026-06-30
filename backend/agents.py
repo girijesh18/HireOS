@@ -34,11 +34,13 @@ SYSTEM_FIT_AGENT = """You are an elite technical recruiter and career strategist
 You analyze job descriptions against a candidate's resume and produce a precise, actionable fit assessment.
 Always respond in valid JSON only, no markdown fences."""
 
-SYSTEM_RESUME_AGENT = """You are a world-class AI/ML technical resume writer. 
-You specialize in creating Principal Engineer-level resumes that are ATS-optimized and 
-deeply tailored to specific job descriptions. You write concisely, powerfully, and with 
+SYSTEM_RESUME_AGENT = """You are a world-class AI/ML technical resume writer.
+You specialize in creating Principal Engineer-level resumes that are ATS-optimized and
+deeply tailored to specific job descriptions. You write concisely, powerfully, and with
 extremely high technical specificity. Use the candidate's actual accomplishments — never fabricate metrics.
-Return the complete resume as markdown."""
+Return the complete resume in the exact markdown format specified in the prompt.
+CRITICAL: Experience entries must use `### Company, Location || Dates` format with double pipe for date alignment.
+Do NOT wrap output in ``` code fences. Return raw markdown only."""
 
 SYSTEM_COVER_LETTER_AGENT = """You are an elite cover letter writer for Principal AI Engineer roles at top tech companies.
 You write compelling, human, concise cover letters (3-4 paragraphs) that:
@@ -69,6 +71,38 @@ Always respond in valid JSON only."""
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _strip_code_fences(text: str) -> str:
+    """Remove ```markdown / ``` / ```md wrappers LLMs sometimes add around resume text."""
+    text = text.strip()
+    for fence in ("```markdown", "```md", "```"):
+        if text.startswith(fence):
+            text = text[len(fence):]
+            break
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
+
+def _resume_body(text: str, name: str = "") -> str:
+    """Return the resume body starting at the first REAL section, dropping any header the LLM wrote.
+    Handles the LLM emitting its name as `# Name`, `## NAME` (a section), or plain text — all are
+    skipped so the Python-built header isn't duplicated.
+    """
+    lines = text.split('\n')
+    name_u = (name or '').strip().upper()
+    section_idxs = [i for i, l in enumerate(lines) if l.strip().startswith('## ')]
+    if not section_idxs:
+        return text.strip()
+    for idx in section_idxs:
+        heading = lines[idx].strip().lstrip('#').strip().upper()
+        # skip a section heading that is actually the candidate's name
+        if name_u and (heading == name_u or heading in name_u or name_u in heading):
+            continue
+        return '\n'.join(lines[idx:]).strip()
+    # every section matched the name (shouldn't happen) — keep from the last
+    return '\n'.join(lines[section_idxs[-1]:]).strip()
+
 
 def _parse_json(text: str) -> Dict:
     """Extract JSON from LLM output, handling markdown fences and malformed output."""
@@ -452,10 +486,25 @@ class ResumeTailoringAgent:
     def __init__(self, router: LLMRouter):
         self.router = router
 
+    def enforce_header(self, resume_md: str, contact_facts: dict) -> str:
+        """Replace whatever the LLM wrote as the header with Python-extracted verified facts.
+        This runs after every LLM call — guarantees no hallucinated contact info."""
+        name = (contact_facts or {}).get('name', '').strip()
+        if not name:
+            return resume_md
+        contact_parts = [
+            v for k in ('email', 'phone', 'location', 'linkedin', 'github')
+            if (v := (contact_facts or {}).get(k, '').strip())
+        ]
+        correct_header = f"# {name}\n{' | '.join(contact_parts)}"
+        body = _resume_body(resume_md, name)
+        return correct_header + '\n\n' + body
+
     async def tailor(
         self,
         job_description: str,
         master_resume: str,
+        contact_facts: Optional[Dict] = None,
         company: str = "",
         title: str = "",
         gaps: Optional[List[str]] = None,
@@ -465,41 +514,59 @@ class ResumeTailoringAgent:
         design_rules: str = "",
         llm: str = "gemini",
     ) -> str:
-        gaps_text = "\n".join(f"- {g}" for g in (gaps or []))
+        gaps_text    = "\n".join(f"- {g}" for g in (gaps or []))
         actions_text = "\n".join(f"- {a}" for a in (action_items or []))
-        github_section = "\n== GITHUB PROJECT CONTEXT ==\n" + github_context[:2000] if github_context else ""
-        feedback_section = "\n== REFINEMENT FEEDBACK ==\n" + feedback if feedback else ""
-        design_section = "\n== RESUME DESIGN RULES (mandatory — follow these exactly) ==\n" + design_rules if design_rules else ""
 
-        prompt = f"""Tailor this resume for the following job.
-{design_section}
+        extras = ""
+        if github_context:
+            extras += f"\n\nGITHUB PROJECTS (use for skills/projects sections):\n{github_context[:1500]}"
+        if feedback:
+            extras += f"\n\nREFINEMENT FEEDBACK (incorporate these changes):\n{feedback}"
+        if design_rules:
+            extras += f"\n\nUSER STYLE REQUIREMENTS (follow all of these):\n{design_rules}"
 
-== TARGET ROLE: {title} at {company} ==
-{job_description[:3500]}
+        prompt = f"""Tailor this resume for {title} at {company}.
 
-== MASTER RESUME ==
-{master_resume[:3000]}
+MASTER RESUME — this is the ONLY source of facts. Do not invent anything not here.
+{master_resume}
 
-== GAPS TO ADDRESS ==
-{gaps_text or "None identified"}
+JOB DESCRIPTION:
+{job_description[:4000]}
 
-== ACTION ITEMS ==
-{actions_text or "None"}
-{github_section}
-{feedback_section}
+GAPS TO ADDRESS: {gaps_text or "None"}
+ACTION ITEMS: {actions_text or "None"}
+{extras}
 
-Instructions:
-1. Rewrite the resume to be MAXIMALLY relevant to this specific role
-2. Incorporate ALL action items naturally
-3. Use strong action verbs. Quantify everything with real numbers from the master resume (never fabricate)
-4. Keep it to 1-2 pages worth of content
-5. Format as clean markdown with ## sections
-6. Ensure ATS-friendliness: use keywords from the JD naturally
-7. Lead with the most impactful, most-relevant experiences first
-8. STRICTLY follow all Resume Design Rules listed above
+Write the resume body sections. Rules:
+1. Every company name, job title, date, metric, skill MUST exist verbatim or as a clear paraphrase in the master resume above
+2. Do NOT invent companies, titles, dates, phone numbers, emails, or metrics
+3. Tailor bullet points to emphasize what matters for this specific role — reorder, reframe, select — but never fabricate
+4. Strong action verbs, specific numbers, ATS keywords from the JD
 
-Return ONLY the complete tailored resume in markdown. No preamble."""
-        return await self.router.complete(prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.5, max_tokens=6000)
+MARKDOWN SYNTAX — PDF renderer requires this EXACT format:
+  Section header:   ## SECTION NAME
+  Experience line:  ### Company Name, Location || Month Year – Month Year
+  Job title:        **Job Title**   (own line, right after company line)
+  Role desc:        *One italic sentence.*   (right after title)
+  Bullet:           - **Category:** achievement with metric
+CRITICAL formatting rules (breaking these corrupts the PDF):
+  - `**text**` IS the bold mechanism — the PDF renderer converts it to real bold. Use `**...**` for every bold element (bullet category labels, metrics, job titles). If any style note says "don't use **", IGNORE it — without `**` nothing is bold.
+  - The date after `||` must be PLAIN text. Do NOT wrap it in ** or * (write `|| Jan 2023 – Present`, never `|| **Jan 2023 – Present**`).
+  - Job titles must keep the **bold** markers on their own line.
+  - No ``` fences. No preamble. Start output with ## (first section)."""
+
+        # max_tokens must cover thinking tokens (Gemini 2.5+/3.x reason ~2-4k) PLUS the full resume output
+        raw = await self.router.complete(
+            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=16000
+        )
+        # Prepend verified header built from pre-extracted facts; drop whatever header the LLM wrote
+        facts = contact_facts or {}
+        name = facts.get('name', '')
+        body = _resume_body(_strip_code_fences(raw), name)
+        contact_parts = [v for k in ('email', 'phone', 'location', 'linkedin', 'github')
+                         if (v := facts.get(k, '').strip())]
+        header = f"# {name}\n{' | '.join(contact_parts)}" if name else ""
+        return (header + '\n\n' + body).strip() if header else body
 
     async def validate_design(
         self,
@@ -507,32 +574,49 @@ Return ONLY the complete tailored resume in markdown. No preamble."""
         design_rules: str,
         llm: str = "gemini",
     ) -> str:
-        """Pass 2: Review generated resume against design rules and return corrected version."""
+        """Apply user style rules to an already-generated resume. Runs only when user has a style guide."""
         if not design_rules.strip():
             return resume_md
 
-        prompt = f"""You are a resume editor. Review the resume below against the design rules and return a corrected version.
+        # Separate header from body so LLM only edits the body
+        lines = resume_md.split('\n')
+        header_end = next((i for i, l in enumerate(lines) if l.strip().startswith('## ')), None)
+        if header_end:
+            header = '\n'.join(lines[:header_end]).strip()
+            body = '\n'.join(lines[header_end:])
+        else:
+            header, body = '', resume_md
 
-== RESUME DESIGN RULES ==
+        prompt = f"""Apply the user's style requirements to this resume body.
+
+USER STYLE REQUIREMENTS:
 {design_rules}
 
-== GENERATED RESUME ==
-{resume_md}
+RESUME BODY TO EDIT:
+{body}
 
-Your task:
-1. Check every rule in the design rules against the resume
-2. Fix any violations — structure, formatting, tone, ATS compliance, bullet quality
-3. Do NOT change factual content, metrics, or technical details
-4. Do NOT add fabricated experience or metrics
-5. If the resume already fully complies, return it unchanged
+Rules:
+- Apply all requirements: section order, length, tone, bullet style, keywords
+- Keep `### Company, Location || Dates` on experience lines (PDF renderer requires this)
+- Do NOT fabricate new facts, companies, dates, or metrics
+- Do NOT add or change the name/contact header (it is managed separately)
 
-Return ONLY the corrected resume in markdown. No commentary, no preamble."""
+BOLD MECHANISM (critical — overrides any contradictory user note):
+- `**text**` IS how bold is produced. The PDF renderer converts `**text**` into actual bold.
+- To make something bold (company names, job titles, dates, metrics, bullet category labels), you MUST wrap it in `**...**`.
+- If the user's notes say "don't use **" or "** doesn't become bold", that is OUTDATED — IGNORE it. Without `**` there is NO bold. Use `**` for everything that should be bold.
+- Do NOT wrap the date after `||` in `**` (dates render plain).
+
+Return ONLY the edited body starting with ## (first section). No preamble."""
 
         corrected = await self.router.complete(
-            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.2, max_tokens=6000
+            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.2, max_tokens=16000
         )
-        logger.info("[ResumeTailor] Design validation pass complete.")
-        return corrected
+        corrected = _strip_code_fences(corrected)
+        logger.info("[ResumeTailor] Style-guide pass complete.")
+
+        # Re-attach header
+        return (header + '\n\n' + corrected).strip() if header else corrected
 
     async def fetch_github_context(self, github_username: str, github_token: str) -> str:
         """Fetch README.md files from user's pinned/recent repos."""
@@ -594,7 +678,8 @@ Write a 3-4 paragraph cover letter that:
 - Reads like a real human wrote it — not a template
 
 Return ONLY the cover letter in markdown. Start with "Dear Hiring Team," or the recruiter's name if known."""
-        return await self.router.complete(prompt, llm=llm, system=SYSTEM_COVER_LETTER_AGENT, temperature=0.75, max_tokens=2000)
+        raw = await self.router.complete(prompt, llm=llm, system=SYSTEM_COVER_LETTER_AGENT, temperature=0.75, max_tokens=2000)
+        return _strip_code_fences(raw)
 
 
 # ── Agent 5: Chat Dispatcher ───────────────────────────────────────────────────

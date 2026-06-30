@@ -95,17 +95,7 @@ function StageDropdown({ job, onUpdate }) {
   )
 }
 
-const MOCK_STATS = {
-  total: 24, by_status: { found: 6, pending: 4, applied: 9, interview_1: 2, offer: 1, rejected: 2 },
-  applied_this_week: 3, pending_review: 4, interviews_scheduled: 2, offers: 1, follow_ups_due: 2
-}
-
-const MOCK_JOBS = [
-  { id: 1, company: 'Google', title: 'Principal AI Engineer', status: 'pending', match_score: 87, priority: 'high', platform: 'linkedin', remote: true, salary_min: 220000, follow_up_due: null },
-  { id: 2, company: 'Stripe', title: 'ML Architect', status: 'applied', match_score: 74, priority: 'high', platform: 'greenhouse', remote: true, salary_min: 200000, follow_up_due: new Date() },
-  { id: 3, company: 'OpenAI', title: 'Research Engineer', status: 'interview_1', match_score: 91, priority: 'high', platform: 'lever', remote: false, salary_min: 250000, follow_up_due: null },
-  { id: 4, company: 'Anthropic', title: 'AI Safety Researcher', status: 'found', match_score: null, priority: 'medium', platform: 'greenhouse', remote: true, salary_min: 180000, follow_up_due: null },
-]
+const EMPTY_STATS = { total: 0, pending_review: 0, interviews_scheduled: 0, offers: 0 }
 
 function ScoreRing({ score }) {
   if (!score) return <span className="text-subtle text-xs">Not analyzed</span>
@@ -133,14 +123,14 @@ const BADGE_EMOJI = {
 }
 
 export default function Dashboard({ onOpenJob }) {
-  const [stats, setStats] = useState(MOCK_STATS)
-  const [jobs, setJobs] = useState(MOCK_JOBS)
+  const [stats, setStats] = useState(EMPTY_STATS)
+  const [jobs, setJobs] = useState([])
   const [followups, setFollowups] = useState(null)
   const [patterns, setPatterns] = useState(null)
 
   useEffect(() => {
     api.getStats().then(setStats).catch(() => {})
-    api.listJobs({ limit: 20 }).then(j => { if (j.length) setJobs(j) }).catch(() => {})
+    api.listJobs({ limit: 20 }).then(setJobs).catch(() => {})
     api.getFollowupCadence().then(setFollowups).catch(() => {})
     api.getPatternAnalytics().then(setPatterns).catch(() => {})
   }, [])
@@ -247,6 +237,11 @@ export default function Dashboard({ onOpenJob }) {
           <button className="btn btn-ghost btn-sm" onClick={() => document.querySelector('.nav-item:nth-child(2)').click()}>View All →</button>
         </div>
         <div className="jobs-list">
+          {jobs.length === 0 && (
+            <div className="panel" style={{ textAlign: 'center', padding: '2rem', color: 'var(--fg-subtle)' }}>
+              No jobs tracked yet. Add your first job above.
+            </div>
+          )}
           {jobs.slice(0, 6).map(job => (
             <div key={job.id} onClick={() => onOpenJob(job.id)}
                  style={{ padding:'1.25rem', background:'var(--surface)', borderBottom:'1px solid var(--surface-border)', display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:'1.5rem', alignItems:'center', cursor:'pointer', transition:'background 0.15s' }}

@@ -29,36 +29,62 @@ class LLMRouter:
         "ollama": "_call_ollama",
         "claude": "_call_claude",
         "anthropic": "_call_claude",
+        "nvidia": "_call_nvidia",
+        "minimax": "_call_nvidia",
     }
 
-    def __init__(self):
-        pass  # Keys are read dynamically at call-time so Settings changes take effect immediately
+    def __init__(self, keys: Optional[Dict[str, str]] = None, allow_env: bool = True):
+        # Per-user (BYOK) keys. keys dict uses provider names: gemini, groq, openrouter,
+        # together, anthropic, ollama_url, github_token, github_username.
+        # allow_env=False enforces strict per-user isolation (no shared server key leakage)
+        # for multi-tenant requests; allow_env=True is for server-level / health contexts.
+        self._keys = {k: v for k, v in (keys or {}).items() if v}
+        self._allow_env = allow_env
 
-    # ── Dynamic key properties (always read from live os.environ) ─────────────
+    def _key(self, name: str, env: str, default: str = "") -> str:
+        if self._keys.get(name):
+            return self._keys[name]
+        if self._allow_env:
+            return os.getenv(env, default)
+        return default
+
+    # ── Key properties (per-user keys first, env as fallback) ─────────────────
 
     @property
     def gemini_key(self):
-        return os.getenv("GEMINI_API_KEY", "")
+        return self._key("gemini", "GEMINI_API_KEY")
 
     @property
     def groq_key(self):
-        return os.getenv("GROQ_API_KEY", "")
+        return self._key("groq", "GROQ_API_KEY")
 
     @property
     def openrouter_key(self):
-        return os.getenv("OPENROUTER_API_KEY", "")
+        return self._key("openrouter", "OPENROUTER_API_KEY")
 
     @property
     def together_key(self):
-        return os.getenv("TOGETHER_API_KEY", "")
+        return self._key("together", "TOGETHER_API_KEY")
 
     @property
     def anthropic_key(self):
-        return os.getenv("ANTHROPIC_API_KEY", "")
+        return self._key("anthropic", "ANTHROPIC_API_KEY")
 
     @property
     def ollama_url(self):
-        return os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        return self._key("ollama_url", "OLLAMA_BASE_URL", "http://localhost:11434")
+
+    @property
+    def github_token(self):
+        return self._key("github_token", "GITHUB_TOKEN")
+
+    @property
+    def github_username(self):
+        return self._key("github_username", "GITHUB_USERNAME")
+
+    @property
+    def nvidia_key(self):
+        return self._key("nvidia", "NVIDIA_API_KEY")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -121,11 +147,26 @@ class LLMRouter:
         import google.generativeai as genai
         genai.configure(api_key=self.gemini_key)
 
-        # Default: Gemini 2.5 Flash (latest & fastest)
         m = model.lower()
-        if "2.5-pro" in m or "2.5pro" in m:
+        if "3.5-flash" in m:
+            model_name = "gemini-3.5-flash"
+        elif "3.1-pro" in m:
+            model_name = "gemini-3.1-pro-preview"
+        elif "3.1-flash-lite" in m:
+            model_name = "gemini-3.1-flash-lite"
+        elif "3-flash" in m or "3.0-flash" in m or "3.1-flash" in m:
+            model_name = "gemini-3-flash-preview"
+        elif "2.5-pro" in m:
             model_name = "gemini-2.5-pro"
-        elif "1.5-pro" in m or "1.5pro" in m:
+        elif "2.5-flash-lite" in m:
+            model_name = "gemini-2.5-flash-lite"
+        elif "2.5-flash" in m:
+            model_name = "gemini-2.5-flash"
+        elif "2.0-flash-lite" in m:
+            model_name = "gemini-2.0-flash-lite"
+        elif "2.0-flash" in m:
+            model_name = "gemini-2.0-flash"
+        elif "1.5-pro" in m:
             model_name = "gemini-1.5-pro"
         elif "1.5-flash" in m:
             model_name = "gemini-1.5-flash"
@@ -159,6 +200,13 @@ class LLMRouter:
                         )
                 else:
                     raise
+
+        # Warn on truncation (finish_reason MAX_TOKENS=2) — thinking tokens can eat the budget on 2.5+/3.x models
+        try:
+            if response and response.candidates and int(response.candidates[0].finish_reason) == 2:
+                logger.warning(f"[Gemini] Output TRUNCATED (MAX_TOKENS) on {model_name}. Increase max_tokens.")
+        except Exception:
+            pass
 
         # Handle blocked/truncated responses gracefully
         try:
@@ -274,6 +322,26 @@ class LLMRouter:
             resp.raise_for_status()
             return resp.json()["response"]
 
+    # ── NVIDIA / Minimax ───────────────────────────────────────────────────────
+
+    async def _call_nvidia(self, prompt: str, system=None, model="minimaxai/minimax-m3", max_tokens=4096, temperature=0.7, **_) -> str:
+        if not self.nvidia_key:
+            raise RuntimeError("NVIDIA_API_KEY not configured. Go to Settings -> LLM Providers and paste your NVIDIA API key.")
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=self.nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
+
+        model_name = model if "/" in model else "minimaxai/minimax-m3"
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        resp = await client.chat.completions.create(
+            model=model_name, messages=messages,
+            max_tokens=max_tokens, temperature=temperature
+        )
+        return resp.choices[0].message.content
+
     def available_providers(self) -> List[str]:
         """Return list of providers that have credentials configured."""
         providers = []
@@ -287,5 +355,7 @@ class LLMRouter:
             providers.append("openrouter")
         if self.together_key:
             providers.append("together")
+        if self.nvidia_key:
+            providers.append("nvidia")
         providers.append("ollama")  # Always show local as option
         return providers
