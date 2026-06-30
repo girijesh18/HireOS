@@ -5,11 +5,40 @@ import SmartSearchBar from '../components/SmartSearchBar'
 const STATUSES = ['found','analyzing','pending','approved','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
 const BADGE_EMOJI = { found:'🔍', analyzing:'🤖', pending:'⏳', approved:'✅', applied:'📤', screening:'📞', interview_1:'🎤', interview_2:'🎤', offer:'🎉', rejected:'❌', withdrawn:'↩️' }
 
+const LLM_OPTIONS = [
+  { value:'gemini-3.5-flash', label:'Gemini 3.5 Flash (Fastest · New)' },
+  { value:'gemini-3.1-pro-preview', label:'Gemini 3.1 Pro Preview (Most Capable)' },
+  { value:'gemini-3-flash-preview', label:'Gemini 3 Flash Preview' },
+  { value:'gemini-3.1-flash-lite', label:'Gemini 3.1 Flash Lite' },
+  { value:'gemini-2.5-flash', label:'Gemini 2.5 Flash (Recommended)' },
+  { value:'gemini-2.5-flash-lite', label:'Gemini 2.5 Flash Lite' },
+  { value:'gemini-2.5-pro', label:'Gemini 2.5 Pro' },
+  { value:'gemini-2.0-flash', label:'Gemini 2.0 Flash' },
+  { value:'gemini-2.0-flash-lite', label:'Gemini 2.0 Flash Lite' },
+  { value:'groq', label:'Groq (Llama 3 · Fast)' },
+  { value:'openrouter', label:'OpenRouter (Free)' },
+  { value:'nvidia', label:'NVIDIA (MiniMax-M3)' },
+  { value:'claude', label:'Claude Sonnet (Anthropic)' },
+  { value:'ollama', label:'Ollama (Local)' },
+]
+
 export default function JobList({ onOpenJob }) {
   const [jobs, setJobs] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState({ status: '', platform: '', starred: '', remote: '' })
+  const [activeProviders, setActiveProviders] = useState([])
+  const [globalModel, setGlobalModel] = useState(localStorage.getItem('preferredLlm') || 'gemini-2.5-flash')
+
+  useEffect(() => {
+    api.getProviders().then(setActiveProviders).catch(() => {})
+  }, [])
+
+  const handleModelChange = (e) => {
+    const val = e.target.value;
+    setGlobalModel(val);
+    localStorage.setItem('preferredLlm', val);
+  }
 
   // Load jobs -- uses search endpoint when query is set, otherwise list
   const loadJobs = useCallback(async (q = searchQuery, filters = filter) => {
@@ -97,6 +126,14 @@ export default function JobList({ onOpenJob }) {
           <select style={{ width:120 }} value={filter.starred} onChange={e => handleFilterChange('starred', e.target.value)}>
             <option value="">All Jobs</option>
             <option value="true">Starred Only</option>
+          </select>
+          <select style={{ width:160, background: 'var(--surface-hover)', border: '1px solid var(--primary)' }} value={globalModel} onChange={handleModelChange}>
+            {LLM_OPTIONS.map(l => {
+              const isFunctional = activeProviders.some(p => l.value === p || l.value.startsWith(p + '-'));
+              return <option key={l.value} value={l.value} disabled={!isFunctional} style={{ color: isFunctional ? 'inherit' : 'var(--fg-subtle)' }}>
+                {l.label} {!isFunctional && '(Unavailable)'}
+              </option>
+            })}
           </select>
           <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:'0.5rem' }}>
             <span style={{ fontSize:'0.8rem', color:'var(--fg-subtle)' }}>
