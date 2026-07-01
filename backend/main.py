@@ -1419,6 +1419,77 @@ def get_resume_status(job_id: int, db: Session = Depends(get_db), current_user: 
         return {"status": "failed", "error": task.error_message}
     return {"status": "none"}
 
+@app.post("/api/agent/resume/chat")
+async def resume_chat(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    job_id = payload.get("job_id")
+    current_md = payload.get("current_md")
+    instruction = payload.get("instruction")
+    llm = payload.get("llm", "gemini")
+    
+    if not job_id or not current_md or not instruction:
+        raise HTTPException(status_code=400, detail="Missing required fields: job_id, current_md, instruction")
+        
+    get_owned_job(db, job_id, current_user)
+    agent = get_agent("resume", db, current_user.id)
+    
+    try:
+        updated_md = await agent.chat_edit(current_md, instruction, llm=llm)
+        return {"updated_md": updated_md}
+    except Exception as e:
+        logger.error(f"[ResumeChat] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/agent/resume/{job_id}/save")
+async def save_chat_resume(
+    job_id: int,
+    payload: Dict[str, Any],
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Saves the final chat-edited markdown to the DB and generates the PDF."""
+    job = get_owned_job(db, job_id, current_user)
+    final_md = payload.get("final_md")
+    llm = payload.get("llm", "chat-editor")
+    if not final_md:
+        raise HTTPException(status_code=400, detail="Missing final_md")
+        
+    def _save_pdf():
+        import json as _json
+        db_session = SessionLocal()
+        try:
+            from doc_generator import save_resume
+            latest = db_session.query(ResumeVersion).filter_by(job_id=job_id).order_by(ResumeVersion.version.desc()).first()
+            version = 1 if not latest else latest.version + 1
+            
+            pdf_style_row = db_session.query(Settings).filter(Settings.key == "resume_pdf_style", Settings.user_id == current_user.id).first()
+            pdf_style = {}
+            if pdf_style_row and pdf_style_row.value:
+                try:
+                    pdf_style = _json.loads(pdf_style_row.value)
+                except:
+                    pass
+                    
+            pdf_path, docx_path = save_resume(job_id, version, final_md, pdf_style)
+            
+            rv = ResumeVersion(
+                job_id=job_id, version=version, content_md=final_md,
+                pdf_path=pdf_path, docx_path=docx_path, llm_used=llm
+            )
+            db_session.add(rv)
+            db_session.commit()
+            
+            _log_event(db_session, job_id, "document_generated",
+                       f"Resume v{version} saved via Chat Editor",
+                       f"Saved by user", source="user", user_id=current_user.id)
+        except Exception as e:
+            logger.error(f"[ResumeChatSave] Failed to save chat resume: {e}")
+        finally:
+            db_session.close()
+
+    background_tasks.add_task(_save_pdf)
+    return {"status": "saving"}
+
 
 # ── Agent: Generate Cover Letter ───────────────────────────────────────────────
 

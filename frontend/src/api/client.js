@@ -89,6 +89,8 @@ export const api = {
   // Resumes / Cover Letters
   getResumes: (jobId) => req('GET', `/jobs/${jobId}/resumes`),
   getCoverLetters: (jobId) => req('GET', `/jobs/${jobId}/cover-letters`),
+  resumeChat: (data) => req('POST', '/agent/resume/chat', data),
+  resumeSave: (jobId, data) => req('POST', `/agent/resume/${jobId}/save`, data),
 
   // Settings
   getSettings: () => req('GET', '/settings'),

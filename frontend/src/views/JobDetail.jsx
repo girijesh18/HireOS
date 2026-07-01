@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { api } from '../api/client'
+import ResumeEditor from '../components/ResumeEditor'
 
 const JOB_TABS = ['overview', 'evaluation', 'gap analysis', 'interview prep', 'linkedin', 'research', 'documents', 'timeline', 'compare']
 
@@ -100,6 +101,7 @@ export default function JobDetail({ jobId }) {
   const [compareTask, setCompareTask] = useState('resume')
   const [toast, setToast] = useState(null)
   const [trackUrl, setTrackUrl] = useState('')
+  const [editingResume, setEditingResume] = useState(null)
   // Career-ops enhanced state
   const [evalReport, setEvalReport] = useState(null)
   const [linkedInData, setLinkedInData] = useState(null)
@@ -362,6 +364,15 @@ export default function JobDetail({ jobId }) {
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:'1.25rem' }}>
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      {editingResume && (
+        <ResumeEditor 
+          jobId={job.id} 
+          initialMarkdown={editingResume.content_md} 
+          llm={selectedLlm}
+          onSave={() => { setEditingResume(null); load(); }}
+          onClose={() => setEditingResume(null)}
+        />
+      )}
 
       {/* Header Card */}
       <div className="panel" style={{ padding:'1.5rem' }}>
@@ -972,6 +983,7 @@ export default function JobDetail({ jobId }) {
                     <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)' }}>{r.llm_used} • {new Date(r.created_at).toLocaleString()}</div>
                   </div>
                   <div className="flex gap-sm">
+                    {r.content_md && <button className="btn btn-primary btn-sm" onClick={() => setEditingResume(r)}>💬 Edit</button>}
                     {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.pdf`)}>⬇ PDF</button>}
                     {r.docx_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.docx`)}>⬇ DOCX</button>}
                   </div>

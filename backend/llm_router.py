@@ -139,6 +139,47 @@ class LLMRouter:
             "latency_ms": round((time.monotonic() - t0) * 1000),
         }
 
+    async def structured_complete(
+        self,
+        prompt: str,
+        response_model: Any,
+        llm: str = "gemini",
+        system: Optional[str] = None,
+        max_retries: int = 2,
+        temperature: float = 0.1
+    ) -> Any:
+        """
+        Forces the LLM to return valid JSON matching the Pydantic response_model.
+        Uses a self-healing retry loop if the output fails validation.
+        """
+        schema_json = response_model.model_json_schema()
+        schema_prompt = f"\n\nYou MUST return valid JSON. Your JSON must strictly adhere to the following schema:\n{json.dumps(schema_json, indent=2)}\n\nDo NOT wrap your response in markdown code blocks. Start directly with {{."
+        
+        current_prompt = prompt + schema_prompt
+        
+        for attempt in range(max_retries + 1):
+            text = await self.complete(current_prompt, llm=llm, system=system, temperature=temperature)
+            
+            text = text.strip()
+            for fence in ("```json", "```", "```md"):
+                if text.startswith(fence):
+                    text = text[len(fence):]
+                    if text.endswith("```"):
+                        text = text[:-3]
+                    text = text.strip()
+                    break
+            
+            try:
+                parsed_dict = json.loads(text)
+                return response_model(**parsed_dict)
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error(f"[Self-Healing Failed] LLM failed to match schema after {max_retries} retries. Last error: {str(e)}")
+                    raise ValueError(f"Failed to generate structured output: {e}")
+                
+                logger.warning(f"[Self-Healing] Attempt {attempt+1} failed. Prompting LLM to fix its mistake: {str(e)}")
+                current_prompt += f"\n\nYOUR PREVIOUS OUTPUT FAILED VALIDATION WITH THIS ERROR:\n{str(e)}\n\nPlease fix the JSON and return ONLY the corrected JSON string matching the schema."
+
     # ── Gemini ────────────────────────────────────────────────────────────────
 
     async def _call_gemini(self, prompt: str, system=None, model="gemini", max_tokens=4096, temperature=0.7, **_) -> str:

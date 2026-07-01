@@ -641,6 +641,27 @@ CRITICAL formatting rules (breaking these corrupts the PDF):
         header = f"# {name}\n{' | '.join(contact_parts)}" if name else ""
         return (header + '\n\n' + body).strip() if header else body
 
+    async def chat_edit(self, current_resume_md: str, instruction: str, llm: str = "gemini") -> str:
+        """Applies a human instruction to an existing generated resume (Live Chat Editor)."""
+        prompt = f"""You are an elite executive resume editor. 
+The user wants to modify this exact resume based on the following instruction.
+
+INSTRUCTION: {instruction}
+
+CURRENT RESUME:
+{current_resume_md}
+
+Apply the requested changes. 
+CRITICAL RULES:
+1. Keep all markdown formatting EXACTLY as it is (## Headers, ### Company || Date, **Job Title**, *Role*).
+2. Do not hallucinate or invent new companies/dates.
+3. Return ONLY the updated markdown resume. No preamble, no explanation, no markdown fences. Start immediately with the first # or ##."""
+        
+        raw = await self.router.complete(
+            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=16000
+        )
+        return _strip_code_fences(raw)
+
     async def validate_design(
         self,
         resume_md: str,
@@ -774,7 +795,17 @@ class ChatDispatcherAgent:
         llm: str = "gemini",
         conversation_history: Optional[List[Dict]] = None,
     ) -> Dict:
-        """Parse user intent and return an action dict."""
+        """Parse user intent and return an action dict using Pydantic Self-Healing outputs."""
+        from pydantic import BaseModel, Field
+        from typing import Optional, Dict, Any
+
+        class DispatchAction(BaseModel):
+            action: str = Field(..., description="The intended action mapping (e.g. 'track_job', 'analyze_job', 'general_reply')")
+            url: Optional[str] = Field(None, description="The URL if applicable")
+            job_id: Optional[int] = Field(None, description="The internal Job ID if mentioned in context")
+            text: Optional[str] = Field(None, description="The general text reply to the user if action is 'general_reply'")
+            params: Optional[Dict[str, Any]] = Field(None, description="Any additional arbitrary parameters")
+
         context_str = ""
         if context:
             context_str = f"\nCurrent context: {json.dumps(context)}"
@@ -788,13 +819,20 @@ class ChatDispatcherAgent:
 
         prompt = f"""User message: "{message}"{context_str}{history_str}
 
-Determine the user's intent and return the appropriate action JSON."""
+Determine the user's intent and return the appropriate action."""
 
         try:
-            text = await self.router.complete(prompt, llm=llm, system=SYSTEM_CHAT_DISPATCHER, temperature=0.2)
-            return _parse_json(text)
+            # Replaces brittle _parse_json with robust self-healing validation loop
+            action_obj = await self.router.structured_complete(
+                prompt,
+                response_model=DispatchAction,
+                llm=llm,
+                system=SYSTEM_CHAT_DISPATCHER,
+                temperature=0.2
+            )
+            return action_obj.model_dump()
         except Exception as e:
-            logger.warning(f"[ChatDispatcher] Parse failed: {e}")
+            logger.warning(f"[ChatDispatcher] Structured parsing failed: {e}")
             return {"action": "general_reply", "text": "I'm not sure what you meant — could you rephrase?"}
 
     async def generate_reply(self, action_result: Any, original_message: str, llm: str = "gemini") -> str:
