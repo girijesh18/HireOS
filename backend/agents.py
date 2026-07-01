@@ -208,27 +208,12 @@ class JobDiscoveryAgent:
     def __init__(self, router: LLMRouter):
         self.router = router
 
-    async def analyze_url(self, url: str, llm: str = "gemini", captcha_key: str = None, proxy_url: str = None) -> Dict:
-        """Fetch a job posting URL and extract structured data."""
-        # Normalize LinkedIn collection URLs → direct job view URLs
-        url = self._normalize_linkedin_url(url)
-        logger.info(f"[JobDiscovery] Fetching {url}")
-        raw_text = await self._fetch_page(url, captcha_key=captcha_key, proxy_url=proxy_url)
-        return await self.analyze_text(raw_text, url=url, llm=llm)
-
-    def _normalize_linkedin_url(self, url: str) -> str:
-        """Convert LinkedIn collection/recommended URLs to direct job view URL."""
-        import re
-        # Handle: /jobs/collections/recommended/?currentJobId=1234
-        # Handle: /jobs/search/?currentJobId=1234  
-        match = re.search(r'currentJobId=(\d+)', url)
-        if match:
-            job_id = match.group(1)
-            return f"https://www.linkedin.com/jobs/view/{job_id}/"
-        return url
-
     async def analyze_text(self, jd_text: str, url: str = "", llm: str = "gemini") -> Dict:
-        """Extract structured job data from raw JD text."""
+        """Extract structured job data from raw JD text (fallback if no url)."""
+        # If url is provided, use the CrewAI Tool-calling implementation
+        if url:
+            return await self.analyze_url(url, llm=llm)
+
         prompt = f"""Extract structured information from this job posting.
 
 Job Posting:
@@ -255,6 +240,94 @@ Return JSON with these exact fields:
         data = _parse_json(text)
         if url:
             data["url"] = url
+        return data
+
+    async def analyze_url(self, url: str, llm: str = "gemini", captcha_key: str = None, proxy_url: str = None) -> Dict:
+        """Fetch a job posting URL and extract structured data using CrewAI and Native Tools."""
+        url = self._normalize_linkedin_url(url)
+        logger.info(f"[JobDiscovery] Analyzing {url} with CrewAI")
+
+        import asyncio
+        import threading
+        from crewai import Agent, Task, Crew, Process
+        from crewai.tools import tool
+
+        # 1. Provide the Scraper as a native tool for the LLM
+        @tool("Web Scraper")
+        def web_scraper(target_url: str) -> str:
+            """Useful for scraping and extracting text from any URL. Input must be a valid http URL."""
+            result = ["Error fetching page"]
+            def _fetch():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                # Call our robust existing fetch logic
+                res = new_loop.run_until_complete(self._fetch_page(target_url, captcha_key, proxy_url))
+                result[0] = res[:15000] # Cap to prevent context blowouts
+                new_loop.close()
+            t = threading.Thread(target=_fetch)
+            t.start()
+            t.join()
+            return result[0]
+
+        # 2. Configure CrewAI
+        if self.router.gemini_key:
+            os.environ["GEMINI_API_KEY"] = self.router.gemini_key
+            
+        crew_llm = "gemini/gemini-1.5-pro" if "gemini" in llm else "gpt-4o-mini"
+
+        # 3. Create the Autonomous Agent
+        hunter_agent = Agent(
+            role="Principal AI Job Discovery Researcher",
+            goal="Navigate to the provided URL, read the job description, and extract precisely structured JSON data.",
+            backstory="You are an elite web-research agent. You autonomously use the Web Scraper tool to read URLs and then synthesize the raw text into clean, structured data.",
+            tools=[web_scraper],
+            llm=crew_llm,
+            verbose=True,
+            allow_delegation=False
+        )
+
+        # 4. Define the Task
+        extract_task = Task(
+            description=f"""Use the Web Scraper tool to fetch the contents of this URL: {url}
+            
+            Once you have the text, extract the following structured information into a valid JSON object:
+            - company
+            - title
+            - location
+            - remote (boolean)
+            - salary_min (integer or null)
+            - salary_max (integer or null)
+            - platform
+            - listed_at
+            - recruiter_name
+            - recruiter_email
+            - job_description (The full JD organized with markdown bullet points)
+            - tech_stack (list of strings)
+            - seniority
+            - url (must be exactly: {url})
+            
+            Return ONLY the raw JSON string without markdown code fences.""",
+            expected_output="A valid JSON string containing the extracted job details.",
+            agent=hunter_agent
+        )
+
+        crew = Crew(
+            agents=[hunter_agent],
+            tasks=[extract_task],
+            process=Process.sequential,
+            verbose=False
+        )
+
+        # Execute synchronously in an executor since CrewAI kickoff is blocking
+        loop = asyncio.get_running_loop()
+        def _run_crew():
+            return crew.kickoff()
+        crew_result = await loop.run_in_executor(None, _run_crew)
+        
+        output_str = str(crew_result.raw if hasattr(crew_result, 'raw') else crew_result)
+        
+        data = _parse_json(output_str)
+        data["url"] = url
         return data
 
     async def _fetch_page(self, url: str, captcha_key: str = None, proxy_url: str = None) -> str:
