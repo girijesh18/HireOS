@@ -28,6 +28,11 @@ RUN playwright install --with-deps chromium
 # Backend source
 COPY backend/ ./
 
+# Isolated venv for the vendored hiring-agent ATS scorer (its pinned deps must
+# not clash with the backend's). ats_score.py invokes hiring_agent/.venv/bin/python.
+RUN python -m venv hiring_agent/.venv \
+    && hiring_agent/.venv/bin/pip install --no-cache-dir -r hiring_agent/requirements.txt
+
 # Built React frontend served as static files by FastAPI
 COPY --from=frontend-build /frontend/dist ./static
 
