@@ -286,7 +286,7 @@ class LLMRouter:
         if not self.openrouter_key:
             raise RuntimeError("OPENROUTER_API_KEY not configured.")
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=self.openrouter_key, base_url="https://openrouter.ai/api/v1")
+        client = AsyncOpenAI(api_key=self.openrouter_key, base_url="https://openrouter.ai/api/v1", timeout=90.0, max_retries=1)
 
         model_name = "meta-llama/llama-3.3-70b-instruct:free"
         messages = []
@@ -306,7 +306,7 @@ class LLMRouter:
         if not self.together_key:
             raise RuntimeError("TOGETHER_API_KEY not configured.")
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=self.together_key, base_url="https://api.together.xyz/v1")
+        client = AsyncOpenAI(api_key=self.together_key, base_url="https://api.together.xyz/v1", timeout=90.0, max_retries=1)
 
         model_name = "meta-llama/Llama-3-70b-chat-hf"
         messages = []
@@ -369,7 +369,13 @@ class LLMRouter:
         if not self.nvidia_key:
             raise RuntimeError("NVIDIA_API_KEY not configured. Go to Settings -> LLM Providers and paste your NVIDIA API key.")
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=self.nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
+        # ponytail: hard 90s cap + no retries so a slow/hung MiniMax response fails
+        # fast instead of blocking the request for the SDK-default 10 minutes.
+        client = AsyncOpenAI(
+            api_key=self.nvidia_key,
+            base_url="https://integrate.api.nvidia.com/v1",
+            timeout=90.0, max_retries=1,
+        )
 
         model_name = model if "/" in model else "minimaxai/minimax-m3"
         messages = []
