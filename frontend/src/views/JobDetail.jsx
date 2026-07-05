@@ -1038,7 +1038,12 @@ export default function JobDetail({ jobId }) {
                       </details>
                     )}
                   </div>
-                  <div className="flex gap-sm">
+                  <div className="flex gap-sm" style={{ alignItems:'center' }}>
+                    {r.llm_used && (
+                      <span title="Model used to generate this resume" style={{ fontSize:'0.7rem', color:'var(--fg-muted)', background:'var(--surface-3, var(--surface-hover))', border:'1px solid var(--surface-border)', padding:'2px 8px', borderRadius:'999px', whiteSpace:'nowrap' }}>
+                        🧠 {r.llm_used}
+                      </span>
+                    )}
                     {r.content_md && <button className="btn btn-primary btn-sm" onClick={() => setEditingResume(r)}>💬 Edit</button>}
                     {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.pdf`)}>⬇ PDF</button>}
                     {r.docx_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.docx`)}>⬇ DOCX</button>}
