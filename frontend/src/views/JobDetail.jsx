@@ -287,11 +287,11 @@ export default function JobDetail({ jobId }) {
     try {
       setLoading(p => ({ ...p, analyze:true, evaluate:true, research:true, linkedin:true, interviewPrep:true }))
       showToast('🚀 Auto-Pilot Engaged! Agents are working in parallel.')
-      api.analyzeJob(jobId, { llm: selectedLlm }).catch(() => {})
-      api.evaluateJob(jobId, { llm: selectedLlm }).catch(() => {})
-      api.runDeepResearch(jobId, { llm: selectedLlm }).catch(() => {})
-      api.runLinkedIn(jobId, { llm: selectedLlm }).catch(() => {})
-      api.runInterviewPrep(jobId, { llm: selectedLlm }).catch(() => {})
+      api.analyzeJob(jobId, selectedLlm).catch(() => {})
+      api.evaluateJob(jobId, selectedLlm).catch(() => {})
+      api.deepResearch(jobId, selectedLlm).catch(() => {})
+      api.generateLinkedIn(jobId, 'hiring_manager', selectedLlm).catch(() => {})
+      api.interviewPrep(jobId, selectedLlm).catch(() => {})
       setActiveTab('intelligence')
     } catch(e) { showToast(e.message, 'error') }
   }
