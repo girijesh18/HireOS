@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api } from '../api/client';
 
@@ -8,6 +8,20 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [history, setHistory] = useState([]);
+  const [pdfStyle, setPdfStyle] = useState({});
+
+  // Load the user's PDF style so this preview matches the generated PDF exactly.
+  useEffect(() => {
+    api.getSettings()
+      .then(s => { try { setPdfStyle(JSON.parse(s.resume_pdf_style || '{}')) } catch {} })
+      .catch(() => {});
+  }, []);
+
+  // Mirror doc_generator._resume_md_to_html defaults.
+  const fontFamily = pdfStyle.fontFamily || 'Cambria, Georgia, serif';
+  const fs = parseFloat(pdfStyle.fontSize || '10.5');          // base pt
+  const sectionColor = pdfStyle.sectionColor || '#2E74B5';
+  const pt = n => `${n}pt`;
 
   const handleSend = async () => {
     if (!instruction.trim()) return;
@@ -101,46 +115,42 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
           </div>
         </div>
         
-        {/* Right Pane: Live Rendered Resume */}
+        {/* Right Pane: Live Rendered Resume — mirrors the generated PDF's CSS */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '2rem', backgroundColor: 'var(--bg-2)' }}>
-          <div style={{ 
-            maxWidth: '850px', margin: '0 auto', fontFamily: 'Cambria, Georgia, serif', 
-            backgroundColor: '#fff', color: '#222', padding: '40px 60px',
+          <div style={{
+            maxWidth: '850px', margin: '0 auto', fontFamily,
+            backgroundColor: '#fff', color: '#111', padding: '40px 60px',
             boxShadow: '0 12px 40px rgba(0,0,0,0.15)', borderRadius: '4px',
-            minHeight: '1000px', lineHeight: '1.4'
+            minHeight: '1000px', lineHeight: '1.45', fontSize: pt(fs)
           }}>
             <ReactMarkdown
               components={{
-                h1: ({node, ...props}) => <h1 style={{ textAlign: 'center', fontSize: '26pt', margin: '0 0 0.25rem 0', fontWeight: 'bold' }} {...props} />,
-                h2: ({node, ...props}) => <h2 style={{ fontSize: '13pt', borderBottom: '1px solid #000', paddingBottom: '0.1rem', margin: '1.25rem 0 0.5rem 0', color: '#000', textTransform: 'uppercase', letterSpacing: '1px' }} {...props} />,
+                h1: ({node, ...props}) => <h1 style={{ textAlign: 'center', fontSize: pt(fs + 10), margin: '0 0 4px 0', fontWeight: 700, color: '#000' }} {...props} />,
+                h2: ({node, ...props}) => <h2 style={{ fontSize: pt(fs), fontWeight: 700, color: sectionColor, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1.5px solid ${sectionColor}`, paddingBottom: 2, margin: '12px 0 5px 0' }} {...props} />,
                 h3: ({node, ...props}) => {
                   const txt = props.children?.toString() || '';
                   if (txt.includes('||')) {
                     const [left, right] = txt.split('||');
                     return (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', marginBottom: '0.2rem', fontWeight: 'bold' }}>
-                        <span style={{ fontSize: '11pt', color: '#000' }}>{left.trim()}</span>
-                        <span style={{ fontSize: '10pt', color: '#000', fontWeight: 'normal' }}>{right.trim()}</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: '7px', marginBottom: '1px' }}>
+                        <span style={{ fontSize: pt(fs), color: '#000', fontWeight: 700 }}>{left.trim()}</span>
+                        <span style={{ fontSize: pt(fs - 1), color: '#333', fontStyle: 'italic' }}>{right.trim()}</span>
                       </div>
                     );
                   }
-                  return <h3 style={{ fontSize: '11pt', marginTop: '0.75rem', marginBottom: '0.2rem', color: '#000' }} {...props} />;
+                  return <h3 style={{ fontSize: pt(fs), marginTop: '7px', marginBottom: '1px', color: '#000', fontWeight: 700 }} {...props} />;
                 },
                 p: ({node, ...props}) => {
                   const txt = props.children?.toString() || '';
                   if (txt.includes(' | ')) {
-                    return <p style={{ textAlign: 'center', fontSize: '9.5pt', margin: '0 0 1.25rem 0', color: '#444' }} {...props} />;
+                    return <p style={{ textAlign: 'center', fontSize: pt(fs - 1), margin: '0 0 10px 0', color: '#444' }} {...props} />;
                   }
-                  // Job description italics line
-                  if (node.children.length === 1 && node.children[0].type === 'element' && node.children[0].tagName === 'em') {
-                    return <p style={{ margin: '0 0 0.25rem 0', fontSize: '10pt' }} {...props} />;
-                  }
-                  return <p style={{ margin: '0.25rem 0', fontSize: '10pt' }} {...props} />;
+                  return <p style={{ margin: '3px 0', fontSize: pt(fs), color: '#111' }} {...props} />;
                 },
-                ul: ({node, ...props}) => <ul style={{ margin: '0.25rem 0 0 1.5rem', padding: 0 }} {...props} />,
-                li: ({node, ...props}) => <li style={{ margin: '0.25rem 0', fontSize: '10pt', color: '#222' }} {...props} />,
-                strong: ({node, ...props}) => <strong style={{ fontWeight: 600, color: '#000' }} {...props} />,
-                em: ({node, ...props}) => <em style={{ fontStyle: 'italic', color: '#333' }} {...props} />
+                ul: ({node, ...props}) => <ul style={{ margin: '3px 0 5px 18px', padding: 0 }} {...props} />,
+                li: ({node, ...props}) => <li style={{ marginBottom: '2px', fontSize: pt(fs - 0.5), color: '#111' }} {...props} />,
+                strong: ({node, ...props}) => <strong style={{ fontWeight: 700 }} {...props} />,
+                em: ({node, ...props}) => <em style={{ fontStyle: 'italic' }} {...props} />
               }}
             >
               {markdown}
