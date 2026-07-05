@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../api/client'
+import { setCustomNvidiaModels } from '../llmOptions'
 
 const LLM_PROVIDERS = [
   { key:'gemini_api_key', label:'Gemini API Key', provider:'Google Gemini', placeholder:'AIza...' },
@@ -58,6 +59,9 @@ export default function Settings() {
   const [newTextContent, setNewTextContent] = useState('')
   const [isAddingText, setIsAddingText] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [nvModels, setNvModels] = useState([])   // custom NVIDIA models: {id, label}
+  const [nvId, setNvId] = useState('')
+  const [nvLabel, setNvLabel] = useState('')
 
   useEffect(() => {
     Promise.all([
@@ -71,6 +75,11 @@ export default function Settings() {
       if (s.resume_pdf_style) {
         try { setPdfStyle({ ...DEFAULT_PDF_STYLE, ...JSON.parse(s.resume_pdf_style) }) } catch {}
       }
+      try {
+        const m = JSON.parse(s.custom_nvidia_models || '[]');
+        setNvModels(m);
+        setCustomNvidiaModels(m);   // mirror to localStorage for the model dropdowns
+      } catch {}
     }).catch(err => {
       console.error("Failed to load settings:", err);
     }).finally(() => setLoading(false))
@@ -151,6 +160,19 @@ export default function Settings() {
       alert("Migration failed: " + err.message)
     }
   }
+
+  const syncNvModels = (list) => {
+    setNvModels(list)
+    setCustomNvidiaModels(list)                                              // localStorage → model dropdowns
+    setValues(v => ({ ...v, custom_nvidia_models: JSON.stringify(list) }))   // persisted on Save
+  }
+  const addNvModel = () => {
+    const id = nvId.trim()
+    if (!id || nvModels.some(m => m.id === id)) { setNvId(''); return }
+    syncNvModels([...nvModels, { id, label: nvLabel.trim() || id }])
+    setNvId(''); setNvLabel('')
+  }
+  const removeNvModel = (id) => syncNvModels(nvModels.filter(m => m.id !== id))
 
   const Field = ({ f }) => (
     <div className="form-group" key={f.key}>
@@ -437,6 +459,45 @@ export default function Settings() {
                 fields={[LLM_PROVIDERS[3], LLM_PROVIDERS[4]]}
                 icon="🏠"
               />
+
+              <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem' }}>
+                <div className="flex items-center gap-sm">
+                  <span style={{ fontSize:'1.25rem' }}>⚡</span>
+                  <div>
+                    <h3 style={{ fontSize:'1rem' }}>Custom NVIDIA Models</h3>
+                    <p style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginTop:4 }}>
+                      Add any model id from <strong>build.nvidia.com</strong> (e.g. <code>meta/llama-3.1-405b-instruct</code>).
+                      Uses your NVIDIA API key above. They appear in the model dropdowns; click <strong>Save Settings</strong> to persist.
+                    </p>
+                  </div>
+                </div>
+
+                {nvModels.length > 0 && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
+                    {nvModels.map(m => (
+                      <div key={m.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'0.5rem 0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)' }}>
+                        <div>
+                          <div style={{ fontWeight:600, fontSize:'0.85rem' }}>{m.label}</div>
+                          <div style={{ fontSize:'0.72rem', color:'var(--fg-muted)' }}>{m.id}</div>
+                        </div>
+                        <button className="btn btn-ghost btn-sm" onClick={() => removeNvModel(m.id)}>Remove</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="form-grid">
+                  <div className="form-group">
+                    <label className="form-label">Model ID</label>
+                    <input value={nvId} onChange={e => setNvId(e.target.value)} placeholder="meta/llama-3.1-405b-instruct" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Display Name (optional)</label>
+                    <input value={nvLabel} onChange={e => setNvLabel(e.target.value)} placeholder="Llama 3.1 405B" />
+                  </div>
+                </div>
+                <div><button className="btn btn-outline btn-sm" onClick={addNvModel}>+ Add Model</button></div>
+              </div>
             </div>
           )}
 

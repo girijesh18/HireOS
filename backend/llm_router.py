@@ -97,14 +97,22 @@ class LLMRouter:
         temperature: float = 0.7,
     ) -> str:
         """Call a single LLM and return the text response."""
-        provider = llm.lower().split("-")[0]  # "gemini-1.5-pro" → "gemini"
+        # "provider:model-id" selects a specific model, e.g.
+        # "nvidia:meta/llama-3.1-405b-instruct" from build.nvidia.com.
+        # Bare "gemini-1.5-pro" → provider "gemini", model = whole string.
+        if ":" in llm:
+            provider, model = llm.split(":", 1)
+            provider = provider.lower()
+        else:
+            provider = llm.lower().split("-")[0]
+            model = llm
         method_name = self.PROVIDER_MAP.get(provider)
         if not method_name:
             raise ValueError(f"Unknown LLM provider: {llm}")
         method = getattr(self, method_name)
         logger.info(f"[LLMRouter] → {llm}")
         t0 = time.monotonic()
-        result = await method(prompt, system=system, model=llm, max_tokens=max_tokens, temperature=temperature)
+        result = await method(prompt, system=system, model=model, max_tokens=max_tokens, temperature=temperature)
         elapsed = round(time.monotonic() - t0, 2)
         logger.info(f"[LLMRouter] ← {llm} ({elapsed}s, {len(result)} chars)")
         return result
