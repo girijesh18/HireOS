@@ -36,5 +36,9 @@ Thumbs.db
 # ChromaDB data
 **/chroma/
 
+# Vendored hiring-agent scorer runtime artifacts
+backend/hiring_agent/cache/
+backend/hiring_agent/resume_evaluations.csv
+
 # Local deployment docs
 DEPLOYMENT_INFO.md

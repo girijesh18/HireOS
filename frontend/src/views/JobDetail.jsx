@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react'
 import { api } from '../api/client'
 import ResumeEditor from '../components/ResumeEditor'
 
-const JOB_TABS = ['overview', 'evaluation', 'gap analysis', 'interview prep', 'linkedin', 'research', 'documents', 'timeline', 'compare']
+const JOB_TABS = ['dashboard', 'intelligence', 'documents']
 
 // Persist the active tab in the URL hash (#/job/<id>/<tab-slug>) so refresh keeps the tab.
 const tabToSlug = (t) => t.replace(/ /g, '-')
@@ -13,7 +13,7 @@ function tabFromHash() {
     const t = slugToTab(parts[2])
     if (JOB_TABS.includes(t)) return t
   }
-  return 'overview'
+  return 'dashboard'
 }
 
 const STATUSES = ['found','analyzing','pending','approved','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
@@ -77,6 +77,28 @@ function Toast({ message, type = 'success', onClose }) {
   )
 }
 
+function InlineNameEdit({ initialValue, defaultLabel, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState(initialValue || '')
+  if (editing) {
+    return (
+      <input 
+        autoFocus
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onBlur={() => { setEditing(false); if(val !== initialValue) onSave(val); }}
+        onKeyDown={e => { if(e.key === 'Enter') e.target.blur(); }}
+        style={{ fontSize:'0.875rem', padding:'2px 6px', border:'1px solid var(--primary)', borderRadius:'4px', background:'var(--bg)', color:'var(--fg)' }}
+      />
+    )
+  }
+  return (
+    <div style={{ fontWeight:600, fontSize:'0.875rem', cursor:'pointer', display:'inline-block' }} onClick={() => { setVal(initialValue || ''); setEditing(true); }} title="Click to rename">
+      {initialValue || defaultLabel} <span style={{ opacity:0.5, fontSize:'0.75rem', marginLeft:4 }}>✎</span>
+    </div>
+  )
+}
+
 export default function JobDetail({ jobId }) {
   const [job, setJob] = useState(null)
   const [events, setEvents] = useState([])
@@ -108,11 +130,15 @@ export default function JobDetail({ jobId }) {
   const [researchData, setResearchData] = useState(null)
   const [interviewData, setInterviewData] = useState(null)
   const [expandedBlocks, setExpandedBlocks] = useState({})
+  const [activeProviders, setActiveProviders] = useState([])
 
   // Sync tab when the user uses browser back/forward or edits the hash
   useEffect(() => {
     const onHash = () => setActiveTabState(tabFromHash())
     window.addEventListener('hashchange', onHash)
+    
+    api.getProviders().then(res => setActiveProviders(res.available || [])).catch(() => {})
+    
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
@@ -257,6 +283,19 @@ export default function JobDetail({ jobId }) {
 
   // ── Agent Actions ──────────────────────────────────────────────────────────
 
+  const runAutoPilot = async () => {
+    try {
+      setLoading(p => ({ ...p, analyze:true, evaluate:true, research:true, linkedin:true, interviewPrep:true }))
+      showToast('🚀 Auto-Pilot Engaged! Agents are working in parallel.')
+      api.analyzeJob(jobId, { llm: selectedLlm }).catch(() => {})
+      api.evaluateJob(jobId, { llm: selectedLlm }).catch(() => {})
+      api.runDeepResearch(jobId, { llm: selectedLlm }).catch(() => {})
+      api.runLinkedIn(jobId, { llm: selectedLlm }).catch(() => {})
+      api.runInterviewPrep(jobId, { llm: selectedLlm }).catch(() => {})
+      setActiveTab('intelligence')
+    } catch(e) { showToast(e.message, 'error') }
+  }
+
   const runAnalysis = async () => {
     setLoading(l => ({ ...l, analyze:true }))
     showToast('Started Gap Analysis in the background...')
@@ -397,11 +436,19 @@ export default function JobDetail({ jobId }) {
               {STATUSES.map(s => <option key={s} value={s}>{BADGE_EMOJI[s]} {s.replace('_',' ')}</option>)}
             </select>
             <div className="flex gap-sm">
-              <select value={selectedLlm} onChange={e => setSelectedLlm(e.target.value)} style={{ background:'var(--surface)', border:'1px solid var(--surface-border)', borderRadius:'var(--radius-sm)', padding:'0 0.5rem', fontSize:'0.8rem', color:'var(--fg-muted)', maxWidth: 140 }}>
-                {LLM_OPTIONS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+              <select className="form-select" style={{ maxWidth: 280 }} value={selectedLlm} onChange={e => setSelectedLlm(e.target.value)}>
+                {LLM_OPTIONS.map(l => {
+                  const isFunctional = activeProviders.some(p => l.value === p || l.value.startsWith(p + '-'));
+                  return (
+                    <option key={l.value} value={l.value} disabled={!isFunctional} style={{ color: isFunctional ? 'inherit' : 'var(--fg-subtle)' }}>
+                      {l.label} {!isFunctional && '(Unavailable)'}
+                    </option>
+                  )
+                })}
               </select>
               {job.url && <a href={job.url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">🔗 View Job</a>}
               <button className="btn btn-primary btn-sm" onClick={() => changeStatus('approved')}>🚀 Approve & Apply</button>
+              <button className="btn btn-outline btn-sm" onClick={runAutoPilot} style={{ background:'var(--primary)', color:'white', borderColor:'var(--primary)' }}>✨ Auto-Pilot</button>
             </div>
           </div>
         </div>
@@ -440,7 +487,7 @@ export default function JobDetail({ jobId }) {
       </div>
 
       {/* ── Overview Tab ─────────────────────────────────────────────────── */}
-      {activeTab === 'overview' && (
+      {activeTab === 'dashboard' && (
         <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem' }}>
           <div className="flex justify-between items-center">
             <h3>Overview & Notes</h3>
@@ -516,7 +563,7 @@ export default function JobDetail({ jobId }) {
       )}
 
       {/* ── Evaluation Tab (A-G Blocks) ──────────────────────────────────── */}
-      {activeTab === 'evaluation' && (
+      {activeTab === 'intelligence' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {!evalReport ? (
             <div className="panel" style={{ padding:'2rem', textAlign:'center' }}>
@@ -708,7 +755,7 @@ export default function JobDetail({ jobId }) {
       )}
 
       {/* ── Interview Prep Tab ──────────────────────────────────────────────── */}
-      {activeTab === 'interview prep' && (
+      {activeTab === 'intelligence' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {!interviewData ? (
             <div className="panel" style={{ padding:'2rem', textAlign:'center' }}>
@@ -787,7 +834,7 @@ export default function JobDetail({ jobId }) {
       )}
 
       {/* ── LinkedIn Outreach Tab ───────────────────────────────────────────── */}
-      {activeTab === 'linkedin' && (
+      {activeTab === 'intelligence' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {!linkedInData ? (
             <div className="panel" style={{ padding:'2rem', textAlign:'center' }}>
@@ -839,7 +886,7 @@ export default function JobDetail({ jobId }) {
       )}
 
       {/* ── Deep Research Tab ───────────────────────────────────────────────── */}
-      {activeTab === 'research' && (
+      {activeTab === 'intelligence' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {!researchData ? (
             <div className="panel" style={{ padding:'2rem', textAlign:'center' }}>
@@ -880,7 +927,7 @@ export default function JobDetail({ jobId }) {
       )}
 
       {/* ── Gap Analysis Tab ─────────────────────────────────────────────── */}
-      {activeTab === 'gap analysis' && (
+      {activeTab === 'intelligence' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           <div className="panel" style={{ padding:'1.5rem' }}>
             <div className="flex items-center gap-md" style={{ flexWrap:'wrap' }}>
@@ -979,8 +1026,33 @@ export default function JobDetail({ jobId }) {
               {resumes.map(r => (
                 <div key={r.id} style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                   <div>
-                    <div style={{ fontWeight:600, fontSize:'0.875rem' }}>Resume v{r.version}</div>
-                    <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)' }}>{r.llm_used} • {new Date(r.created_at).toLocaleString()}</div>
+                    <InlineNameEdit 
+                      initialValue={r.name} 
+                      defaultLabel={`Resume v${r.version}`} 
+                      onSave={async (newName) => {
+                        try {
+                          await api.updateResume(job.id, r.id, { name: newName });
+                          load();
+                        } catch(e) { showToast(e.message, 'error'); }
+                      }}
+                    />
+                    <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)', marginTop:4 }}>{r.llm_used} • {new Date(r.created_at).toLocaleString()}</div>
+                    {r.ats_score && r.ats_score.total != null && (
+                      <details style={{ marginTop:6 }}>
+                        <summary style={{ cursor:'pointer', fontSize:'0.8rem', fontWeight:700,
+                          color: r.ats_score.total>=70?'var(--success)':r.ats_score.total>=50?'var(--warning)':'var(--danger)' }}>
+                          🎯 ATS Score: {r.ats_score.total}/100
+                        </summary>
+                        <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)', marginTop:6, lineHeight:1.5 }}>
+                          {r.ats_score.scores && Object.entries(r.ats_score.scores).map(([k,v]) => (
+                            <div key={k}>• {k.replace(/_/g,' ')}: <strong>{v.score}/{v.max}</strong></div>
+                          ))}
+                          {r.ats_score.areas_for_improvement?.length > 0 && (
+                            <div style={{ marginTop:6 }}><strong>Fix:</strong> {r.ats_score.areas_for_improvement.join(' · ')}</div>
+                          )}
+                        </div>
+                      </details>
+                    )}
                   </div>
                   <div className="flex gap-sm">
                     {r.content_md && <button className="btn btn-primary btn-sm" onClick={() => setEditingResume(r)}>💬 Edit</button>}
@@ -999,8 +1071,17 @@ export default function JobDetail({ jobId }) {
               {coverLetters.map(c => (
                 <div key={c.id} style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                   <div>
-                    <div style={{ fontWeight:600, fontSize:'0.875rem' }}>Cover Letter v{c.version}</div>
-                    <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)' }}>{c.llm_used} • {new Date(c.created_at).toLocaleString()}</div>
+                    <InlineNameEdit 
+                      initialValue={c.name} 
+                      defaultLabel={`Cover Letter v${c.version}`} 
+                      onSave={async (newName) => {
+                        try {
+                          await api.updateCoverLetter(job.id, c.id, { name: newName });
+                          load();
+                        } catch(e) { showToast(e.message, 'error'); }
+                      }}
+                    />
+                    <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)', marginTop:4 }}>{c.llm_used} • {new Date(c.created_at).toLocaleString()}</div>
                   </div>
                   <div className="flex gap-sm">
                     {c.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `cover_letter_v${c.version}.pdf`)}>⬇ PDF</button>}
@@ -1020,7 +1101,7 @@ export default function JobDetail({ jobId }) {
       )}
 
       {/* ── Timeline Tab ─────────────────────────────────────────────────── */}
-      {activeTab === 'timeline' && (
+      {activeTab === 'dashboard' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {addingEvent ? (
             <div className="panel" style={{ padding:'1.25rem', display:'flex', flexDirection:'column', gap:'0.75rem' }}>
@@ -1069,7 +1150,7 @@ export default function JobDetail({ jobId }) {
       )}
 
       {/* ── LLM Compare Tab ──────────────────────────────────────────────── */}
-      {activeTab === 'compare' && (
+      {activeTab === 'intelligence' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           <div className="panel" style={{ padding:'1.25rem', display:'flex', flexDirection:'column', gap:'0.75rem' }}>
             <h4>⚖️ Compare LLMs Side-by-Side</h4>

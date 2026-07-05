@@ -113,11 +113,13 @@ class ResumeVersionOut(BaseModel):
     id: int
     job_id: int
     version: int
+    name: Optional[str] = None
     content_md: Optional[str]
     pdf_path: Optional[str]
     docx_path: Optional[str]
     llm_used: Optional[str]
     critic_notes: Optional[dict]
+    ats_score: Optional[dict] = None
     created_at: datetime
 
     class Config:
@@ -128,6 +130,7 @@ class CoverLetterVersionOut(BaseModel):
     id: int
     job_id: int
     version: int
+    name: Optional[str] = None
     content_md: Optional[str]
     pdf_path: Optional[str]
     llm_used: Optional[str]

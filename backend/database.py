@@ -76,11 +76,13 @@ class ResumeVersion(Base):
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
     version = Column(Integer, default=1)
+    name = Column(String, nullable=True)
     content_md = Column(Text)
     pdf_path = Column(String)
     docx_path = Column(String)
     llm_used = Column(String)
     critic_notes = Column(JSON)   # structured critique from CriticAgent
+    ats_score = Column(JSON)      # auto ATS evaluation (vendored hiring-agent)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -90,6 +92,7 @@ class CoverLetterVersion(Base):
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
     version = Column(Integer, default=1)
+    name = Column(String, nullable=True)
     content_md = Column(Text)
     pdf_path = Column(String)
     llm_used = Column(String)
@@ -345,10 +348,20 @@ def migrate_user_oauth():
                 conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {col} VARCHAR")
 
 
+def migrate_ats_score():
+    """Add ats_score column to resume_versions on an existing DB. Idempotent."""
+    with engine.begin() as conn:
+        if not _table_exists(conn, "resume_versions"):
+            return
+        if not _column_exists(conn, "resume_versions", "ats_score"):
+            conn.exec_driver_sql("ALTER TABLE resume_versions ADD COLUMN ats_score JSON")
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     migrate_multitenant()
     migrate_user_oauth()
+    migrate_ats_score()
 
 
 def get_db():

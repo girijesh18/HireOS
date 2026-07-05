@@ -917,6 +917,30 @@ def get_cover_letters(job_id: int, db: Session = Depends(get_db), current_user: 
     return db.query(CoverLetterVersion).filter(CoverLetterVersion.job_id == job_id).order_by(CoverLetterVersion.created_at.desc()).all()
 
 
+@app.patch("/api/jobs/{job_id}/resumes/{resume_id}")
+def update_resume_name(job_id: int, resume_id: int, payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    get_owned_job(db, job_id, current_user)
+    rv = db.query(ResumeVersion).filter_by(id=resume_id, job_id=job_id).first()
+    if not rv:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    if "name" in payload:
+        rv.name = payload["name"]
+    db.commit()
+    return {"status": "success"}
+
+
+@app.patch("/api/jobs/{job_id}/cover-letters/{cl_id}")
+def update_cover_letter_name(job_id: int, cl_id: int, payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    get_owned_job(db, job_id, current_user)
+    cl = db.query(CoverLetterVersion).filter_by(id=cl_id, job_id=job_id).first()
+    if not cl:
+        raise HTTPException(status_code=404, detail="Cover letter not found")
+    if "name" in payload:
+        cl.name = payload["name"]
+    db.commit()
+    return {"status": "success"}
+
+
 @app.get("/api/download/{job_id}/{filename}")
 def download_file(job_id: int, filename: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Download a generated document file (only for jobs the user owns)."""
@@ -1370,6 +1394,28 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
         task.status = "completed"
         db.commit()
 
+        # ── Step 9: Auto ATS scoring (best-effort, runs after resume is ready) ──
+        # Resume is already marked completed above, so the UI shows it immediately;
+        # the ATS score fills in a bit later once the vendored scorer returns.
+        try:
+            from ats_score import score_resume_pdf
+            pdf_path = paths.get("pdf")
+            if pdf_path:
+                ats = await asyncio.to_thread(
+                    score_resume_pdf, pdf_path,
+                    agent_resume.router.gemini_key,
+                    agent_resume.router.github_token,
+                )
+                if ats:
+                    rv.ats_score = ats
+                    db.commit()
+                    _log_event(db, job_id, "ats_scored",
+                               f"Resume v{version} ATS score: {ats.get('total')}/100",
+                               "Auto-evaluated via hiring-agent",
+                               source="agent", user_id=user_id)
+        except Exception as ats_err:
+            logger.warning(f"[ATS] scoring failed for job {job_id}: {ats_err}")
+
     except Exception as e:
         logger.error(f"[ResumeGen] Failed for job {job_id}: {e}")
         task = db.query(LLMTaskStatus).filter_by(job_id=job_id, task_type="resume").first()
@@ -1413,6 +1459,7 @@ def get_resume_status(job_id: int, db: Session = Depends(get_db), current_user: 
             "pdf_url": f"/api/download/{job_id}/resume_v{latest.version}.pdf" if latest.pdf_path else None,
             "docx_url": f"/api/download/{job_id}/resume_v{latest.version}.docx" if latest.docx_path else None,
             "critic_notes": latest.critic_notes,
+            "ats_score": latest.ats_score,
             "llm_used": latest.llm_used,
         }
     if task and task.status == "failed":
@@ -1420,7 +1467,7 @@ def get_resume_status(job_id: int, db: Session = Depends(get_db), current_user: 
     return {"status": "none"}
 
 @app.post("/api/agent/resume/chat")
-async def resume_chat(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def resume_chat(payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     job_id = payload.get("job_id")
     current_md = payload.get("current_md")
     instruction = payload.get("instruction")
@@ -1442,8 +1489,8 @@ async def resume_chat(payload: Dict[str, Any], db: Session = Depends(get_db), cu
 @app.post("/api/agent/resume/{job_id}/save")
 async def save_chat_resume(
     job_id: int,
-    payload: Dict[str, Any],
     background_tasks: BackgroundTasks,
+    payload: Dict[str, Any] = {},
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
