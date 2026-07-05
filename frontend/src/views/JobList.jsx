@@ -31,7 +31,7 @@ export default function JobList({ onOpenJob }) {
   const [globalModel, setGlobalModel] = useState(localStorage.getItem('preferredLlm') || 'gemini-2.5-flash')
 
   useEffect(() => {
-    api.getProviders().then(setActiveProviders).catch(() => {})
+    api.getProviders().then(res => setActiveProviders(res.available || [])).catch(() => {})
   }, [])
 
   const handleModelChange = (e) => {

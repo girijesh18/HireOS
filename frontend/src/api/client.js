@@ -88,7 +88,9 @@ export const api = {
 
   // Resumes / Cover Letters
   getResumes: (jobId) => req('GET', `/jobs/${jobId}/resumes`),
+  updateResume: (jobId, resumeId, data) => req('PATCH', `/jobs/${jobId}/resumes/${resumeId}`, data),
   getCoverLetters: (jobId) => req('GET', `/jobs/${jobId}/cover-letters`),
+  updateCoverLetter: (jobId, clId, data) => req('PATCH', `/jobs/${jobId}/cover-letters/${clId}`, data),
   resumeChat: (data) => req('POST', '/agent/resume/chat', data),
   resumeSave: (jobId, data) => req('POST', `/agent/resume/${jobId}/save`, data),
 

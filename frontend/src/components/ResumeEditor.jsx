@@ -102,36 +102,45 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
         </div>
         
         {/* Right Pane: Live Rendered Resume */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '2rem', backgroundColor: '#fff', color: '#000' }}>
-          <div style={{ maxWidth: '800px', margin: '0 auto', fontFamily: 'Arial, sans-serif' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '2rem', backgroundColor: 'var(--bg-2)' }}>
+          <div style={{ 
+            maxWidth: '850px', margin: '0 auto', fontFamily: 'Cambria, Georgia, serif', 
+            backgroundColor: '#fff', color: '#222', padding: '40px 60px',
+            boxShadow: '0 12px 40px rgba(0,0,0,0.15)', borderRadius: '4px',
+            minHeight: '1000px', lineHeight: '1.4'
+          }}>
             <ReactMarkdown
               components={{
-                h1: ({node, ...props}) => <h1 style={{ textAlign: 'center', fontSize: '24pt', marginBottom: '0.5rem' }} {...props} />,
-                h2: ({node, ...props}) => <h2 style={{ fontSize: '14pt', borderBottom: '1px solid #ccc', paddingBottom: '0.2rem', marginTop: '1.5rem', color: '#2E74B5', fontWeight: 'bold' }} {...props} />,
+                h1: ({node, ...props}) => <h1 style={{ textAlign: 'center', fontSize: '26pt', margin: '0 0 0.25rem 0', fontWeight: 'bold' }} {...props} />,
+                h2: ({node, ...props}) => <h2 style={{ fontSize: '13pt', borderBottom: '1px solid #000', paddingBottom: '0.1rem', margin: '1.25rem 0 0.5rem 0', color: '#000', textTransform: 'uppercase', letterSpacing: '1px' }} {...props} />,
                 h3: ({node, ...props}) => {
                   const txt = props.children?.toString() || '';
                   if (txt.includes('||')) {
                     const [left, right] = txt.split('||');
                     return (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1rem', marginBottom: '0.2rem', fontWeight: 'bold' }}>
-                        <span style={{ fontSize: '12pt' }}>{left.trim()}</span>
-                        <span style={{ fontSize: '11pt' }}>{right.trim()}</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', marginBottom: '0.2rem', fontWeight: 'bold' }}>
+                        <span style={{ fontSize: '11pt', color: '#000' }}>{left.trim()}</span>
+                        <span style={{ fontSize: '10pt', color: '#000', fontWeight: 'normal' }}>{right.trim()}</span>
                       </div>
                     );
                   }
-                  return <h3 style={{ fontSize: '12pt', marginTop: '1rem', marginBottom: '0.2rem' }} {...props} />;
+                  return <h3 style={{ fontSize: '11pt', marginTop: '0.75rem', marginBottom: '0.2rem', color: '#000' }} {...props} />;
                 },
                 p: ({node, ...props}) => {
                   const txt = props.children?.toString() || '';
                   if (txt.includes(' | ')) {
-                    return <p style={{ textAlign: 'center', fontSize: '10pt', marginBottom: '1.5rem', color: '#444' }} {...props} />;
+                    return <p style={{ textAlign: 'center', fontSize: '9.5pt', margin: '0 0 1.25rem 0', color: '#444' }} {...props} />;
                   }
-                  return <p style={{ margin: '0.2rem 0', fontSize: '10.5pt' }} {...props} />;
+                  // Job description italics line
+                  if (node.children.length === 1 && node.children[0].type === 'element' && node.children[0].tagName === 'em') {
+                    return <p style={{ margin: '0 0 0.25rem 0', fontSize: '10pt' }} {...props} />;
+                  }
+                  return <p style={{ margin: '0.25rem 0', fontSize: '10pt' }} {...props} />;
                 },
-                ul: ({node, ...props}) => <ul style={{ margin: '0.2rem 0 0 1.5rem', padding: 0 }} {...props} />,
-                li: ({node, ...props}) => <li style={{ margin: '0.2rem 0', fontSize: '10.5pt' }} {...props} />,
-                strong: ({node, ...props}) => <strong style={{ fontWeight: 600 }} {...props} />,
-                em: ({node, ...props}) => <em style={{ fontStyle: 'italic', color: '#444' }} {...props} />
+                ul: ({node, ...props}) => <ul style={{ margin: '0.25rem 0 0 1.5rem', padding: 0 }} {...props} />,
+                li: ({node, ...props}) => <li style={{ margin: '0.25rem 0', fontSize: '10pt', color: '#222' }} {...props} />,
+                strong: ({node, ...props}) => <strong style={{ fontWeight: 600, color: '#000' }} {...props} />,
+                em: ({node, ...props}) => <em style={{ fontStyle: 'italic', color: '#333' }} {...props} />
               }}
             >
               {markdown}
