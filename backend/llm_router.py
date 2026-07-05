@@ -88,6 +88,22 @@ class LLMRouter:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    # Quality-ish preference order for graceful fallback. Only providers the user
+    # has keys for are tried. Ollama is excluded — it's local and usually offline,
+    # so auto-falling to it just adds a slow, confusing failure.
+    FALLBACK_ORDER = ["gemini", "claude", "nvidia", "openrouter", "together", "groq"]
+
+    def _fallback_chain(self, llm: str) -> List[str]:
+        """The requested model first, then the user's other providers so a
+        failing model gracefully degrades to the next best available one."""
+        primary = (llm.split(":", 1)[0] if ":" in llm else llm.split("-")[0]).lower()
+        avail = set(self.available_providers())
+        chain = [llm]
+        for p in self.FALLBACK_ORDER:
+            if p in avail and p != primary:
+                chain.append(p)  # bare provider name → its default model
+        return chain
+
     async def complete(
         self,
         prompt: str,
@@ -95,8 +111,24 @@ class LLMRouter:
         system: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        fallback: bool = True,
     ) -> str:
-        """Call a single LLM and return the text response."""
+        """Call an LLM and return the text. On failure, gracefully fall back to
+        the next best available provider (unless fallback=False)."""
+        chain = self._fallback_chain(llm) if fallback else [llm]
+        primary_err = None
+        for i, model in enumerate(chain):
+            try:
+                return await self._complete_one(prompt, model, system, max_tokens, temperature)
+            except Exception as e:
+                if primary_err is None:
+                    primary_err = e  # keep the requested model's error — most relevant
+                nxt = chain[i + 1] if i + 1 < len(chain) else None
+                logger.warning(f"[LLMRouter] {model} failed: {e}" + (f" → falling back to {nxt}" if nxt else " (no more fallbacks)"))
+        raise primary_err
+
+    async def _complete_one(self, prompt, llm, system, max_tokens, temperature) -> str:
+        """Single dispatch, no fallback."""
         # "provider:model-id" selects a specific model, e.g.
         # "nvidia:meta/llama-3.1-405b-instruct" from build.nvidia.com.
         # Bare "gemini-1.5-pro" → provider "gemini", model = whole string.
@@ -139,7 +171,8 @@ class LLMRouter:
 
     async def _timed_complete(self, prompt, provider, system, max_tokens):
         t0 = time.monotonic()
-        text = await self.complete(prompt, llm=provider, system=system, max_tokens=max_tokens)
+        # no fallback: comparison must report each provider's real result/error
+        text = await self.complete(prompt, llm=provider, system=system, max_tokens=max_tokens, fallback=False)
         return {
             "provider": provider,
             "text": text,
