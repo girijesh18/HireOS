@@ -169,6 +169,20 @@ export default function JobDetail({ jobId }) {
 
   useEffect(() => { load() }, [load])
 
+  // ATS score is written ~30-60s AFTER the resume itself is ready, so re-fetch
+  // the resume list a few times until the newest version has its score.
+  const pollForAtsScore = useCallback((tries = 8) => {
+    if (tries <= 0) return
+    setTimeout(async () => {
+      try {
+        const rv = await api.getResumes(jobId)
+        setResumes(rv)
+        if (rv[0]?.ats_score) return
+      } catch {}
+      pollForAtsScore(tries - 1)
+    }, 12000)
+  }, [jobId])
+
   // Unified background task polling
   useEffect(() => {
     let interval;
@@ -211,7 +225,7 @@ export default function JobDetail({ jobId }) {
           }
           if (prev.resume && !isResume) {
             const err = failMsg('resume')
-            err ? showToast(err, 'error') : (showToast('Resume Generation Complete!'), load())
+            err ? showToast(err, 'error') : (showToast('Resume Generation Complete!'), load(), pollForAtsScore())
           }
           if (prev.cover && !isCover) {
             const err = failMsg('cover_letter')
