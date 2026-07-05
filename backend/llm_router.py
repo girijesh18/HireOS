@@ -414,3 +414,12 @@ class LLMRouter:
             providers.append("nvidia")
         providers.append("ollama")  # Always show local as option
         return providers
+
+    def default_llm(self) -> str:
+        """First configured provider — used when no model is explicitly selected.
+        Honors 'use the one model the user has' instead of hardcoding gemini."""
+        avail = self.available_providers()
+        for p in ("gemini", "claude", "groq", "openrouter", "together", "nvidia"):
+            if p in avail:
+                return p
+        return "ollama"

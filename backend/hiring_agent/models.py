@@ -310,6 +310,41 @@ class OllamaProvider:
         return self.client.chat(**chat_params)
 
 
+class OpenAICompatProvider:
+    """OpenAI-compatible provider (NVIDIA, Groq, OpenRouter, Together, ...).
+
+    Added for HireOS so the ATS scorer can use the same model that generated the
+    resume. Adapts the OpenAI chat response to the {"message": {"content": ...}}
+    shape the evaluator expects.
+    """
+
+    def __init__(self, api_key: str, base_url: str):
+        from openai import OpenAI
+
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0, max_retries=1)
+
+    def chat(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        options: Dict[str, Any] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        opts = options or {}
+        params = {
+            "model": model,
+            "messages": messages,
+            "temperature": opts.get("temperature", 0.5),
+            "top_p": opts.get("top_p", 0.9),
+        }
+        # `format` carries a JSON schema for Ollama/Gemini; OpenAI-compatible
+        # endpoints take JSON mode instead — the prompt already spells out the schema.
+        if "format" in kwargs:
+            params["response_format"] = {"type": "json_object"}
+        resp = self.client.chat.completions.create(**params)
+        return {"message": {"content": resp.choices[0].message.content}}
+
+
 class GeminiProvider:
     """Google Gemini API provider implementation."""
 

@@ -8,6 +8,25 @@ import JobDetail from './views/JobDetail'
 import Settings from './views/Settings'
 import StoryBank from './views/StoryBank'
 import Insights from './views/Insights'
+import { usePreferredLlm, setPreferredLlm, getLlmOptions, getPreferredLlm } from './model'
+
+// ── Global model selector (top bar) — drives every LLM op across the app ───────
+function ModelSelector() {
+  const llm = usePreferredLlm()
+  const [providers, setProviders] = useState([])
+  useEffect(() => { api.getProviders().then(r => setProviders(r.available || [])).catch(() => {}) }, [])
+  const isAvail = v => providers.some(p => v === p || v.startsWith(p + '-') || v.startsWith(p + ':'))
+  return (
+    <select className="btn btn-outline btn-sm" style={{ maxWidth: 220 }} value={llm}
+      onChange={e => setPreferredLlm(e.target.value)} title="Model used across the whole platform">
+      {getLlmOptions().map(o => (
+        <option key={o.value} value={o.value} disabled={!isAvail(o.value)}>
+          🤖 {o.label}{!isAvail(o.value) ? ' (Unavailable)' : ''}
+        </option>
+      ))}
+    </select>
+  )
+}
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 const Icon = ({ d, size = 18 }) => (
@@ -39,7 +58,7 @@ function TrackJobModal({ onClose, onAdded }) {
     if (!url.trim()) return
     setLoading(true); setError('')
     try {
-      const result = await api.trackUrl(url.trim(), localStorage.getItem('preferredLlm') || 'gemini-2.5-flash')
+      const result = await api.trackUrl(url.trim(), getPreferredLlm())
       onAdded(result); onClose()
     } catch(e) { setError(e.message) }
     setLoading(false)
@@ -49,7 +68,7 @@ function TrackJobModal({ onClose, onAdded }) {
     if (!jdText.trim()) return
     setLoading(true); setError('')
     try {
-      const result = await api.trackJdText(jdText.trim(), localStorage.getItem('preferredLlm') || 'gemini-2.5-flash')
+      const result = await api.trackJdText(jdText.trim(), getPreferredLlm())
       onAdded(result); onClose()
     } catch(e) { setError(e.message) }
     setLoading(false)
@@ -367,6 +386,7 @@ export default function App() {
             {view === 'job-detail' && (
               <button className="btn btn-outline btn-sm" onClick={goBack}>Back</button>
             )}
+            <ModelSelector />
             <button className="btn btn-outline btn-sm" onClick={() => setShowTrackModal(true)}>
               <PlusIcon /> Track Job
             </button>

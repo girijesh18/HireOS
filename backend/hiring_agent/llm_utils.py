@@ -2,9 +2,10 @@
 Utility functions for LLM providers.
 """
 
+import os
 import logging
 from typing import Any, Dict, Optional
-from models import ModelProvider, OllamaProvider, GeminiProvider
+from models import ModelProvider, OllamaProvider, GeminiProvider, OpenAICompatProvider
 from prompt import MODEL_PROVIDER_MAPPING, GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,21 @@ def initialize_llm_provider(model_name: str) -> Any:
     Returns:
         An initialized LLM provider (either OllamaProvider or GeminiProvider)
     """
+    # HireOS drives provider choice via LLM_PROVIDER env (overrides the static
+    # model→provider map, which only knows gemini/ollama).
+    forced = os.getenv("LLM_PROVIDER", "").lower()
+    if forced == "openai":
+        key = os.getenv("OPENAI_API_KEY", "")
+        base = os.getenv("OPENAI_BASE_URL", "https://integrate.api.nvidia.com/v1")
+        logger.info(f"🔄 Using OpenAI-compatible provider ({base}) with model {model_name}")
+        return OpenAICompatProvider(api_key=key, base_url=base)
+    if forced == "gemini" and GEMINI_API_KEY:
+        logger.info(f"🔄 Using Google Gemini API provider with model {model_name}")
+        return GeminiProvider(api_key=GEMINI_API_KEY)
+    if forced == "ollama":
+        logger.info(f"🔄 Using Ollama provider with model {model_name}")
+        return OllamaProvider()
+
     # Default to Ollama provider
     provider = OllamaProvider()
     # If using Gemini and API key is available, use Gemini provider

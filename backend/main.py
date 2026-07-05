@@ -406,6 +406,14 @@ def get_agent(name: str, db: Session = None, user_id: int = None):
     return classes[name](router)
 
 
+def resolve_llm(db: Session, user_id: int, requested=None) -> str:
+    """The model to use: the caller's explicit choice, else the user's first
+    configured provider (not a hardcoded gemini)."""
+    if requested:
+        return requested
+    return get_llm_router(db, user_id).default_llm()
+
+
 def get_owned_job(db: Session, job_id: int, user) -> Job:
     """Fetch a job that belongs to the user, else 404 (prevents cross-user access)."""
     job = db.query(Job).filter(Job.id == job_id, Job.user_id == user.id).first()
@@ -1114,7 +1122,7 @@ async def track_url(payload: Dict[str, Any], db: Session = Depends(get_db), curr
     Body: { "url": "...", "llm": "gemini" }
     """
     url = payload.get("url", "").strip()
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
     if not url:
         raise HTTPException(status_code=400, detail="url is required")
 
@@ -1174,7 +1182,7 @@ async def track_jd_text(payload: Dict[str, Any], db: Session = Depends(get_db), 
     Body: { "text": "...", "llm": "gemini" }
     """
     text = payload.get("text", "").strip()
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
     if not text or len(text) < 50:
         raise HTTPException(status_code=400, detail="Please paste the full job description text (at least 50 characters).")
 
@@ -1281,7 +1289,7 @@ async def _bg_analyze(job_id: int, llm: str, user_id: int):
 @app.post("/api/agent/analyze/{job_id}")
 async def analyze_job(job_id: int, background_tasks: BackgroundTasks, payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     get_owned_job(db, job_id, current_user)
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
     background_tasks.add_task(_bg_analyze, job_id, llm, current_user.id)
     return {"status": "processing"}
 
@@ -1401,10 +1409,10 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
             from ats_score import score_resume_pdf
             pdf_path = paths.get("pdf")
             if pdf_path:
+                _r = agent_resume.router
                 ats = await asyncio.to_thread(
-                    score_resume_pdf, pdf_path,
-                    agent_resume.router.gemini_key,
-                    agent_resume.router.github_token,
+                    score_resume_pdf, pdf_path, llm,
+                    _r.gemini_key, _r.nvidia_key, _r.github_token,
                 )
                 if ats:
                     rv.ats_score = ats
@@ -1434,7 +1442,7 @@ async def resume_chat(payload: Dict[str, Any] = {}, db: Session = Depends(get_db
     job_id = payload.get("job_id")
     current_md = payload.get("current_md")
     instruction = payload.get("instruction")
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
 
     if not job_id or not current_md or not instruction:
         raise HTTPException(status_code=400, detail="Missing required fields: job_id, current_md, instruction")
@@ -1459,7 +1467,7 @@ async def start_generate_resume(
     current_user: User = Depends(get_current_user),
 ):
     get_owned_job(db, job_id, current_user)
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
     feedback = payload.get("feedback", "")
     critic_llm = payload.get("critic_llm", "claude")
     background_tasks.add_task(_bg_resume, job_id, llm, feedback, current_user.id, critic_llm)
@@ -1620,7 +1628,7 @@ async def _bg_cover_letter(job_id: int, llm: str, feedback: str, resume_version:
 @app.post("/api/agent/cover-letter/{job_id}")
 async def generate_cover_letter(job_id: int, background_tasks: BackgroundTasks, payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     get_owned_job(db, job_id, current_user)
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
     feedback = payload.get("feedback", "")
     resume_version = payload.get("resume_version", None)
     background_tasks.add_task(_bg_cover_letter, job_id, llm, feedback, resume_version, current_user.id)
@@ -2008,11 +2016,12 @@ async def _bg_evaluate(job_id: int, llm: str, user_id: int):
 async def start_evaluate_job(
     job_id: int,
     background_tasks: BackgroundTasks,
-    llm: str = "gemini",
+    llm: str = "",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     get_owned_job(db, job_id, current_user)
+    llm = resolve_llm(db, current_user.id, llm)
     background_tasks.add_task(_bg_evaluate, job_id, llm, current_user.id)
     return {"status": "processing"}
 
@@ -2107,7 +2116,7 @@ async def start_linkedin_outreach(
     current_user: User = Depends(get_current_user),
 ):
     get_owned_job(db, job_id, current_user)
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
     if "contact_type" in payload:
         contact_type = payload["contact_type"]
     background_tasks.add_task(_bg_linkedin, job_id, contact_type, llm, current_user.id)
@@ -2206,7 +2215,7 @@ async def start_deep_research(
     current_user: User = Depends(get_current_user),
 ):
     get_owned_job(db, job_id, current_user)
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
     background_tasks.add_task(_bg_deep_research, job_id, llm, current_user.id)
     return {"status": "processing"}
 
@@ -2327,7 +2336,7 @@ async def start_interview_prep(
     current_user: User = Depends(get_current_user),
 ):
     get_owned_job(db, job_id, current_user)
-    llm = payload.get("llm", "gemini")
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
     background_tasks.add_task(_bg_interview_prep, job_id, llm, current_user.id)
     return {"status": "processing"}
 
@@ -2527,13 +2536,14 @@ def get_pattern_analytics(db: Session = Depends(get_db), current_user: User = De
 
 @app.get("/api/insights")
 async def get_insights(
-    llm: str = "gemini",
+    llm: str = "",
     days: int = 90,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Stats + LLM-generated narrative on job hunt activity (per user)."""
     uid = current_user.id
+    llm = resolve_llm(db, uid, llm)
     stats = chat_store.get_stats(days=days, user_id=uid)
     samples = chat_store.get_recent_samples(days=days, limit=20, user_id=uid)
 

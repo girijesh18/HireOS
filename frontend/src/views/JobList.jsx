@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { api } from '../api/client'
 import SmartSearchBar from '../components/SmartSearchBar'
-import { getLlmOptions } from '../llmOptions'
 
 const STATUSES = ['found','analyzing','pending','approved','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
 const BADGE_EMOJI = { found:'🔍', analyzing:'🤖', pending:'⏳', approved:'✅', applied:'📤', screening:'📞', interview_1:'🎤', interview_2:'🎤', offer:'🎉', rejected:'❌', withdrawn:'↩️' }
@@ -11,18 +10,8 @@ export default function JobList({ onOpenJob }) {
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState({ status: '', platform: '', starred: '', remote: '' })
-  const [activeProviders, setActiveProviders] = useState([])
-  const [globalModel, setGlobalModel] = useState(localStorage.getItem('preferredLlm') || 'gemini-2.5-flash')
 
-  useEffect(() => {
-    api.getProviders().then(res => setActiveProviders(res.available || [])).catch(() => {})
-  }, [])
-
-  const handleModelChange = (e) => {
-    const val = e.target.value;
-    setGlobalModel(val);
-    localStorage.setItem('preferredLlm', val);
-  }
+  // Model selection now lives in the global top-bar selector (App.jsx).
 
   // Load jobs -- uses search endpoint when query is set, otherwise list
   const loadJobs = useCallback(async (q = searchQuery, filters = filter) => {
@@ -110,14 +99,6 @@ export default function JobList({ onOpenJob }) {
           <select style={{ width:120 }} value={filter.starred} onChange={e => handleFilterChange('starred', e.target.value)}>
             <option value="">All Jobs</option>
             <option value="true">Starred Only</option>
-          </select>
-          <select style={{ width:160, background: 'var(--surface-hover)', border: '1px solid var(--primary)' }} value={globalModel} onChange={handleModelChange}>
-            {getLlmOptions().map(l => {
-              const isFunctional = activeProviders.some(p => l.value === p || l.value.startsWith(p + '-') || l.value.startsWith(p + ':'));
-              return <option key={l.value} value={l.value} disabled={!isFunctional} style={{ color: isFunctional ? 'inherit' : 'var(--fg-subtle)' }}>
-                {l.label} {!isFunctional && '(Unavailable)'}
-              </option>
-            })}
           </select>
           <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:'0.5rem' }}>
             <span style={{ fontSize:'0.8rem', color:'var(--fg-subtle)' }}>

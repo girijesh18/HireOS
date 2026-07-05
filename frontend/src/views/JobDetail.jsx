@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { api } from '../api/client'
-import { getLlmOptions } from '../llmOptions'
+import { usePreferredLlm } from '../model'
 import ResumeEditor from '../components/ResumeEditor'
 
 const JOB_TABS = ['dashboard', 'intelligence', 'documents']
@@ -101,7 +101,7 @@ export default function JobDetail({ jobId }) {
   const [newEvent, setNewEvent] = useState({ title:'', description:'', event_type:'note' })
   const [addingEvent, setAddingEvent] = useState(false)
   const [loading, setLoading] = useState({ analyze:false, resume:false, cover:false, compare:false, evaluate:false, linkedin:false, research:false, interviewPrep:false })
-  const [selectedLlm, setSelectedLlm] = useState('gemini-2.5-flash')
+  const selectedLlm = usePreferredLlm()
   const [feedback, setFeedback] = useState('')
   const [compareResults, setCompareResults] = useState(null)
   const [compareTask, setCompareTask] = useState('resume')
@@ -434,16 +434,9 @@ export default function JobDetail({ jobId }) {
               {STATUSES.map(s => <option key={s} value={s}>{BADGE_EMOJI[s]} {s.replace('_',' ')}</option>)}
             </select>
             <div className="flex gap-sm">
-              <select className="form-select" style={{ maxWidth: 280 }} value={selectedLlm} onChange={e => setSelectedLlm(e.target.value)}>
-                {getLlmOptions().map(l => {
-                  const isFunctional = activeProviders.some(p => l.value === p || l.value.startsWith(p + '-') || l.value.startsWith(p + ':'));
-                  return (
-                    <option key={l.value} value={l.value} disabled={!isFunctional} style={{ color: isFunctional ? 'inherit' : 'var(--fg-subtle)' }}>
-                      {l.label} {!isFunctional && '(Unavailable)'}
-                    </option>
-                  )
-                })}
-              </select>
+              <span title="Model — change it from the selector in the top bar" style={{ fontSize:'0.75rem', color:'var(--fg-muted)', border:'1px solid var(--surface-border)', padding:'4px 10px', borderRadius:'999px', alignSelf:'center', whiteSpace:'nowrap' }}>
+                🤖 {selectedLlm}
+              </span>
               {job.url && <a href={job.url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">🔗 View Job</a>}
               <button className="btn btn-primary btn-sm" onClick={() => changeStatus('approved')}>🚀 Approve & Apply</button>
               <button className="btn btn-outline btn-sm" onClick={runAutoPilot} style={{ background:'var(--primary)', color:'white', borderColor:'var(--primary)' }}>✨ Auto-Pilot</button>
