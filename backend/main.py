@@ -1427,6 +1427,29 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
         db.close()
 
 
+@app.post("/api/agent/resume/chat")
+async def resume_chat(payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # NOTE: must be declared before the "/api/agent/resume/{job_id}" route below,
+    # otherwise FastAPI matches "chat" as job_id and 422s on int parsing.
+    job_id = payload.get("job_id")
+    current_md = payload.get("current_md")
+    instruction = payload.get("instruction")
+    llm = payload.get("llm", "gemini")
+
+    if not job_id or not current_md or not instruction:
+        raise HTTPException(status_code=400, detail="Missing required fields: job_id, current_md, instruction")
+
+    get_owned_job(db, job_id, current_user)
+    agent = get_agent("resume", db, current_user.id)
+
+    try:
+        updated_md = await agent.chat_edit(current_md, instruction, llm=llm)
+        return {"updated_md": updated_md}
+    except Exception as e:
+        logger.error(f"[ResumeChat] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/agent/resume/{job_id}")
 async def start_generate_resume(
     job_id: int,
@@ -1466,25 +1489,6 @@ def get_resume_status(job_id: int, db: Session = Depends(get_db), current_user: 
         return {"status": "failed", "error": task.error_message}
     return {"status": "none"}
 
-@app.post("/api/agent/resume/chat")
-async def resume_chat(payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    job_id = payload.get("job_id")
-    current_md = payload.get("current_md")
-    instruction = payload.get("instruction")
-    llm = payload.get("llm", "gemini")
-    
-    if not job_id or not current_md or not instruction:
-        raise HTTPException(status_code=400, detail="Missing required fields: job_id, current_md, instruction")
-        
-    get_owned_job(db, job_id, current_user)
-    agent = get_agent("resume", db, current_user.id)
-    
-    try:
-        updated_md = await agent.chat_edit(current_md, instruction, llm=llm)
-        return {"updated_md": updated_md}
-    except Exception as e:
-        logger.error(f"[ResumeChat] Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/agent/resume/{job_id}/save")
 async def save_chat_resume(

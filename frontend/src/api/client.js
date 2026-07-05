@@ -16,9 +16,18 @@ async function req(method, path, body, isFormData = false) {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
-    throw new Error(err.detail || `API error ${res.status}`)
+    throw new Error(errMsg(err.detail, res.status))
   }
   return res.json()
+}
+
+// FastAPI 422 returns detail as an array of objects; flatten to a readable string
+// so errors never surface as "[object Object]".
+function errMsg(detail, status) {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) return detail.map(d => d?.msg || JSON.stringify(d)).join('; ')
+  if (detail) return JSON.stringify(detail)
+  return `API error ${status}`
 }
 
 // Fetch a file with the auth header and trigger a browser download (download/export are user-scoped)
