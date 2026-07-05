@@ -162,9 +162,13 @@ export default function Settings() {
   }
 
   const syncNvModels = (list) => {
+    const json = JSON.stringify(list)
     setNvModels(list)
-    setCustomNvidiaModels(list)                                              // localStorage → model dropdowns
-    setValues(v => ({ ...v, custom_nvidia_models: JSON.stringify(list) }))   // persisted on Save
+    setCustomNvidiaModels(list)                                    // localStorage → model dropdowns
+    setValues(v => ({ ...v, custom_nvidia_models: json }))
+    // Persist immediately so a page reload / Settings re-open doesn't wipe it
+    // (hydration reads this key back from the server on mount).
+    api.saveSettings([{ key: 'custom_nvidia_models', value: json }]).catch(() => {})
   }
   const addNvModel = () => {
     const id = nvId.trim()
