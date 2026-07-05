@@ -357,10 +357,24 @@ def migrate_ats_score():
             conn.exec_driver_sql("ALTER TABLE resume_versions ADD COLUMN ats_score JSON")
 
 
+def migrate_version_names():
+    """Add name column to resume/cover-letter version tables. Idempotent.
+
+    Previously only done by the standalone add_name_col.py, which never ran on
+    deploys — so prod tables lacked `name` and any SELECT on the model 500'd
+    with "no such column". Wire it into startup so it self-heals.
+    """
+    with engine.begin() as conn:
+        for table in ("resume_versions", "cover_letter_versions"):
+            if _table_exists(conn, table) and not _column_exists(conn, table, "name"):
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN name TEXT")
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     migrate_multitenant()
     migrate_user_oauth()
+    migrate_version_names()
     migrate_ats_score()
 
 
