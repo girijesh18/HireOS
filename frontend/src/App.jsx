@@ -39,7 +39,7 @@ function TrackJobModal({ onClose, onAdded }) {
     if (!url.trim()) return
     setLoading(true); setError('')
     try {
-      const result = await api.trackUrl(url.trim())
+      const result = await api.trackUrl(url.trim(), localStorage.getItem('preferredLlm') || 'gemini-2.5-flash')
       onAdded(result); onClose()
     } catch(e) { setError(e.message) }
     setLoading(false)
@@ -49,7 +49,7 @@ function TrackJobModal({ onClose, onAdded }) {
     if (!jdText.trim()) return
     setLoading(true); setError('')
     try {
-      const result = await api.trackJdText(jdText.trim())
+      const result = await api.trackJdText(jdText.trim(), localStorage.getItem('preferredLlm') || 'gemini-2.5-flash')
       onAdded(result); onClose()
     } catch(e) { setError(e.message) }
     setLoading(false)
