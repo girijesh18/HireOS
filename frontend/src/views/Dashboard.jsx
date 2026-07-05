@@ -57,7 +57,7 @@ function StageDropdown({ job, onUpdate }) {
     <div onClick={e => e.stopPropagation()}>
       <button ref={btnRef} onClick={toggle}
         style={{
-          background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)',
+          background:'var(--surface-2)', border:'1px solid var(--surface-border)',
           borderRadius:6, padding:'4px 10px', cursor:'pointer', color:'var(--fg)',
           fontSize:'0.78rem', fontWeight:500, display:'flex', alignItems:'center', gap:4,
           opacity: saving ? 0.5 : 1
@@ -69,8 +69,8 @@ function StageDropdown({ job, onUpdate }) {
           onClick={e => e.stopPropagation()}
           style={{
             position:'fixed', top: pos.top, right: pos.right, zIndex:9999,
-            background:'#1e2130', border:'1px solid rgba(255,255,255,0.12)',
-            borderRadius:8, minWidth:190, boxShadow:'0 8px 24px rgba(0,0,0,0.6)',
+            background:'var(--bg-2)', border:'1px solid var(--surface-border)',
+            borderRadius:8, minWidth:190, boxShadow:'var(--shadow-lg)',
             overflow:'hidden'
           }}>
           {STAGES.map(s => (
@@ -79,11 +79,11 @@ function StageDropdown({ job, onUpdate }) {
               style={{
                 padding:'8px 14px', fontSize:'0.82rem', cursor:'pointer',
                 color: s.value === job.status ? 'var(--primary)' : 'var(--fg)',
-                background: s.value === job.status ? 'rgba(99,102,241,0.12)' : 'transparent',
+                background: s.value === job.status ? 'var(--primary-subtle)' : 'transparent',
                 fontWeight: s.value === job.status ? 600 : 400,
                 transition:'background 0.1s'
               }}
-              onMouseEnter={e => { if(s.value !== job.status) e.currentTarget.style.background='rgba(255,255,255,0.08)' }}
+              onMouseEnter={e => { if(s.value !== job.status) e.currentTarget.style.background='var(--surface-hover)' }}
               onMouseLeave={e => { if(s.value !== job.status) e.currentTarget.style.background='transparent' }}>
               {s.label}
             </div>
@@ -101,12 +101,12 @@ function ScoreRing({ score }) {
   if (!score) return <span className="text-subtle text-xs">Not analyzed</span>
   const r = 36; const circ = 2 * Math.PI * r
   const fill = score === null ? 0 : (score / 100) * circ
-  const color = score >= 80 ? '#10b981' : score >= 60 ? '#f59e0b' : '#ef4444'
+  const color = score >= 80 ? 'var(--success)' : score >= 60 ? 'var(--warning)' : 'var(--danger)'
   return (
     <div className="score-ring-wrap">
       <div className="score-ring">
         <svg width="90" height="90" viewBox="0 0 90 90">
-          <circle cx="45" cy="45" r={r} stroke="rgba(255,255,255,0.07)" strokeWidth="8" fill="none" />
+          <circle cx="45" cy="45" r={r} stroke="var(--surface-border)" strokeWidth="8" fill="none" />
           <circle cx="45" cy="45" r={r} stroke={color} strokeWidth="8" fill="none"
             strokeDasharray={`${fill} ${circ}`} strokeLinecap="round" />
         </svg>
@@ -146,10 +146,10 @@ export default function Dashboard({ onOpenJob }) {
   }
 
   const URGENCY_STYLE = {
-    urgent: { bg:'rgba(239,68,68,0.15)', color:'#ef4444', label:'🔴 URGENT' },
-    overdue: { bg:'rgba(245,158,11,0.15)', color:'#f59e0b', label:'🟡 OVERDUE' },
-    waiting: { bg:'rgba(99,102,241,0.1)', color:'#818cf8', label:'⏳ Waiting' },
-    cold: { bg:'rgba(255,255,255,0.05)', color:'var(--fg-subtle)', label:'❄️ Cold' },
+    urgent: { bg:'var(--danger-subtle)', color:'var(--danger)', label:'URGENT' },
+    overdue: { bg:'var(--warning-subtle)', color:'var(--warning)', label:'OVERDUE' },
+    waiting: { bg:'var(--primary-subtle)', color:'var(--primary)', label:'Waiting' },
+    cold: { bg:'var(--surface-2)', color:'var(--fg-subtle)', label:'Cold' },
   }
 
   return (
@@ -181,8 +181,8 @@ export default function Dashboard({ onOpenJob }) {
             <h3 style={{ fontSize:'1.1rem', fontWeight:600 }}>Action Needed</h3>
             {followups && (
               <div className="flex gap-sm">
-                {followups.urgent > 0 && <span className="badge" style={{ background:'rgba(239,68,68,0.15)', color:'#ef4444', fontSize:'0.7rem' }}>{followups.urgent} urgent</span>}
-                {followups.overdue > 0 && <span className="badge" style={{ background:'rgba(245,158,11,0.15)', color:'#f59e0b', fontSize:'0.7rem' }}>{followups.overdue} overdue</span>}
+                {followups.urgent > 0 && <span className="badge" style={{ background:'var(--danger-subtle)', color:'var(--danger)', fontSize:'0.7rem' }}>{followups.urgent} urgent</span>}
+                {followups.overdue > 0 && <span className="badge" style={{ background:'var(--warning-subtle)', color:'var(--warning)', fontSize:'0.7rem' }}>{followups.overdue} overdue</span>}
               </div>
             )}
           </div>
@@ -193,7 +193,7 @@ export default function Dashboard({ onOpenJob }) {
                 return (
                   <div key={e.job_id} onClick={() => onOpenJob(e.job_id)}
                     style={{ padding:'1rem 1.25rem', background:'var(--surface)', border:'1px solid var(--surface-border)', borderRadius:'var(--radius-sm)', cursor:'pointer', transition:'transform 0.1s, border-color 0.2s', display:'flex', justifyContent:'space-between', alignItems:'center' }}
-                    onMouseEnter={ev => ev.currentTarget.style.borderColor='rgba(255,255,255,0.15)'}
+                    onMouseEnter={ev => ev.currentTarget.style.borderColor='var(--fg-subtle)'}
                     onMouseLeave={ev => ev.currentTarget.style.borderColor='var(--surface-border)'}>
                     <div>
                       <div style={{ fontWeight:600, fontSize:'0.9rem' }}>{e.company}</div>
@@ -218,7 +218,7 @@ export default function Dashboard({ onOpenJob }) {
             <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem' }}>
               {patterns.recommendations.slice(0, 4).map((r, i) => (
                 <div key={i} style={{ padding:'1rem 1.25rem', background: 'var(--surface)', border: `1px solid var(--surface-border)`, borderRadius:'var(--radius-sm)', fontSize:'0.85rem' }}>
-                  <div style={{ fontWeight:600, marginBottom:4, color:'var(--fg)' }}>{r.impact === 'high' ? '🔴' : '🟡'} {r.action}</div>
+                  <div style={{ fontWeight:600, marginBottom:4, color: r.impact === 'high' ? 'var(--danger)' : 'var(--warning)' }}>{r.action}</div>
                   <div style={{ color:'var(--fg-muted)', lineHeight:1.5 }}>{r.reasoning}</div>
                 </div>
               ))}
@@ -249,7 +249,7 @@ export default function Dashboard({ onOpenJob }) {
                  onMouseLeave={e => e.currentTarget.style.background='var(--surface)'}>
               <div>
                 <div style={{ fontWeight: 600, fontSize: '1rem', color: 'var(--fg)', marginBottom:4 }}>{job.title}</div>
-                <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)' }}>{job.company} {job.remote ? '• 🌐 Remote' : ''}</div>
+                <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)' }}>{job.company} {job.remote ? '• Remote' : ''}</div>
               </div>
               <ScoreRing score={job.match_score} />
               <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>

@@ -3,6 +3,8 @@ import { api } from '../api/client'
 import { usePreferredLlm } from '../model'
 import ResumeEditor from '../components/ResumeEditor'
 
+const PencilIcon = () => <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+
 const JOB_TABS = ['dashboard', 'intelligence', 'documents']
 
 // Persist the active tab in the URL hash (#/job/<id>/<tab-slug>) so refresh keeps the tab.
@@ -29,7 +31,7 @@ function Spinner({ small }) {
   return (
     <span style={{
       display:'inline-block', width: small ? 14 : 20, height: small ? 14 : 20,
-      border: `2px solid rgba(255,255,255,0.2)`,
+      border: '2px solid var(--surface-border)',
       borderTopColor: 'var(--primary)',
       borderRadius:'50%', animation:'spin 0.6s linear infinite', flexShrink:0
     }} />
@@ -48,13 +50,10 @@ function Toast({ message, type = 'success', onClose }) {
       position:'fixed', bottom:'5rem', right:'2rem', zIndex:300,
       background:'var(--bg-2)', border:`1px solid ${colors[type]}`,
       borderRadius:'var(--radius)', padding:'0.875rem 1.25rem',
-      boxShadow:'0 8px 32px rgba(0,0,0,0.5)', maxWidth:420,
+      boxShadow:'var(--shadow-lg)', maxWidth:420,
       animation:'slideUp 0.25s ease', color:'var(--fg)', fontSize:'0.875rem',
       cursor: type === 'error' ? 'pointer' : 'default',
     }}>
-      <span style={{color:colors[type], marginRight:8}}>
-        {type==='success'?'✅':type==='error'?'❌':'ℹ️'}
-      </span>
       {message}
       {type === 'error' && <span style={{marginLeft:12, opacity:0.5, fontSize:'0.75rem'}}>(click to dismiss)</span>}
     </div>
@@ -77,8 +76,8 @@ function InlineNameEdit({ initialValue, defaultLabel, onSave }) {
     )
   }
   return (
-    <div style={{ fontWeight:600, fontSize:'0.875rem', cursor:'pointer', display:'inline-block' }} onClick={() => { setVal(initialValue || ''); setEditing(true); }} title="Click to rename">
-      {initialValue || defaultLabel} <span style={{ opacity:0.5, fontSize:'0.75rem', marginLeft:4 }}>✎</span>
+    <div className="flex items-center gap-sm" style={{ fontWeight:600, fontSize:'0.875rem', cursor:'pointer', display:'inline-flex' }} onClick={() => { setVal(initialValue || ''); setEditing(true); }} title="Click to rename">
+      {initialValue || defaultLabel} <span style={{ opacity:0.5 }}><PencilIcon /></span>
     </div>
   )
 }
@@ -284,7 +283,7 @@ export default function JobDetail({ jobId }) {
   const runAutoPilot = async () => {
     try {
       setLoading(p => ({ ...p, analyze:true, evaluate:true, research:true, linkedin:true, interviewPrep:true }))
-      showToast('🚀 Auto-Pilot Engaged! Agents are working in parallel.')
+      showToast('Auto-Pilot Engaged! Agents are working in parallel.')
       api.analyzeJob(jobId, selectedLlm).catch(() => {})
       api.evaluateJob(jobId, selectedLlm).catch(() => {})
       api.deepResearch(jobId, selectedLlm).catch(() => {})
@@ -417,9 +416,9 @@ export default function JobDetail({ jobId }) {
           <div>
             <div className="flex items-center gap-sm" style={{ marginBottom:'0.4rem' }}>
               {job.starred && <span>⭐</span>}
-              <span className={`badge badge-${job.status}`}>{BADGE_EMOJI[job.status]} {job.status?.replace('_',' ')}</span>
-              {job.priority === 'high' && <span className="badge" style={{ background:'var(--danger-subtle)', color:'var(--danger)' }}>🔥 High Priority</span>}
-              {job.remote && <span className="badge" style={{ background:'var(--info-subtle)', color:'var(--info)' }}>🌐 Remote</span>}
+              <span className={`badge badge-${job.status}`}>{job.status?.replace('_',' ')}</span>
+              {job.priority === 'high' && <span className="badge" style={{ background:'var(--danger-subtle)', color:'var(--danger)' }}>High Priority</span>}
+              {job.remote && <span className="badge" style={{ background:'var(--info-subtle)', color:'var(--info)' }}>Remote</span>}
             </div>
             <h2 style={{ fontSize:'1.5rem', marginBottom:'0.25rem' }}>{job.title}</h2>
             <p style={{ color:'var(--fg-muted)' }}>{job.company} • {job.location || 'Location TBD'}</p>
@@ -435,17 +434,17 @@ export default function JobDetail({ jobId }) {
             </select>
             <div className="flex gap-sm">
               <span title="Model — change it from the selector in the top bar" style={{ fontSize:'0.75rem', color:'var(--fg-muted)', border:'1px solid var(--surface-border)', padding:'4px 10px', borderRadius:'999px', alignSelf:'center', whiteSpace:'nowrap' }}>
-                🤖 {selectedLlm}
+                {selectedLlm}
               </span>
-              {job.url && <a href={job.url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">🔗 View Job</a>}
-              <button className="btn btn-primary btn-sm" onClick={() => changeStatus('approved')}>🚀 Approve & Apply</button>
-              <button className="btn btn-outline btn-sm" onClick={runAutoPilot} style={{ background:'var(--primary)', color:'white', borderColor:'var(--primary)' }}>✨ Auto-Pilot</button>
+              {job.url && <a href={job.url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">View Job</a>}
+              <button className="btn btn-primary btn-sm" onClick={() => changeStatus('approved')}>Approve & Apply</button>
+              <button className="btn btn-primary btn-sm" onClick={runAutoPilot}>Auto-Pilot</button>
             </div>
           </div>
         </div>
         {job.recruiter_name && (
           <div style={{ marginTop:'1rem', paddingTop:'1rem', borderTop:'1px solid var(--surface-border)', fontSize:'0.85rem', color:'var(--fg-muted)' }}>
-            👤 Recruiter: <strong style={{ color:'var(--fg)' }}>{job.recruiter_name}</strong>
+            Recruiter: <strong style={{ color:'var(--fg)' }}>{job.recruiter_name}</strong>
             {job.recruiter_email && <> • <a href={`mailto:${job.recruiter_email}`} style={{ color:'var(--primary)' }}>{job.recruiter_email}</a></>}
           </div>
         )}
@@ -453,12 +452,12 @@ export default function JobDetail({ jobId }) {
         {/* Archetype & Legitimacy badges */}
         {(job.archetype || job.posting_legitimacy) && (
           <div style={{ marginTop:'0.75rem', display:'flex', gap:'0.5rem', flexWrap:'wrap' }}>
-            {job.archetype && <span className="badge" style={{ background:'rgba(99,102,241,0.15)', color:'#818cf8', fontSize:'0.75rem' }}>🏷️ {job.archetype}</span>}
+            {job.archetype && <span className="badge" style={{ background:'var(--purple-subtle)', color:'var(--purple)', fontSize:'0.75rem' }}>{job.archetype}</span>}
             {job.posting_legitimacy && <span className="badge" style={{
-              background: job.posting_legitimacy === 'High Confidence' ? 'rgba(16,185,129,0.15)' : job.posting_legitimacy === 'Suspicious' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
-              color: job.posting_legitimacy === 'High Confidence' ? '#10b981' : job.posting_legitimacy === 'Suspicious' ? '#ef4444' : '#f59e0b',
+              background: job.posting_legitimacy === 'High Confidence' ? 'var(--success-subtle)' : job.posting_legitimacy === 'Suspicious' ? 'var(--danger-subtle)' : 'var(--warning-subtle)',
+              color: job.posting_legitimacy === 'High Confidence' ? 'var(--success)' : job.posting_legitimacy === 'Suspicious' ? 'var(--danger)' : 'var(--warning)',
               fontSize:'0.75rem'
-            }}>🛡️ {job.posting_legitimacy}</span>}
+            }}>{job.posting_legitimacy}</span>}
           </div>
         )}
 
@@ -483,7 +482,7 @@ export default function JobDetail({ jobId }) {
           <div className="flex justify-between items-center">
             <h3>Overview & Notes</h3>
             <button className="btn btn-outline btn-sm" onClick={() => setEditing(!editing)}>
-              {editing ? 'Cancel' : '✏️ Edit'}
+              {editing ? 'Cancel' : 'Edit'}
             </button>
           </div>
           {editing ? (
@@ -505,40 +504,40 @@ export default function JobDetail({ jobId }) {
             <div>
               {job.job_description && (
                 <div style={{ marginBottom: '2rem' }}>
-                  <div style={{ 
-                    fontSize: '0.75rem', 
-                    fontWeight: 700, 
-                    color: 'var(--primary)', 
-                    marginBottom: '1rem', 
-                    textTransform: 'uppercase', 
+                  <div style={{
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    color: 'var(--primary)',
+                    marginBottom: '1rem',
+                    textTransform: 'uppercase',
                     letterSpacing: '0.2em',
                     opacity: 0.8
                   }}>
                     Job Intelligence
                   </div>
-                  <div style={{ 
-                    color: 'rgba(255, 255, 255, 0.9)', 
-                    fontSize: '0.95rem', 
-                    lineHeight: 1.8, 
-                    whiteSpace: 'pre-wrap', 
-                    maxHeight: '600px', 
+                  <div style={{
+                    color: 'var(--fg)',
+                    fontSize: '0.95rem',
+                    lineHeight: 1.8,
+                    whiteSpace: 'pre-wrap',
+                    maxHeight: '600px',
                     overflowY: 'auto',
-                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    backgroundColor: 'var(--surface-2)',
                     padding: '2rem',
-                    borderRadius: '16px',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    boxShadow: '0 4px 24px rgba(0, 0, 0, 0.2)',
+                    borderRadius: 'var(--radius-lg)',
+                    border: '1px solid var(--surface-border)',
+                    boxShadow: 'var(--shadow-md)',
                     fontFamily: 'unset',
                     letterSpacing: '0.01em',
                   }}>
                     <div dangerouslySetInnerHTML={{ __html: job.job_description
                       .replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                      .replace(/^### (.*$)/gim, '<h3 style="margin: 2rem 0 1rem; color: #fff; font-size: 1.1rem; font-weight: 700;">$1</h3>')
-                      .replace(/^## (.*$)/gim, '<h2 style="margin: 2.5rem 0 1.25rem; color: #fff; font-size: 1.4rem; font-weight: 800; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">$1</h2>')
-                      .replace(/^# (.*$)/gim, '<h1 style="margin: 3rem 0 1.5rem; color: #fff; font-size: 1.8rem; font-weight: 900;">$1</h1>')
+                      .replace(/^### (.*$)/gim, '<h3 style="margin: 2rem 0 1rem; color: var(--fg); font-size: 1.1rem; font-weight: 700;">$1</h3>')
+                      .replace(/^## (.*$)/gim, '<h2 style="margin: 2.5rem 0 1.25rem; color: var(--fg); font-size: 1.4rem; font-weight: 800; border-bottom: 1px solid var(--surface-border); padding-bottom: 0.5rem;">$1</h2>')
+                      .replace(/^# (.*$)/gim, '<h1 style="margin: 3rem 0 1.5rem; color: var(--fg); font-size: 1.8rem; font-weight: 900;">$1</h1>')
                       .replace(/^\* (.*$)/gim, '<div style="display: flex; gap: 0.75rem; margin-bottom: 0.5rem;"><span style="color: var(--primary)">•</span><span>$1</span></div>')
-                      .replace(/\*\*(.*?)\*\*/g, '<strong style="color: #fff; font-weight: 600;">$1</strong>')
-                      .replace(/\*(.*?)\*/g, '<em style="color: rgba(255,255,255,0.7)">$1</em>')
+                      .replace(/\*\*(.*?)\*\*/g, '<strong style="color: var(--fg); font-weight: 600;">$1</strong>')
+                      .replace(/\*(.*?)\*/g, '<em style="color: var(--fg-muted)">$1</em>')
                       .split('\n\n').map(p => p.trim() ? `<p style="margin-bottom: 1.25rem;">${p}</p>` : '').join('')
                     }} />
                   </div>
@@ -558,19 +557,18 @@ export default function JobDetail({ jobId }) {
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {!evalReport ? (
             <div className="panel" style={{ padding:'2rem', textAlign:'center' }}>
-              <div style={{ fontSize:'3rem', marginBottom:12 }}>⚡</div>
               <h3>Full A-G Structured Evaluation</h3>
               <p style={{ color:'var(--fg-muted)', margin:'0.5rem 0 1.5rem', maxWidth:500, marginInline:'auto' }}>
                 Career-ops inspired 7-block evaluation: Role Summary, CV Match, Level Strategy, Comp & Demand, Personalization, Interview Prep, and Posting Legitimacy.
               </p>
               <button className="btn btn-primary" onClick={runEvaluation} disabled={loading.evaluate}>
-                {loading.evaluate ? <><Spinner small /> Running Evaluation…</> : '⚡ Run A-G Evaluation'}
+                {loading.evaluate ? <><Spinner small /> Running Evaluation…</> : 'Run A-G Evaluation'}
               </button>
             </div>
           ) : (
             <>
               {/* Global Score Card */}
-              <div className="panel" style={{ padding:'1.5rem', background:'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(16,185,129,0.08))' }}>
+              <div className="panel" style={{ padding:'1.5rem', background:'var(--surface-2)' }}>
                 <div className="flex items-center gap-md" style={{ flexWrap:'wrap' }}>
                   <div style={{ textAlign:'center' }}>
                     <div style={{ fontSize:'2.5rem', fontWeight:800, color: evalReport.global_score >= 85 ? 'var(--success)' : evalReport.global_score >= 70 ? 'var(--warning)' : 'var(--danger)' }}>
@@ -581,12 +579,12 @@ export default function JobDetail({ jobId }) {
                   <div style={{ flex:1 }}>
                     <h3 style={{ marginBottom:4 }}>{evalReport.summary}</h3>
                     <div className="flex gap-sm" style={{ marginTop:8 }}>
-                      {evalReport.block_a_role_summary?.archetype && <span className="badge" style={{ background:'rgba(99,102,241,0.15)', color:'#818cf8' }}>🏷️ {evalReport.block_a_role_summary.archetype}</span>}
-                      {evalReport.block_a_role_summary?.seniority && <span className="badge" style={{ background:'rgba(245,158,11,0.15)', color:'#f59e0b' }}>📊 {evalReport.block_a_role_summary.seniority}</span>}
+                      {evalReport.block_a_role_summary?.archetype && <span className="badge" style={{ background:'var(--purple-subtle)', color:'var(--purple)' }}>{evalReport.block_a_role_summary.archetype}</span>}
+                      {evalReport.block_a_role_summary?.seniority && <span className="badge" style={{ background:'var(--warning-subtle)', color:'var(--warning)' }}>{evalReport.block_a_role_summary.seniority}</span>}
                       {evalReport.block_g_legitimacy?.tier && <span className="badge" style={{
-                        background: evalReport.block_g_legitimacy.tier === 'High Confidence' ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
-                        color: evalReport.block_g_legitimacy.tier === 'High Confidence' ? '#10b981' : '#f59e0b'
-                      }}>🛡️ {evalReport.block_g_legitimacy.tier}</span>}
+                        background: evalReport.block_g_legitimacy.tier === 'High Confidence' ? 'var(--success-subtle)' : 'var(--warning-subtle)',
+                        color: evalReport.block_g_legitimacy.tier === 'High Confidence' ? 'var(--success)' : 'var(--warning)'
+                      }}>{evalReport.block_g_legitimacy.tier}</span>}
                     </div>
                   </div>
                 </div>
@@ -597,7 +595,7 @@ export default function JobDetail({ jobId }) {
                 <div className="panel" style={{ padding:'1.25rem' }}>
                   <button onClick={() => toggleBlock('a')} style={{ all:'unset', cursor:'pointer', display:'flex', alignItems:'center', gap:8, width:'100%', fontWeight:600 }}>
                     <span>{expandedBlocks.a ? '▼' : '▶'}</span>
-                    <span>📋 Block A — Role Summary</span>
+                    <span>Block A — Role Summary</span>
                   </button>
                   {expandedBlocks.a && (
                     <div style={{ marginTop:'1rem', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem' }}>
@@ -617,13 +615,13 @@ export default function JobDetail({ jobId }) {
                 <div className="panel" style={{ padding:'1.25rem' }}>
                   <button onClick={() => toggleBlock('b')} style={{ all:'unset', cursor:'pointer', display:'flex', alignItems:'center', gap:8, width:'100%', fontWeight:600 }}>
                     <span>{expandedBlocks.b ? '▼' : '▶'}</span>
-                    <span>🎯 Block B — CV Match ({evalReport.block_b_cv_match.requirements?.length || 0} requirements)</span>
+                    <span>Block B — CV Match ({evalReport.block_b_cv_match.requirements?.length || 0} requirements)</span>
                   </button>
                   {expandedBlocks.b && (
                     <div style={{ marginTop:'1rem' }}>
                       {evalReport.block_b_cv_match.requirements?.map((r, i) => (
-                        <div key={i} style={{ padding:'0.75rem', marginBottom:6, borderRadius:'var(--radius-sm)', background: r.match_strength === 'strong' ? 'rgba(16,185,129,0.08)' : r.match_strength === 'partial' ? 'rgba(245,158,11,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${r.match_strength === 'strong' ? 'rgba(16,185,129,0.2)' : r.match_strength === 'partial' ? 'rgba(245,158,11,0.2)' : 'rgba(239,68,68,0.2)'}` }}>
-                          <div style={{ fontWeight:600, fontSize:'0.85rem', marginBottom:4 }}>{r.match_strength === 'strong' ? '✅' : r.match_strength === 'partial' ? '🟡' : '❌'} {r.jd_requirement}</div>
+                        <div key={i} style={{ padding:'0.75rem', marginBottom:6, borderRadius:'var(--radius-sm)', background: r.match_strength === 'strong' ? 'var(--success-subtle)' : r.match_strength === 'partial' ? 'var(--warning-subtle)' : 'var(--danger-subtle)', border: `1px solid ${r.match_strength === 'strong' ? 'var(--success)' : r.match_strength === 'partial' ? 'var(--warning)' : 'var(--danger)'}` }}>
+                          <div style={{ fontWeight:600, fontSize:'0.85rem', marginBottom:4 }}>{r.jd_requirement}</div>
                           <div style={{ fontSize:'0.8rem', color:'var(--fg-muted)' }}>{r.resume_evidence}</div>
                         </div>
                       ))}
@@ -633,9 +631,9 @@ export default function JobDetail({ jobId }) {
                           {evalReport.block_b_cv_match.gaps.map((g, i) => (
                             <div key={i} style={{ padding:'0.75rem', marginBottom:6, background:'var(--surface-2)', borderRadius:'var(--radius-sm)' }}>
                               <div style={{ fontWeight:600, fontSize:'0.85rem', color: g.severity === 'hard_blocker' ? 'var(--danger)' : 'var(--warning)' }}>
-                                {g.severity === 'hard_blocker' ? '🚫' : '⚠️'} {g.gap}
+                                {g.gap}
                               </div>
-                              {g.mitigation && <div style={{ fontSize:'0.8rem', color:'var(--fg-muted)', marginTop:4 }}>💡 {g.mitigation}</div>}
+                              {g.mitigation && <div style={{ fontSize:'0.8rem', color:'var(--fg-muted)', marginTop:4 }}>{g.mitigation}</div>}
                             </div>
                           ))}
                         </div>
@@ -650,7 +648,7 @@ export default function JobDetail({ jobId }) {
                 <div className="panel" style={{ padding:'1.25rem' }}>
                   <button onClick={() => toggleBlock('c')} style={{ all:'unset', cursor:'pointer', display:'flex', alignItems:'center', gap:8, width:'100%', fontWeight:600 }}>
                     <span>{expandedBlocks.c ? '▼' : '▶'}</span>
-                    <span>📊 Block C — Level & Strategy</span>
+                    <span>Block C — Level & Strategy</span>
                   </button>
                   {expandedBlocks.c && (
                     <div style={{ marginTop:'1rem', display:'flex', flexDirection:'column', gap:'0.75rem' }}>
@@ -670,7 +668,7 @@ export default function JobDetail({ jobId }) {
                 <div className="panel" style={{ padding:'1.25rem' }}>
                   <button onClick={() => toggleBlock('d')} style={{ all:'unset', cursor:'pointer', display:'flex', alignItems:'center', gap:8, width:'100%', fontWeight:600 }}>
                     <span>{expandedBlocks.d ? '▼' : '▶'}</span>
-                    <span>💰 Block D — Comp & Demand</span>
+                    <span>Block D — Comp & Demand</span>
                   </button>
                   {expandedBlocks.d && (
                     <div style={{ marginTop:'1rem', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem' }}>
@@ -690,20 +688,20 @@ export default function JobDetail({ jobId }) {
                 <div className="panel" style={{ padding:'1.25rem' }}>
                   <button onClick={() => toggleBlock('e')} style={{ all:'unset', cursor:'pointer', display:'flex', alignItems:'center', gap:8, width:'100%', fontWeight:600 }}>
                     <span>{expandedBlocks.e ? '▼' : '▶'}</span>
-                    <span>✏️ Block E — Personalization Plan</span>
+                    <span>Block E — Personalization Plan</span>
                   </button>
                   {expandedBlocks.e && (
                     <div style={{ marginTop:'1rem', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem' }}>
                       <div>
-                        <h4 style={{ marginBottom:8, fontSize:'0.85rem' }}>📄 CV Changes</h4>
+                        <h4 style={{ marginBottom:8, fontSize:'0.85rem' }}>CV Changes</h4>
                         {(evalReport.block_e_personalization.cv_changes || []).map((c, i) => (
-                          <div key={i} style={{ padding:'0.5rem 0.75rem', marginBottom:4, background:'rgba(16,185,129,0.08)', borderRadius:'var(--radius-sm)', fontSize:'0.83rem', border:'1px solid rgba(16,185,129,0.15)' }}>{i+1}. {c}</div>
+                          <div key={i} style={{ padding:'0.5rem 0.75rem', marginBottom:4, background:'var(--success-subtle)', borderRadius:'var(--radius-sm)', fontSize:'0.83rem', border:'1px solid var(--success)' }}>{i+1}. {c}</div>
                         ))}
                       </div>
                       <div>
-                        <h4 style={{ marginBottom:8, fontSize:'0.85rem' }}>💼 LinkedIn Changes</h4>
+                        <h4 style={{ marginBottom:8, fontSize:'0.85rem' }}>LinkedIn Changes</h4>
                         {(evalReport.block_e_personalization.linkedin_changes || []).map((c, i) => (
-                          <div key={i} style={{ padding:'0.5rem 0.75rem', marginBottom:4, background:'rgba(99,102,241,0.08)', borderRadius:'var(--radius-sm)', fontSize:'0.83rem', border:'1px solid rgba(99,102,241,0.15)' }}>{i+1}. {c}</div>
+                          <div key={i} style={{ padding:'0.5rem 0.75rem', marginBottom:4, background:'var(--primary-subtle)', borderRadius:'var(--radius-sm)', fontSize:'0.83rem', border:'1px solid var(--primary)' }}>{i+1}. {c}</div>
                         ))}
                       </div>
                     </div>
@@ -716,21 +714,20 @@ export default function JobDetail({ jobId }) {
                 <div className="panel" style={{ padding:'1.25rem' }}>
                   <button onClick={() => toggleBlock('g')} style={{ all:'unset', cursor:'pointer', display:'flex', alignItems:'center', gap:8, width:'100%', fontWeight:600 }}>
                     <span>{expandedBlocks.g ? '▼' : '▶'}</span>
-                    <span>🛡️ Block G — Posting Legitimacy ({evalReport.block_g_legitimacy.tier})</span>
+                    <span>Block G — Posting Legitimacy ({evalReport.block_g_legitimacy.tier})</span>
                   </button>
                   {expandedBlocks.g && (
                     <div style={{ marginTop:'1rem' }}>
                       {evalReport.block_g_legitimacy.signals?.map((s, i) => (
                         <div key={i} style={{ padding:'0.75rem', marginBottom:6, background:'var(--surface-2)', borderRadius:'var(--radius-sm)', display:'flex', alignItems:'center', gap:8 }}>
-                          <span>{s.weight === 'Positive' ? '✅' : s.weight === 'Concerning' ? '⚠️' : '➖'}</span>
                           <div>
-                            <div style={{ fontWeight:600, fontSize:'0.85rem' }}>{s.signal}</div>
+                            <div style={{ fontWeight:600, fontSize:'0.85rem', color: s.weight === 'Positive' ? 'var(--success)' : s.weight === 'Concerning' ? 'var(--danger)' : 'var(--fg)' }}>{s.signal}</div>
                             <div style={{ fontSize:'0.8rem', color:'var(--fg-muted)' }}>{s.finding}</div>
                           </div>
                         </div>
                       ))}
                       {evalReport.block_g_legitimacy.context_notes && (
-                        <div style={{ marginTop:8, padding:'0.75rem', background:'rgba(245,158,11,0.08)', borderRadius:'var(--radius-sm)', fontSize:'0.83rem', color:'var(--fg-muted)' }}>📝 {evalReport.block_g_legitimacy.context_notes}</div>
+                        <div className="alert alert-warning" style={{ marginTop:8, fontSize:'0.83rem' }}>{evalReport.block_g_legitimacy.context_notes}</div>
                       )}
                     </div>
                   )}
@@ -738,7 +735,7 @@ export default function JobDetail({ jobId }) {
               )}
 
               <button className="btn btn-outline btn-sm" style={{ alignSelf:'flex-start' }} onClick={runEvaluation} disabled={loading.evaluate}>
-                {loading.evaluate ? <><Spinner small /> Re-evaluating…</> : '🔄 Re-run Evaluation'}
+                {loading.evaluate ? <><Spinner small /> Re-evaluating…</> : 'Re-run Evaluation'}
               </button>
             </>
           )}
@@ -750,13 +747,12 @@ export default function JobDetail({ jobId }) {
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {!interviewData ? (
             <div className="panel" style={{ padding:'2rem', textAlign:'center' }}>
-              <div style={{ fontSize:'3rem', marginBottom:12 }}>🎤</div>
               <h3>Interview Prep — STAR+Reflection Stories</h3>
               <p style={{ color:'var(--fg-muted)', margin:'0.5rem 0 1.5rem', maxWidth:500, marginInline:'auto' }}>
                 Generate powerful STAR stories with reflection. Each story maps to a JD requirement and builds your persistent story bank.
               </p>
               <button className="btn btn-primary" onClick={runInterviewPrep} disabled={loading.interviewPrep}>
-                {loading.interviewPrep ? <><Spinner small /> Generating…</> : '🎤 Generate Interview Stories'}
+                {loading.interviewPrep ? <><Spinner small /> Generating…</> : 'Generate Interview Stories'}
               </button>
             </div>
           ) : (
@@ -770,13 +766,13 @@ export default function JobDetail({ jobId }) {
                       <span style={{ fontSize:'0.75rem', color:'var(--fg-subtle)' }}>Maps to: {s.jd_requirement}</span>
                     </div>
                     <div className="flex gap-sm">
-                      {(s.tags || []).map(t => <span key={t} className="badge" style={{ background:'rgba(99,102,241,0.1)', color:'#818cf8', fontSize:'0.7rem' }}>{t}</span>)}
+                      {(s.tags || []).map(t => <span key={t} className="badge" style={{ background:'var(--primary-subtle)', color:'var(--primary)', fontSize:'0.7rem' }}>{t}</span>)}
                     </div>
                   </div>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem' }}>
                     {['situation','task','action','result','reflection'].map(part => (
-                      <div key={part} style={{ padding:'0.75rem', background: part === 'reflection' ? 'rgba(168,85,247,0.08)' : 'var(--surface-2)', borderRadius:'var(--radius-sm)', gridColumn: part === 'action' || part === 'reflection' ? '1 / -1' : 'auto', border: part === 'reflection' ? '1px solid rgba(168,85,247,0.2)' : 'none' }}>
-                        <div style={{ fontSize:'0.7rem', color:'var(--fg-subtle)', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:4 }}>{part === 'reflection' ? '💭 Reflection (seniority signal)' : part.charAt(0).toUpperCase() + part.slice(1)}</div>
+                      <div key={part} style={{ padding:'0.75rem', background: part === 'reflection' ? 'var(--purple-subtle)' : 'var(--surface-2)', borderRadius:'var(--radius-sm)', gridColumn: part === 'action' || part === 'reflection' ? '1 / -1' : 'auto', border: part === 'reflection' ? '1px solid var(--purple)' : 'none' }}>
+                        <div style={{ fontSize:'0.7rem', color:'var(--fg-subtle)', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:4 }}>{part === 'reflection' ? 'Reflection (seniority signal)' : part.charAt(0).toUpperCase() + part.slice(1)}</div>
                         <div style={{ fontSize:'0.83rem', lineHeight:1.6, color:'var(--fg-muted)' }}>{s[part]}</div>
                       </div>
                     ))}
@@ -787,13 +783,13 @@ export default function JobDetail({ jobId }) {
               {/* Red Flag Questions */}
               {interviewData.red_flag_questions?.length > 0 && (
                 <div className="panel" style={{ padding:'1.25rem' }}>
-                  <h4 style={{ color:'var(--danger)', marginBottom:'0.75rem' }}>🚩 Red Flag Questions</h4>
+                  <h4 style={{ color:'var(--danger)', marginBottom:'0.75rem' }}>Red Flag Questions</h4>
                   {interviewData.red_flag_questions.map((q, i) => (
-                    <div key={i} style={{ padding:'0.75rem', marginBottom:6, background:'rgba(239,68,68,0.06)', borderRadius:'var(--radius-sm)', border:'1px solid rgba(239,68,68,0.15)' }}>
-                      <div style={{ fontWeight:600, fontSize:'0.875rem', marginBottom:4 }}>❓ {q.question}</div>
-                      {q.why_they_ask && <div style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginBottom:4 }}>🎯 Why: {q.why_they_ask}</div>}
-                      <div style={{ fontSize:'0.8rem', color:'var(--success)' }}>✅ {q.suggested_response}</div>
-                      {q.pitfall && <div style={{ fontSize:'0.8rem', color:'var(--danger)', marginTop:4 }}>⚠️ Avoid: {q.pitfall}</div>}
+                    <div key={i} style={{ padding:'0.75rem', marginBottom:6, background:'var(--danger-subtle)', borderRadius:'var(--radius-sm)', border:'1px solid var(--danger)' }}>
+                      <div style={{ fontWeight:600, fontSize:'0.875rem', marginBottom:4 }}>{q.question}</div>
+                      {q.why_they_ask && <div style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginBottom:4 }}>Why: {q.why_they_ask}</div>}
+                      <div style={{ fontSize:'0.8rem', color:'var(--success)' }}>{q.suggested_response}</div>
+                      {q.pitfall && <div style={{ fontSize:'0.8rem', color:'var(--danger)', marginTop:4 }}>Avoid: {q.pitfall}</div>}
                     </div>
                   ))}
                 </div>
@@ -801,15 +797,15 @@ export default function JobDetail({ jobId }) {
 
               {/* Case Study */}
               {interviewData.case_study && (
-                <div className="panel" style={{ padding:'1.25rem', background:'rgba(99,102,241,0.05)', border:'1px solid rgba(99,102,241,0.15)' }}>
-                  <h4 style={{ marginBottom:'0.75rem' }}>📦 Recommended Case Study</h4>
+                <div className="panel" style={{ padding:'1.25rem', background:'var(--primary-subtle)', border:'1px solid var(--primary)' }}>
+                  <h4 style={{ marginBottom:'0.75rem' }}>Recommended Case Study</h4>
                   <div style={{ fontWeight:600, fontSize:'0.9rem', marginBottom:4 }}>{interviewData.case_study.project}</div>
                   <div style={{ fontSize:'0.83rem', color:'var(--fg-muted)', marginBottom:8 }}>{interviewData.case_study.framing}</div>
                   {interviewData.case_study.key_decisions && (
                     <div style={{ marginTop:8 }}>
                       <span style={{ fontSize:'0.75rem', color:'var(--fg-subtle)' }}>Key Decisions:</span>
                       {interviewData.case_study.key_decisions.map((d, i) => (
-                        <span key={i} className="badge" style={{ margin:'4px 4px 0 0', fontSize:'0.75rem' }}>🔹 {d}</span>
+                        <span key={i} className="badge" style={{ margin:'4px 4px 0 0', fontSize:'0.75rem' }}>{d}</span>
                       ))}
                     </div>
                   )}
@@ -817,7 +813,7 @@ export default function JobDetail({ jobId }) {
               )}
 
               <button className="btn btn-outline btn-sm" style={{ alignSelf:'flex-start' }} onClick={runInterviewPrep} disabled={loading.interviewPrep}>
-                {loading.interviewPrep ? <><Spinner small /> Generating…</> : '🔄 Generate More Stories'}
+                {loading.interviewPrep ? <><Spinner small /> Generating…</> : 'Generate More Stories'}
               </button>
             </>
           )}
@@ -829,30 +825,29 @@ export default function JobDetail({ jobId }) {
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {!linkedInData ? (
             <div className="panel" style={{ padding:'2rem', textAlign:'center' }}>
-              <div style={{ fontSize:'3rem', marginBottom:12 }}>💼</div>
               <h3>LinkedIn Outreach Messages</h3>
               <p style={{ color:'var(--fg-muted)', margin:'0.5rem 0 1.5rem', maxWidth:500, marginInline:'auto' }}>
                 Generate targeted connection request messages for 4 contact types: Recruiter, Hiring Manager, Peer, and Interviewer. All within LinkedIn's 300-char limit.
               </p>
               <button className="btn btn-primary" onClick={runLinkedIn} disabled={loading.linkedin}>
-                {loading.linkedin ? <><Spinner small /> Generating…</> : '💼 Generate Messages'}
+                {loading.linkedin ? <><Spinner small /> Generating…</> : 'Generate Messages'}
               </button>
             </div>
           ) : (
             <>
               {linkedInData.recommended_target && (
-                <div className="panel" style={{ padding:'1rem', background:'rgba(16,185,129,0.08)', border:'1px solid rgba(16,185,129,0.2)' }}>
-                  <span style={{ fontSize:'0.85rem' }}>🎯 <strong>Recommended:</strong> {linkedInData.recommended_target}</span>
+                <div className="alert alert-success">
+                  <span style={{ fontSize:'0.85rem' }}><strong>Recommended:</strong> {linkedInData.recommended_target}</span>
                 </div>
               )}
               {linkedInData.messages && Object.entries(linkedInData.messages).map(([type, data]) => (
                 <div key={type} className="panel" style={{ padding:'1.25rem' }}>
                   <div className="flex justify-between items-center" style={{ marginBottom:'0.75rem' }}>
                     <h4 style={{ textTransform:'capitalize', fontSize:'0.95rem' }}>
-                      {type === 'recruiter' ? '🧑‍💼' : type === 'hiring_manager' ? '👔' : type === 'peer' ? '🤝' : '🎤'} {type.replace(/_/g, ' ')}
+                      {type.replace(/_/g, ' ')}
                     </h4>
                     <button className="btn btn-outline btn-sm" onClick={() => copyToClipboard(data.message)} style={{ gap:4 }}>
-                      📋 Copy
+                      Copy
                     </button>
                   </div>
                   <div style={{ padding:'1rem', background:'var(--surface-2)', borderRadius:'var(--radius)', fontSize:'0.9rem', lineHeight:1.6, fontStyle:'italic', position:'relative' }}>
@@ -863,13 +858,13 @@ export default function JobDetail({ jobId }) {
                   </div>
                   {data.search_query && (
                     <div style={{ marginTop:8, fontSize:'0.78rem', color:'var(--fg-subtle)' }}>
-                      🔎 LinkedIn search: <code style={{ background:'var(--surface-2)', padding:'2px 6px', borderRadius:4 }}>{data.search_query}</code>
+                      LinkedIn search: <code style={{ background:'var(--surface-2)', padding:'2px 6px', borderRadius:4 }}>{data.search_query}</code>
                     </div>
                   )}
                 </div>
               ))}
               <button className="btn btn-outline btn-sm" style={{ alignSelf:'flex-start' }} onClick={runLinkedIn} disabled={loading.linkedin}>
-                {loading.linkedin ? <><Spinner small /> Regenerating…</> : '🔄 Regenerate Messages'}
+                {loading.linkedin ? <><Spinner small /> Regenerating…</> : 'Regenerate Messages'}
               </button>
             </>
           )}
@@ -881,21 +876,20 @@ export default function JobDetail({ jobId }) {
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           {!researchData ? (
             <div className="panel" style={{ padding:'2rem', textAlign:'center' }}>
-              <div style={{ fontSize:'3rem', marginBottom:12 }}>🔍</div>
               <h3>Deep Company Research</h3>
               <p style={{ color:'var(--fg-muted)', margin:'0.5rem 0 1.5rem', maxWidth:500, marginInline:'auto' }}>
                 6-axis intelligence: AI Strategy, Recent Moves, Engineering Culture, Challenges, Competitors, and your Candidate Angle.
               </p>
               <button className="btn btn-primary" onClick={runResearch} disabled={loading.research}>
-                {loading.research ? <><Spinner small /> Researching…</> : '🔍 Run Deep Research'}
+                {loading.research ? <><Spinner small /> Researching…</> : 'Run Deep Research'}
               </button>
             </div>
           ) : (
             <>
-              {[{key:'ai_strategy', icon:'🤖', title:'AI Strategy'}, {key:'recent_moves', icon:'📰', title:'Recent Moves'}, {key:'engineering_culture', icon:'⚙️', title:'Engineering Culture'}, {key:'likely_challenges', icon:'🔥', title:'Likely Challenges'}, {key:'competitive_landscape', icon:'⚔️', title:'Competitive Landscape'}, {key:'candidate_angle', icon:'🎯', title:'Your Candidate Angle'}].map(section => (
+              {[{key:'ai_strategy', title:'AI Strategy'}, {key:'recent_moves', title:'Recent Moves'}, {key:'engineering_culture', title:'Engineering Culture'}, {key:'likely_challenges', title:'Likely Challenges'}, {key:'competitive_landscape', title:'Competitive Landscape'}, {key:'candidate_angle', title:'Your Candidate Angle'}].map(section => (
                 researchData[section.key] && (
-                  <div key={section.key} className="panel" style={{ padding:'1.25rem', ...(section.key === 'candidate_angle' ? { background:'rgba(99,102,241,0.05)', border:'1px solid rgba(99,102,241,0.15)' } : {}) }}>
-                    <h4 style={{ marginBottom:'0.75rem' }}>{section.icon} {section.title}</h4>
+                  <div key={section.key} className="panel" style={{ padding:'1.25rem', ...(section.key === 'candidate_angle' ? { background:'var(--primary-subtle)', border:'1px solid var(--primary)' } : {}) }}>
+                    <h4 style={{ marginBottom:'0.75rem' }}>{section.title}</h4>
                     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem' }}>
                       {Object.entries(researchData[section.key]).map(([k, v]) => (
                         <div key={k} style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)' }}>
@@ -910,7 +904,7 @@ export default function JobDetail({ jobId }) {
                 )
               ))}
               <button className="btn btn-outline btn-sm" style={{ alignSelf:'flex-start' }} onClick={runResearch} disabled={loading.research}>
-                {loading.research ? <><Spinner small /> Re-researching…</> : '🔄 Refresh Research'}
+                {loading.research ? <><Spinner small /> Re-researching…</> : 'Refresh Research'}
               </button>
             </>
           )}
@@ -941,7 +935,6 @@ export default function JobDetail({ jobId }) {
                 </div>
               ) : (
                 <div style={{ textAlign:'center', padding:'1.5rem' }}>
-                  <div style={{ fontSize:'2.5rem', marginBottom:8 }}>🤖</div>
                   <p style={{ color:'var(--fg-subtle)', fontSize:'0.875rem' }}>No analysis yet</p>
                 </div>
               )}
@@ -949,7 +942,7 @@ export default function JobDetail({ jobId }) {
                 <h3 style={{ marginBottom:'0.5rem' }}>AI Fit Assessment</h3>
                 <p style={{ color:'var(--fg-muted)', fontSize:'0.875rem' }}>Compares your Master Resume against this Job Description</p>
                 <button className="btn btn-primary btn-sm" style={{ marginTop:'0.75rem' }} onClick={runAnalysis} disabled={loading.analyze}>
-                  {loading.analyze ? <><Spinner small /> Analyzing…</> : '🤖 Run Analysis'}
+                  {loading.analyze ? <><Spinner small /> Analyzing…</> : 'Run Analysis'}
                 </button>
               </div>
             </div>
@@ -958,13 +951,13 @@ export default function JobDetail({ jobId }) {
           {(job.strengths?.length > 0 || job.gaps?.length > 0) && (
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem' }}>
               <div className="panel" style={{ padding:'1.25rem' }}>
-                <h4 style={{ color:'var(--success)', marginBottom:'0.75rem' }}>✅ Strengths ({job.strengths?.length || 0})</h4>
+                <h4 style={{ color:'var(--success)', marginBottom:'0.75rem' }}>Strengths ({job.strengths?.length || 0})</h4>
                 {(job.strengths || []).map((s, i) => (
                   <div key={i} style={{ padding:'0.5rem 0', borderBottom:'1px solid var(--surface-border)', fontSize:'0.845rem', color:'var(--fg-muted)' }}>• {s}</div>
                 ))}
               </div>
               <div className="panel" style={{ padding:'1.25rem' }}>
-                <h4 style={{ color:'var(--danger)', marginBottom:'0.75rem' }}>⚠️ Gaps ({job.gaps?.length || 0})</h4>
+                <h4 style={{ color:'var(--danger)', marginBottom:'0.75rem' }}>Gaps ({job.gaps?.length || 0})</h4>
                 {(job.gaps || []).map((g, i) => (
                   <div key={i} style={{ padding:'0.5rem 0', borderBottom:'1px solid var(--surface-border)', fontSize:'0.845rem', color:'var(--fg-muted)' }}>• {g}</div>
                 ))}
@@ -974,7 +967,7 @@ export default function JobDetail({ jobId }) {
 
           {job.action_items?.length > 0 && (
             <div className="panel" style={{ padding:'1.25rem' }}>
-              <h4 style={{ color:'var(--warning)', marginBottom:'0.75rem' }}>🎯 Action Items ({job.action_items.length})</h4>
+              <h4 style={{ color:'var(--warning)', marginBottom:'0.75rem' }}>Action Items ({job.action_items.length})</h4>
               {(job.action_items || []).map((a, i) => (
                 <div key={i} style={{ padding:'0.6rem', borderRadius:'var(--radius-sm)', background:'var(--warning-subtle)', marginBottom:'0.5rem', fontSize:'0.845rem', color:'var(--fg)' }}>
                   {i+1}. {a}
@@ -999,21 +992,21 @@ export default function JobDetail({ jobId }) {
             </div>
             <div className="flex gap-sm">
               <button className="btn btn-primary" onClick={runResumeGen} disabled={loading.resume}>
-                {loading.resume ? <><Spinner small /> Generating…</> : '📄 Generate Tailored Resume'}
+                {loading.resume ? <><Spinner small /> Generating…</> : 'Generate Tailored Resume'}
               </button>
               <button className="btn btn-outline" onClick={runCoverLetterGen} disabled={loading.cover}>
-                {loading.cover ? <><Spinner small /> Generating…</> : '✉️ Generate Cover Letter'}
+                {loading.cover ? <><Spinner small /> Generating…</> : 'Generate Cover Letter'}
               </button>
             </div>
-            <p style={{ fontSize:'0.75rem', color:'var(--fg-subtle)' }}>
-              ℹ️ Generate a resume first, then generate the cover letter. It uses your tailored resume as context.
-            </p>
+            <div className="alert alert-info" style={{ fontSize:'0.75rem' }}>
+              Generate a resume first, then generate the cover letter. It uses your tailored resume as context.
+            </div>
           </div>
 
           {/* Resumes */}
           {resumes.length > 0 && (
             <div className="panel" style={{ padding:'1.25rem' }}>
-              <h4 style={{ marginBottom:'0.75rem' }}>📄 Resume Versions ({resumes.length})</h4>
+              <h4 style={{ marginBottom:'0.75rem' }}>Resume Versions ({resumes.length})</h4>
               {resumes.map(r => (
                 <div key={r.id} style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                   <div>
@@ -1032,7 +1025,7 @@ export default function JobDetail({ jobId }) {
                       <details style={{ marginTop:6 }}>
                         <summary style={{ cursor:'pointer', fontSize:'0.8rem', fontWeight:700,
                           color: r.ats_score.total>=70?'var(--success)':r.ats_score.total>=50?'var(--warning)':'var(--danger)' }}>
-                          🎯 ATS Score: {r.ats_score.total}/100
+                          ATS Score: {r.ats_score.total}/100
                         </summary>
                         <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)', marginTop:6, lineHeight:1.5 }}>
                           {r.ats_score.scores && Object.entries(r.ats_score.scores).map(([k,v]) => (
@@ -1047,13 +1040,13 @@ export default function JobDetail({ jobId }) {
                   </div>
                   <div className="flex gap-sm" style={{ alignItems:'center' }}>
                     {r.llm_used && (
-                      <span title="Model used to generate this resume" style={{ fontSize:'0.7rem', color:'var(--fg-muted)', background:'var(--surface-3, var(--surface-hover))', border:'1px solid var(--surface-border)', padding:'2px 8px', borderRadius:'999px', whiteSpace:'nowrap' }}>
-                        🧠 {r.llm_used}
+                      <span title="Model used to generate this resume" style={{ fontSize:'0.7rem', color:'var(--fg-muted)', background:'var(--surface-hover)', border:'1px solid var(--surface-border)', padding:'2px 8px', borderRadius:'999px', whiteSpace:'nowrap' }}>
+                        {r.llm_used}
                       </span>
                     )}
-                    {r.content_md && <button className="btn btn-primary btn-sm" onClick={() => setEditingResume(r)}>💬 Edit</button>}
-                    {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.pdf`)}>⬇ PDF</button>}
-                    {r.docx_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.docx`)}>⬇ DOCX</button>}
+                    {r.content_md && <button className="btn btn-primary btn-sm" onClick={() => setEditingResume(r)}>Edit</button>}
+                    {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.pdf`)}>PDF</button>}
+                    {r.docx_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.docx`)}>DOCX</button>}
                   </div>
                 </div>
               ))}
@@ -1063,7 +1056,7 @@ export default function JobDetail({ jobId }) {
           {/* Cover Letters */}
           {coverLetters.length > 0 && (
             <div className="panel" style={{ padding:'1.25rem' }}>
-              <h4 style={{ marginBottom:'0.75rem' }}>✉️ Cover Letter Versions ({coverLetters.length})</h4>
+              <h4 style={{ marginBottom:'0.75rem' }}>Cover Letter Versions ({coverLetters.length})</h4>
               {coverLetters.map(c => (
                 <div key={c.id} style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                   <div>
@@ -1080,7 +1073,7 @@ export default function JobDetail({ jobId }) {
                     <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)', marginTop:4 }}>{c.llm_used} • {new Date(c.created_at).toLocaleString()}</div>
                   </div>
                   <div className="flex gap-sm">
-                    {c.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `cover_letter_v${c.version}.pdf`)}>⬇ PDF</button>}
+                    {c.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `cover_letter_v${c.version}.pdf`)}>PDF</button>}
                   </div>
                 </div>
               ))}
@@ -1089,7 +1082,6 @@ export default function JobDetail({ jobId }) {
 
           {resumes.length === 0 && coverLetters.length === 0 && (
             <div className="panel" style={{ padding:'2rem', textAlign:'center', color:'var(--fg-subtle)' }}>
-              <div style={{ fontSize:'2.5rem', marginBottom:12 }}>📂</div>
               <p>No documents generated yet. Use the buttons above to create your first tailored resume.</p>
             </div>
           )}
@@ -1149,7 +1141,7 @@ export default function JobDetail({ jobId }) {
       {activeTab === 'intelligence' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
           <div className="panel" style={{ padding:'1.25rem', display:'flex', flexDirection:'column', gap:'0.75rem' }}>
-            <h4>⚖️ Compare LLMs Side-by-Side</h4>
+            <h4>Compare LLMs Side-by-Side</h4>
             <p style={{ fontSize:'0.875rem', color:'var(--fg-muted)' }}>
               Fan out the same generation task to multiple LLMs simultaneously. Compare quality, style, and speed.
             </p>
@@ -1159,7 +1151,7 @@ export default function JobDetail({ jobId }) {
                 <option value="cover_letter">Cover Letter</option>
               </select>
               <button className="btn btn-primary" onClick={runCompare} disabled={loading.compare}>
-                {loading.compare ? <><Spinner small /> Comparing…</> : '⚖️ Compare Gemini vs Groq vs OpenRouter'}
+                {loading.compare ? <><Spinner small /> Comparing…</> : 'Compare Gemini vs Groq vs OpenRouter'}
               </button>
             </div>
           </div>
@@ -1171,7 +1163,7 @@ export default function JobDetail({ jobId }) {
                   <div className="flex justify-between items-center" style={{ marginBottom:'0.75rem' }}>
                     <h4 style={{ fontSize:'0.875rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>{r.provider}</h4>
                     <span style={{ fontSize:'0.75rem', color: r.error ? 'var(--danger)' : 'var(--success)' }}>
-                      {r.error ? '❌ Error' : `✅ ${r.latency_ms}ms`}
+                      {r.error ? 'Error' : `${r.latency_ms}ms`}
                     </span>
                   </div>
                   {r.error ? (

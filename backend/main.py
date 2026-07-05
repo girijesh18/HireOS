@@ -968,7 +968,8 @@ def download_file(job_id: int, filename: str, db: Session = Depends(get_db), cur
 @app.get("/api/settings")
 def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     rows = db.query(Settings).filter(Settings.user_id == current_user.id).all()
-    result = {r.key: r.value for r in rows}
+    # Skip internal caches (e.g. the insights narrative blob) — not user settings.
+    result = {r.key: r.value for r in rows if r.key != _INSIGHTS_CACHE_KEY}
     # Mask secrets in response
     for k in result:
         if any(s in k for s in ["key", "token", "secret", "password"]):
@@ -2534,17 +2535,43 @@ def get_pattern_analytics(db: Session = Depends(get_db), current_user: User = De
 
 # ── Insights Dashboard ─────────────────────────────────────────────────────────
 
+_INSIGHTS_CACHE_KEY = "insights_narrative"
+
+
 @app.get("/api/insights")
 async def get_insights(
     llm: str = "",
     days: int = 90,
+    refresh: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Stats + LLM-generated narrative on job hunt activity (per user)."""
+    """Stats + LLM-generated narrative on job hunt activity (per user).
+
+    Stats are recomputed fresh every call (cheap DB aggregation). The narrative
+    is LLM-generated and expensive, so it's persisted in Settings and only
+    regenerated when the client asks (?refresh=true) or no cache exists yet.
+    """
     uid = current_user.id
-    llm = resolve_llm(db, uid, llm)
     stats = chat_store.get_stats(days=days, user_id=uid)
+
+    cache_row = db.query(Settings).filter(
+        Settings.key == _INSIGHTS_CACHE_KEY, Settings.user_id == uid
+    ).first()
+
+    # Serve the cached narrative unless the caller forces a refresh.
+    if not refresh and cache_row and cache_row.value:
+        try:
+            cached = json.loads(cache_row.value)
+            return {
+                "stats": stats,
+                "narrative": cached.get("narrative"),
+                "generated_at": cached.get("generated_at"),
+            }
+        except (ValueError, TypeError):
+            pass  # corrupt cache → fall through and regenerate
+
+    llm = resolve_llm(db, uid, llm)
     samples = chat_store.get_recent_samples(days=days, limit=20, user_id=uid)
 
     narrative = None
@@ -2553,20 +2580,34 @@ async def get_insights(
         narrative = await agent.generate_narrative(stats, samples, llm=llm)
     except Exception as e:
         logger.warning(f"[Insights] Narrative generation failed: {e}")
-        narrative = {
-            "summary": "Could not generate narrative.",
-            "what_youre_doing": "",
-            "momentum_score": 0,
-            "momentum_rationale": str(e),
-            "gaps": "",
-            "top_3_recommendations": [],
-            "warning": None,
+        # Don't cache failures — leave any prior good narrative in place.
+        return {
+            "stats": stats,
+            "narrative": {
+                "summary": "Could not generate narrative.",
+                "what_youre_doing": "",
+                "momentum_score": 0,
+                "momentum_rationale": str(e),
+                "gaps": "",
+                "top_3_recommendations": [],
+                "warning": None,
+            },
+            "generated_at": None,
         }
+
+    generated_at = datetime.utcnow().isoformat()
+    payload = json.dumps({"narrative": narrative, "generated_at": generated_at})
+    if cache_row:
+        cache_row.value = payload
+        cache_row.updated_at = datetime.utcnow()
+    else:
+        db.add(Settings(key=_INSIGHTS_CACHE_KEY, value=payload, user_id=uid))
+    db.commit()
 
     return {
         "stats": stats,
         "narrative": narrative,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": generated_at,
     }
 
 

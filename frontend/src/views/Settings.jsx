@@ -191,14 +191,11 @@ export default function Settings() {
     </div>
   )
 
-  const Section = ({ title, description, fields, icon }) => (
+  const Section = ({ title, description, fields }) => (
     <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem' }}>
-      <div className="flex items-center gap-sm">
-        <span style={{ fontSize:'1.25rem' }}>{icon}</span>
-        <div>
-          <h3 style={{ fontSize:'1rem' }}>{title}</h3>
-          {description && <p style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginTop:4 }}>{description}</p>}
-        </div>
+      <div>
+        <h3 style={{ fontSize:'1rem' }}>{title}</h3>
+        {description && <p style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginTop:4 }}>{description}</p>}
       </div>
       <div className="form-grid">
         {fields.map(f => <Field key={f.key} f={f} />)}
@@ -207,10 +204,10 @@ export default function Settings() {
   )
 
   const CATEGORIES = [
-    { id: 'resume', label: 'Resume Intelligence', icon: '📄' },
-    { id: 'models', label: 'AI Models', icon: '🤖' },
-    { id: 'strategy', label: 'Job Discovery', icon: '🔍' },
-    { id: 'stealth', label: 'Stealth & Integrations', icon: '🕵️' },
+    { id: 'resume', label: 'Resume Intelligence' },
+    { id: 'models', label: 'AI Models' },
+    { id: 'strategy', label: 'Job Discovery' },
+    { id: 'stealth', label: 'Stealth & Integrations' },
   ]
 
   if (loading) return <div style={{ color:'var(--fg-muted)', padding:'2rem' }}>Loading settings…</div>
@@ -226,7 +223,7 @@ export default function Settings() {
           </p>
         </div>
         <button className="btn btn-primary" onClick={save} style={{ height: 42, padding: '0 1.5rem' }}>
-          {saved ? '✅ Configuration Saved' : '💾 Save Changes'}
+          {saved ? 'Configuration Saved' : 'Save Changes'}
         </button>
       </div>
 
@@ -240,7 +237,6 @@ export default function Settings() {
               className={`nav-item ${activeCategory === cat.id ? 'active' : ''}`}
               style={{ padding: '0.75rem 1rem' }}
             >
-              <span style={{ fontSize: '1.1rem' }}>{cat.icon}</span>
               {cat.label}
             </button>
           ))}
@@ -262,17 +258,17 @@ export default function Settings() {
               <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1.5rem', borderLeft: '4px solid var(--primary)' }}>
                 <div className="flex justify-between items-start">
                   <div>
-                    <h3 style={{ fontSize:'1.1rem', color:'var(--primary)' }}>📄 Master Resume Sources</h3>
+                    <h3 style={{ fontSize:'1.1rem', color:'var(--primary)' }}>Master Resume Sources</h3>
                     <p style={{ fontSize:'0.85rem', color:'var(--fg-muted)', marginTop:4 }}>
                       Combine multiple profiles, projects, and PDFs. The AI agents will treat these as your primary source of truth.
                     </p>
                   </div>
                   <div className="flex gap-sm">
                     <label className="btn btn-outline btn-sm" style={{ cursor:'pointer' }}>
-                      {isUploading ? '⌛ Extracting...' : '📁 Upload File'}
+                      {isUploading ? 'Extracting...' : 'Upload File'}
                       <input type="file" hidden accept=".pdf,.md,.txt,.html,.htm" onChange={handleFileUpload} disabled={isUploading} />
                     </label>
-                    <button className="btn btn-primary btn-sm" onClick={() => setIsAddingText(true)}>📝 Add Block</button>
+                    <button className="btn btn-primary btn-sm" onClick={() => setIsAddingText(true)}>Add Block</button>
                   </div>
                 </div>
 
@@ -286,9 +282,9 @@ export default function Settings() {
 
                 <div style={{ display:'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap:'1rem' }}>
                   {resumeComponents.map(c => (
-                    <div key={c.id} className="panel" style={{ 
-                      padding:'1rem', 
-                      background: c.is_active ? 'rgba(255,255,255,0.03)' : 'transparent', 
+                    <div key={c.id} className="panel" style={{
+                      padding:'1rem',
+                      background: c.is_active ? 'var(--surface-hover)' : 'transparent',
                       opacity: c.is_active ? 1 : 0.6,
                       border: c.is_active ? '1px solid var(--surface-border)' : '1px solid transparent'
                     }}>
@@ -297,7 +293,9 @@ export default function Settings() {
                           <span style={{ fontSize: '1.2rem' }}>{c.type === 'file' ? '📄' : '📝'}</span>
                           <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{c.name}</span>
                         </div>
-                        <button className="btn btn-icon btn-ghost" style={{ color:'var(--danger)', padding:4 }} onClick={() => deleteComponent(c.id)}>🗑️</button>
+                        <button className="btn btn-icon btn-ghost" style={{ color:'var(--danger)', padding:4 }} onClick={() => deleteComponent(c.id)}>
+                          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg>
+                        </button>
                       </div>
                       <div className="flex items-center justify-between">
                         <span style={{ fontSize: '0.7rem', color:'var(--fg-subtle)' }}>
@@ -449,31 +447,25 @@ export default function Settings() {
                 title="Google Gemini"
                 description="Google's most capable models. Recommendation: Use 'gemini-1.5-pro' for complex tailoring."
                 fields={[LLM_PROVIDERS[0]]}
-                icon="✨"
               />
               <Section
                 title="Groq & OpenRouter"
                 description="Fast and versatile providers. Perfect for quick job analysis."
                 fields={[LLM_PROVIDERS[1], LLM_PROVIDERS[2]]}
-                icon="⚡"
               />
               <Section
                 title="Self-Hosted & Others"
                 description="Connect to your local Ollama instance or Together AI."
                 fields={[LLM_PROVIDERS[3], LLM_PROVIDERS[4]]}
-                icon="🏠"
               />
 
               <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem' }}>
-                <div className="flex items-center gap-sm">
-                  <span style={{ fontSize:'1.25rem' }}>⚡</span>
-                  <div>
-                    <h3 style={{ fontSize:'1rem' }}>Custom NVIDIA Models</h3>
-                    <p style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginTop:4 }}>
-                      Add any model id from <strong>build.nvidia.com</strong> (e.g. <code>meta/llama-3.1-405b-instruct</code>).
-                      Uses your NVIDIA API key above. They appear in the model dropdowns; click <strong>Save Settings</strong> to persist.
-                    </p>
-                  </div>
+                <div>
+                  <h3 style={{ fontSize:'1rem' }}>Custom NVIDIA Models</h3>
+                  <p style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginTop:4 }}>
+                    Add any model id from <strong>build.nvidia.com</strong> (e.g. <code>meta/llama-3.1-405b-instruct</code>).
+                    Uses your NVIDIA API key above. They appear in the model dropdowns; click <strong>Save Settings</strong> to persist.
+                  </p>
                 </div>
 
                 {nvModels.length > 0 && (
@@ -511,7 +503,6 @@ export default function Settings() {
                 title="Hunting Logic"
                 description="Configure what the Job Discovery Agent looks for during its autonomous runs."
                 fields={HUNT_FILTERS}
-                icon="🎯"
               />
             </div>
           )}
@@ -522,17 +513,15 @@ export default function Settings() {
                 title="Infrastructure"
                 description="Avoid bot detection and scale up your automation capability."
                 fields={[...STEALTH, ...CAPTCHA]}
-                icon="🛡️"
               />
               <Section
                 title="Portfolio Connections"
                 description="Link your GitHub to allow agents to 'read' your code and projects."
                 fields={GITHUB}
-                icon="🐙"
               />
-              <div className="panel" style={{ padding:'1rem 1.5rem', background:'var(--warning-subtle)', borderColor:'rgba(245,158,11,0.3)' }}>
-                <p style={{ fontSize:'0.8rem', color:'var(--warning)' }}>
-                  🔒 <strong>Security First:</strong> Keys are stored locally in your SQLite database. Never expose port 8000 externally.
+              <div className="alert alert-warning" style={{ padding:'1rem 1.5rem' }}>
+                <p style={{ fontSize:'0.8rem' }}>
+                  <strong>Security First:</strong> Keys are stored locally in your SQLite database. Never expose port 8000 externally.
                 </p>
               </div>
             </div>

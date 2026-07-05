@@ -42,3 +42,4 @@ backend/hiring_agent/resume_evaluations.csv
 
 # Local deployment docs
 DEPLOYMENT_INFO.md
+.gstack/

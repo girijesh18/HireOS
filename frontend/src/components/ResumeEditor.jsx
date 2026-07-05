@@ -64,7 +64,7 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
       backgroundColor: 'var(--bg)', zIndex: 1000,
       display: 'flex', flexDirection: 'column'
     }}>
-      <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ padding: '1rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Live Resume Editor</h3>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-outline" onClick={onClose}>Cancel</button>
@@ -76,7 +76,7 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
       
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Left Pane: Chat */}
-        <div style={{ width: '350px', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', background: 'var(--surface)' }}>
+        <div style={{ width: '350px', borderRight: '1px solid var(--surface-border)', display: 'flex', flexDirection: 'column', background: 'var(--surface)' }}>
           <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             {history.length === 0 && (
               <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.875rem' }}>
@@ -87,7 +87,7 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
               <div key={i} style={{
                 alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
                 backgroundColor: msg.role === 'user' ? 'var(--primary)' : 'var(--surface-2)',
-                color: msg.role === 'user' ? '#fff' : 'var(--fg)',
+                color: msg.role === 'user' ? 'var(--primary-fg)' : 'var(--fg)',
                 padding: '0.75rem 1rem', borderRadius: '1rem', maxWidth: '90%', fontSize: '0.875rem'
               }}>
                 {msg.text}
@@ -99,13 +99,13 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
               </div>
             )}
           </div>
-          <div style={{ padding: '1rem', borderTop: '1px solid var(--border)' }}>
-            <textarea 
+          <div style={{ padding: '1rem', borderTop: '1px solid var(--surface-border)' }}>
+            <textarea
               value={instruction}
               onChange={e => setInstruction(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
               placeholder="e.g. 'Make the intro more aggressive' (Press Enter)"
-              style={{ width: '100%', padding: '0.75rem', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', resize: 'none' }}
+              style={{ width: '100%', padding: '0.75rem', borderRadius: 'var(--radius)', border: '1px solid var(--surface-border)', background: 'var(--bg)', color: 'var(--fg)', resize: 'none' }}
               rows={3}
               disabled={isEditing}
             />
@@ -120,7 +120,7 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
           <div style={{
             maxWidth: '850px', margin: '0 auto', fontFamily,
             backgroundColor: '#fff', color: '#111', padding: '40px 60px',
-            boxShadow: '0 12px 40px rgba(0,0,0,0.15)', borderRadius: '4px',
+            boxShadow: 'var(--shadow-lg)', borderRadius: '4px',
             minHeight: '1000px', lineHeight: '1.45', fontSize: pt(fs)
           }}>
             <ReactMarkdown

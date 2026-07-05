@@ -2,14 +2,14 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../api/client'
 
 const ACTION_COLORS = {
-  chat:           '#6366f1',
-  resume:         '#10b981',
-  cover_letter:   '#f59e0b',
-  evaluation:     '#a855f7',
-  gap_analysis:   '#38bdf8',
-  research:       '#ef4444',
-  linkedin:       '#0ea5e9',
-  interview_prep: '#f97316',
+  chat:           'var(--primary)',
+  resume:         'var(--success)',
+  cover_letter:   'var(--warning)',
+  evaluation:     'var(--purple)',
+  gap_analysis:   'var(--cyan)',
+  research:       'var(--danger)',
+  linkedin:       'var(--info)',
+  interview_prep: 'var(--warning)',
 }
 
 const ACTION_LABELS = {
@@ -24,10 +24,10 @@ const ACTION_LABELS = {
 }
 
 function MomentumBar({ score }) {
-  const color = score >= 7 ? '#10b981' : score >= 4 ? '#f59e0b' : '#ef4444'
+  const color = score >= 7 ? 'var(--success)' : score >= 4 ? 'var(--warning)' : 'var(--danger)'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-      <div style={{ flex: 1, height: 8, background: 'rgba(255,255,255,0.08)', borderRadius: 4, overflow: 'hidden' }}>
+      <div style={{ flex: 1, height: 8, background: 'var(--surface-2)', borderRadius: 4, overflow: 'hidden' }}>
         <div style={{ width: `${score * 10}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.6s ease' }} />
       </div>
       <span style={{ color, fontWeight: 700, fontSize: '1.1rem', minWidth: 32 }}>{score}/10</span>
@@ -43,7 +43,7 @@ function ActivityBar({ by_day }) {
     <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 48 }}>
       {recent.map((d, i) => (
         <div key={i} title={`${d.date}: ${d.count}`} style={{
-          flex: 1, background: d.count > 0 ? '#6366f1' : 'rgba(255,255,255,0.06)',
+          flex: 1, background: d.count > 0 ? 'var(--primary)' : 'var(--surface-2)',
           height: `${Math.max((d.count / max) * 100, d.count > 0 ? 8 : 4)}%`,
           borderRadius: 3, minHeight: 4, cursor: 'default', opacity: 0.85,
           transition: 'height 0.3s'
@@ -53,9 +53,19 @@ function ActivityBar({ by_day }) {
   )
 }
 
+function timeAgo(iso) {
+  if (!iso) return null
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  if (secs < 60) return 'just now'
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
+  return `${Math.floor(secs / 86400)}d ago`
+}
+
 export default function Insights() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState(null)
   const [history, setHistory] = useState([])
   const [histPage, setHistPage] = useState(1)
@@ -63,13 +73,15 @@ export default function Insights() {
   const [searchResults, setSearchResults] = useState(null)
   const [searching, setSearching] = useState(false)
 
-  useEffect(() => {
-    setLoading(true)
-    api.getInsights()
+  const load = (refresh = false) => {
+    if (refresh) setRefreshing(true); else setLoading(true)
+    api.getInsights(refresh)
       .then(setData)
       .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [])
+      .finally(() => { setLoading(false); setRefreshing(false) })
+  }
+
+  useEffect(() => { load(false) }, [])
 
   useEffect(() => {
     api.getInsightsHistory(histPage, 20)
@@ -95,7 +107,7 @@ export default function Insights() {
 
   if (error) return (
     <div className="panel" style={{ padding: '2rem', color: 'var(--danger)', textAlign: 'center' }}>
-      ⚠️ {error} — make sure backend is running and GEMINI_API_KEY is set.
+      {error} — make sure backend is running and GEMINI_API_KEY is set.
     </div>
   )
 
@@ -103,6 +115,18 @@ export default function Insights() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+
+      {/* Refresh bar */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.75rem' }}>
+        {data?.generated_at && (
+          <span style={{ fontSize: '0.78rem', color: 'var(--fg-subtle)' }}>
+            AI assessment updated {timeAgo(data.generated_at)}
+          </span>
+        )}
+        <button className="btn btn-outline btn-sm" onClick={() => load(true)} disabled={refreshing}>
+          {refreshing ? 'Refreshing…' : 'Refresh Insights'}
+        </button>
+      </div>
 
       {/* Top stats row */}
       <div className="stats-grid fade-in">
@@ -124,7 +148,7 @@ export default function Insights() {
 
         {/* Narrative */}
         <div className="panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: 4 }}>🤖 AI Assessment</h3>
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: 4 }}>AI Assessment</h3>
           {narrative?.momentum_score != null && (
             <div>
               <div style={{ fontSize: '0.78rem', color: 'var(--fg-subtle)', marginBottom: 6 }}>Momentum Score</div>
@@ -140,8 +164,8 @@ export default function Insights() {
             </div>
           )}
           {narrative?.warning && (
-            <div style={{ padding: '0.6rem 0.9rem', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, fontSize: '0.8rem', color: '#ef4444' }}>
-              ⚠️ {narrative.warning}
+            <div className="alert alert-danger" style={{ padding: '0.6rem 0.9rem', fontSize: '0.8rem' }}>
+              {narrative.warning}
             </div>
           )}
         </div>
@@ -153,7 +177,7 @@ export default function Insights() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
             {Object.entries(stats?.by_action || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
               <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: ACTION_COLORS[k] || '#6366f1', flexShrink: 0 }} />
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: ACTION_COLORS[k] || 'var(--primary)', flexShrink: 0 }} />
                 <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)', flex: 1 }}>{ACTION_LABELS[k] || k}</span>
                 <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--fg)' }}>{v}</span>
               </div>
@@ -165,12 +189,12 @@ export default function Insights() {
       {/* Recommendations + what you're doing */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.75rem' }}>
         <div className="panel" style={{ padding: '1.5rem' }}>
-          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '1rem' }}>🎯 Top 3 Actions</h3>
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '1rem' }}>Top 3 Actions</h3>
           {narrative?.top_3_recommendations?.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               {narrative.top_3_recommendations.map((r, i) => (
                 <div key={i} style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
-                  <span style={{ background: 'var(--primary)', color: '#fff', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, flexShrink: 0 }}>{i+1}</span>
+                  <span style={{ background: 'var(--primary)', color: 'var(--primary-fg)', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, flexShrink: 0 }}>{i+1}</span>
                   <span style={{ fontSize: '0.85rem', color: 'var(--fg)', lineHeight: 1.5 }}>{r}</span>
                 </div>
               ))}
@@ -179,7 +203,7 @@ export default function Insights() {
         </div>
 
         <div className="panel" style={{ padding: '1.5rem' }}>
-          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.75rem' }}>📌 What You're Doing</h3>
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.75rem' }}>What You're Doing</h3>
           {narrative?.what_youre_doing && (
             <p style={{ fontSize: '0.85rem', color: 'var(--fg)', lineHeight: 1.6, margin: 0 }}>{narrative.what_youre_doing}</p>
           )}
@@ -195,10 +219,10 @@ export default function Insights() {
       {/* Top companies */}
       {stats?.top_companies?.length > 0 && (
         <div className="panel" style={{ padding: '1.25rem 1.5rem' }}>
-          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.75rem' }}>🏢 Most Active Companies</h3>
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.75rem' }}>Most Active Companies</h3>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             {stats.top_companies.map(c => (
-              <span key={c} className="badge" style={{ background: 'rgba(99,102,241,0.12)', color: 'var(--primary)', fontSize: '0.8rem' }}>{c}</span>
+              <span key={c} className="badge" style={{ background: 'var(--primary-subtle)', color: 'var(--primary)', fontSize: '0.8rem' }}>{c}</span>
             ))}
           </div>
         </div>
@@ -207,7 +231,7 @@ export default function Insights() {
       {/* History + search */}
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', gap: '1rem' }}>
-          <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>📋 Interaction History</h3>
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>Interaction History</h3>
           <div style={{ display: 'flex', gap: '0.5rem', flex: 1, maxWidth: 380 }}>
             <input
               value={searchQ}

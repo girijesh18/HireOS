@@ -10,6 +10,29 @@ import StoryBank from './views/StoryBank'
 import Insights from './views/Insights'
 import { usePreferredLlm, setPreferredLlm, getLlmOptions, getPreferredLlm } from './model'
 
+// ── Theme (dark default, persisted) ───────────────────────────────────────────
+const THEME_KEY = 'hireos_theme'
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t
+  localStorage.setItem(THEME_KEY, t)
+}
+applyTheme(localStorage.getItem(THEME_KEY) || 'dark') // before first paint
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'dark')
+  const toggle = () => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    applyTheme(next)
+    setTheme(next)
+  }
+  return (
+    <button className="btn btn-ghost btn-icon" onClick={toggle}
+      title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+      {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+    </button>
+  )
+}
+
 // ── Global model selector (top bar) — drives every LLM op across the app ───────
 function ModelSelector() {
   const llm = usePreferredLlm()
@@ -21,7 +44,7 @@ function ModelSelector() {
       onChange={e => setPreferredLlm(e.target.value)} title="Model used across the whole platform">
       {getLlmOptions().map(o => (
         <option key={o.value} value={o.value} disabled={!isAvail(o.value)}>
-          🤖 {o.label}{!isAvail(o.value) ? ' (Unavailable)' : ''}
+          {o.label}{!isAvail(o.value) ? ' (Unavailable)' : ''}
         </option>
       ))}
     </select>
@@ -44,6 +67,11 @@ const BotIcon = () => <Icon d="M12 2a2 2 0 012 2v1h3a2 2 0 012 2v11a2 2 0 01-2 2
 const SendIcon = () => <Icon d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" size={16} />
 const XIcon = () => <Icon d="M18 6L6 18M6 6l12 12" size={18} />
 const PlusIcon = () => <Icon d="M12 5v14M5 12h14" size={16} />
+const SunIcon = () => <Icon d="M12 17a5 5 0 100-10 5 5 0 000 10zM12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" size={16} />
+const MoonIcon = () => <Icon d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" size={16} />
+const LinkIcon = () => <Icon d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" size={14} />
+const ClipboardIcon = () => <Icon d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2M9 2h6a1 1 0 011 1v2a1 1 0 01-1 1H9a1 1 0 01-1-1V3a1 1 0 011-1z" size={14} />
+const EditIcon = () => <Icon d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" size={14} />
 
 // ── Track Job Modal ───────────────────────────────────────────────────────────
 function TrackJobModal({ onClose, onAdded }) {
@@ -92,20 +120,20 @@ function TrackJobModal({ onClose, onAdded }) {
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-header">
-          <h3 className="modal-title">+ Track New Job</h3>
+          <h3 className="modal-title">Track New Job</h3>
           <button className="btn btn-ghost btn-icon" onClick={onClose}><XIcon /></button>
         </div>
 
         {/* Mode tabs */}
         <div className="flex gap-sm" style={{ marginBottom:'1.25rem', flexWrap:'wrap' }}>
           <button className={`btn btn-sm ${mode==='url'?'btn-primary':'btn-outline'}`} onClick={() => { setMode('url'); setError('') }}>
-            🔗 From URL
+            <LinkIcon /> From URL
           </button>
           <button className={`btn btn-sm ${mode==='paste'?'btn-primary':'btn-outline'}`} onClick={() => { setMode('paste'); setError('') }}>
-            📋 Paste JD
+            <ClipboardIcon /> Paste JD
           </button>
           <button className={`btn btn-sm ${mode==='manual'?'btn-primary':'btn-outline'}`} onClick={() => { setMode('manual'); setError('') }}>
-            ✏️ Manual
+            <EditIcon /> Manual
           </button>
         </div>
 
@@ -119,12 +147,12 @@ function TrackJobModal({ onClose, onAdded }) {
                 onKeyDown={e => e.key === 'Enter' && submitUrl()} />
             </div>
             <p style={{ fontSize:'0.78rem', color:'var(--fg-subtle)' }}>
-              🤖 AI fetches and auto-extracts company, title, salary, location, and JD.
+              AI fetches and auto-extracts company, title, salary, location, and JD.
             </p>
-            <div style={{ padding:'0.5rem 0.75rem', background:'rgba(245,158,11,0.1)', borderRadius:'var(--radius-sm)', fontSize:'0.78rem', color:'var(--warning)', border:'1px solid rgba(245,158,11,0.2)' }}>
-              ⚠️ <strong>LinkedIn</strong> links require login — use the <strong>📋 Paste JD</strong> tab instead.
+            <div className="alert alert-warning">
+              <span><strong>LinkedIn</strong> links require login — use the <strong>Paste JD</strong> tab instead.</span>
             </div>
-            {error && <p style={{ color:'var(--danger)', fontSize:'0.8rem' }}>⚠️ {error}</p>}
+            {error && <p className="alert alert-danger">{error}</p>}
             <div className="flex gap-sm" style={{ justifyContent:'flex-end' }}>
               <button className="btn btn-outline btn-sm" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" onClick={submitUrl} disabled={loading || !url.trim()}>
@@ -146,7 +174,7 @@ function TrackJobModal({ onClose, onAdded }) {
             <p style={{ fontSize:'0.78rem', color:'var(--fg-subtle)' }}>
               <strong>LinkedIn tip:</strong> Open the job listing, scroll to the description, select all the text, and paste here.
             </p>
-            {error && <p style={{ color:'var(--danger)', fontSize:'0.8rem' }}>⚠️ {error}</p>}
+            {error && <p className="alert alert-danger">{error}</p>}
             <div className="flex gap-sm" style={{ justifyContent:'flex-end' }}>
               <button className="btn btn-outline btn-sm" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" onClick={submitPaste} disabled={loading || !jdText.trim()}>
@@ -185,11 +213,11 @@ function TrackJobModal({ onClose, onAdded }) {
                 </label>
               </div>
             </div>
-            {error && <p style={{ color:'var(--danger)', fontSize:'0.8rem' }}>⚠️ {error}</p>}
+            {error && <p className="alert alert-danger">{error}</p>}
             <div className="flex gap-sm" style={{ justifyContent:'flex-end' }}>
               <button className="btn btn-outline btn-sm" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" onClick={submitManual} disabled={loading || !form.company || !form.title}>
-                {loading ? 'Adding...' : '+ Add to Pipeline'}
+                {loading ? 'Adding...' : 'Add to Pipeline'}
               </button>
             </div>
           </div>
@@ -355,11 +383,8 @@ export default function App() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <span style={{
-            fontFamily: 'Outfit, sans-serif', fontSize: '1.4rem', fontWeight: 800,
-            color: '#fff', letterSpacing: '-0.02em',
-          }}>
-            Hire<span style={{ color: '#22d3ee' }}>OS</span>
+          <span className="logo-word">
+            Hire<em>OS</em>
           </span>
         </div>
         <div className="nav-section-label">Navigation</div>
@@ -391,7 +416,8 @@ export default function App() {
               <PlusIcon /> Track Job
             </button>
             <button className="btn btn-outline btn-sm" onClick={api.exportCSV}>Export CSV</button>
-            <span style={{ fontSize: '0.78rem', color: 'var(--fg-subtle)' }}>{user}</span>
+            <ThemeToggle />
+            <span className="topbar-user">{user}</span>
             <button className="btn btn-outline btn-sm" onClick={logout}>Logout</button>
           </div>
         </header>

@@ -191,7 +191,7 @@ export default function SmartSearchBar({ onSearch, onClear, placeholder = 'Searc
       {showDropdown && (
         <div className="search-dropdown">
           <div className="search-dropdown-header">
-            {query.trim() ? `Suggestions for "${query}"` : '🔥 Trending Keywords'}
+            {query.trim() ? `Suggestions for "${query}"` : 'Trending Keywords'}
           </div>
 
           {loading && (

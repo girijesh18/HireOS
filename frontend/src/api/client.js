@@ -205,7 +205,7 @@ export const api = {
     req('GET', '/analytics/patterns'),
 
   // Insights (chat history + AI narrative)
-  getInsights: () => req('GET', '/insights'),
+  getInsights: (refresh = false) => req('GET', `/insights${refresh ? '?refresh=true' : ''}`),
   getInsightsHistory: (page = 1, limit = 50) =>
     req('GET', `/insights/history?page=${page}&limit=${limit}`),
   searchInsights: (q) =>
