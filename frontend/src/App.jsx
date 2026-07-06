@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 import './index.css'
 import { api, setToken, clearToken } from './api/client'
 import Auth from './views/Auth'
@@ -63,8 +63,6 @@ const BookIcon = () => <Icon d="M2 3h6a4 4 0 014 4v14a4 4 0 00-4-4H2z M22 3h-6a4
 const SettingsIcon = () => <Icon d="M12 15a3 3 0 100-6 3 3 0 000 6z M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
 
 const PulseIcon = () => <Icon d="M22 12h-4l-3 9L9 3l-3 9H2" />
-const BotIcon = () => <Icon d="M12 2a2 2 0 012 2v1h3a2 2 0 012 2v11a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h3V4a2 2 0 012-2zM9 10v2m6-2v2" size={22} />
-const SendIcon = () => <Icon d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" size={16} />
 const XIcon = () => <Icon d="M18 6L6 18M6 6l12 12" size={18} />
 const PlusIcon = () => <Icon d="M12 5v14M5 12h14" size={16} />
 const SunIcon = () => <Icon d="M12 17a5 5 0 100-10 5 5 0 000 10zM12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" size={16} />
@@ -228,69 +226,6 @@ function TrackJobModal({ onClose, onAdded }) {
   )
 }
 
-// ── Floating Chat ─────────────────────────────────────────────────────────────
-function FloatingChat() {
-  const [open, setOpen] = useState(false)
-  const [messages, setMessages] = useState([
-    { role: 'bot', text: "Hi! I'm your Job Swarm assistant. Tell me what to do — e.g. \"Track LinkedIn job at Google\", \"Analyze the OpenAI role\", or \"What's pending review?\"" }
-  ])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
-  const msgEnd = useRef(null)
-
-  useEffect(() => { msgEnd.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
-
-  const send = async () => {
-    if (!input.trim() || loading) return
-    const text = input.trim()
-    setInput('')
-    setMessages(m => [...m, { role: 'user', text }])
-    setLoading(true)
-    try {
-      const res = await api.chat(text)
-      setMessages(m => [...m, { role: 'bot', text: res.reply }])
-    } catch {
-      setMessages(m => [...m, { role: 'bot', text: 'Connection error — is the backend running?' }])
-    }
-    setLoading(false)
-  }
-
-  return (
-    <>
-      {open && (
-        <div className="chat-window">
-          <div className="chat-header">
-            <div>
-              <div className="chat-header-title">Swarm AI</div>
-              <div className="chat-header-sub">Powered by Gemini - Natural language commands</div>
-            </div>
-            <button className="btn btn-ghost btn-icon" onClick={() => setOpen(false)}><XIcon /></button>
-          </div>
-          <div className="chat-messages scrollbar-thin">
-            {messages.map((m, i) => (
-              <div key={i} className={`chat-msg ${m.role}`}>{m.text}</div>
-            ))}
-            {loading && <div className="chat-msg bot" style={{ opacity: 0.6 }}>Thinking...</div>}
-            <div ref={msgEnd} />
-          </div>
-          <div className="chat-input-area">
-            <input
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && send()}
-              placeholder="Ask or command anything..."
-            />
-            <button className="btn btn-primary btn-icon" onClick={send}><SendIcon /></button>
-          </div>
-        </div>
-      )}
-      <button className="chat-fab" onClick={() => setOpen(o => !o)}>
-        <BotIcon />
-      </button>
-    </>
-  )
-}
-
 // ── App Shell ─────────────────────────────────────────────────────────────────
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: <HomeIcon /> },
@@ -439,8 +374,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Floating Chat - always visible */}
-      <FloatingChat />
     </div>
   )
 }

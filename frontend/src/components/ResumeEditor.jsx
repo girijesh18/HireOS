@@ -9,6 +9,7 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
   const [isSaving, setIsSaving] = useState(false);
   const [history, setHistory] = useState([]);
   const [pdfStyle, setPdfStyle] = useState({});
+  const [pane, setPane] = useState('preview');  // mobile-only pane switch: 'preview' | 'chat'
 
   // Load the user's PDF style so this preview matches the generated PDF exactly.
   useEffect(() => {
@@ -39,6 +40,7 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
       });
       setMarkdown(res.updated_md);
       setHistory(h => [...h, { role: 'agent', text: 'I have updated the resume based on your instruction.' }]);
+      setPane('preview');  // on mobile, jump back to the preview so the edit is visible
     } catch (e) {
       setHistory(h => [...h, { role: 'agent', text: `Error: ${e.message}` }]);
     } finally {
@@ -64,8 +66,13 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
       backgroundColor: 'var(--bg)', zIndex: 1000,
       display: 'flex', flexDirection: 'column'
     }}>
-      <div style={{ padding: '1rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="editor-header" style={{ padding: '1rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0 }}>Live Resume Editor</h3>
+        {/* Mobile-only pane switch (hidden on desktop, where both panes show). */}
+        <div className="editor-tabs">
+          <button className={`btn btn-sm ${pane === 'preview' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setPane('preview')}>Preview</button>
+          <button className={`btn btn-sm ${pane === 'chat' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setPane('chat')}>AI Edit</button>
+        </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-outline" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={isSaving}>
@@ -73,10 +80,10 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
           </button>
         </div>
       </div>
-      
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+      <div className="editor-body" data-pane={pane} style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Left Pane: Chat */}
-        <div style={{ width: '350px', borderRight: '1px solid var(--surface-border)', display: 'flex', flexDirection: 'column', background: 'var(--surface)' }}>
+        <div className="editor-chat" style={{ width: '350px', borderRight: '1px solid var(--surface-border)', display: 'flex', flexDirection: 'column', background: 'var(--surface)' }}>
           <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             {history.length === 0 && (
               <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.875rem' }}>
@@ -116,7 +123,7 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
         </div>
         
         {/* Right Pane: Live Rendered Resume — mirrors the generated PDF's CSS */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '2rem', backgroundColor: 'var(--bg-2)' }}>
+        <div className="editor-preview" style={{ flex: 1, overflowY: 'auto', padding: '2rem', backgroundColor: 'var(--bg-2)' }}>
           <div style={{
             maxWidth: '850px', margin: '0 auto', fontFamily,
             backgroundColor: '#fff', color: '#111', padding: '40px 60px',

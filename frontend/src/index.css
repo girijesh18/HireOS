@@ -626,6 +626,8 @@ select.btn { appearance: auto; }
 /* ── Responsive / Mobile ───────────────────────────────────────────────────── */
 .hamburger { display: none; }          /* desktop: sidebar always visible */
 .sidebar-overlay { display: none; }
+.editor-tabs { display: none; }        /* desktop: chat + preview show side by side */
+.editor-tabs { gap: 0.4rem; }
 
 @media (max-width: 860px) {
   /* Sidebar becomes an off-canvas drawer toggled by the topbar hamburger. */
@@ -683,4 +685,14 @@ select.btn { appearance: auto; }
   .stack-mobile { flex-direction: column !important; align-items: stretch !important; gap: 0.6rem; }
   .stack-mobile .flex { flex-wrap: wrap; }
   .stack-mobile select { width: 100% !important; }
+
+  /* Resume editor: the desktop side-by-side chat|preview doesn't fit a phone.
+     Show one full-width pane at a time, switched by the header Preview/AI Edit
+     toggle (data-pane on .editor-body). */
+  .editor-tabs { display: flex; }
+  .editor-chat { width: 100% !important; border-right: none !important; }
+  .editor-body[data-pane="preview"] .editor-chat { display: none !important; }
+  .editor-body[data-pane="chat"] .editor-preview { display: none !important; }
+  .editor-preview { padding: 1rem !important; }
+  .editor-preview > div { padding: 24px 20px !important; min-height: 0 !important; }
 }
