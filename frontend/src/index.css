@@ -675,4 +675,12 @@ select.btn { appearance: auto; }
   }
   .job-table-row > div:first-child { flex: 1 1 100%; padding-right: 2rem; }
   .job-table-row > button { position: absolute; top: 0.75rem; right: 1rem; }
+
+  /* Two-part rows (info on one side, a button group on the other) overflow
+     when the button group can't wrap. stack-mobile drops them to a column and
+     lets the buttons wrap + full-width selects. Used by the JobDetail header
+     actions and the Documents resume/cover-letter rows. */
+  .stack-mobile { flex-direction: column !important; align-items: stretch !important; gap: 0.6rem; }
+  .stack-mobile .flex { flex-wrap: wrap; }
+  .stack-mobile select { width: 100% !important; }
 }

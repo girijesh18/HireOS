@@ -428,7 +428,7 @@ export default function JobDetail({ jobId }) {
               </p>
             )}
           </div>
-          <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem', alignItems:'flex-end' }}>
+          <div className="stack-mobile" style={{ display:'flex', flexDirection:'column', gap:'0.75rem', alignItems:'flex-end' }}>
             <select value={job.status} onChange={e => changeStatus(e.target.value)} style={{ width:190, fontWeight:600 }}>
               {STATUSES.map(s => <option key={s} value={s}>{BADGE_EMOJI[s]} {s.replace('_',' ')}</option>)}
             </select>
@@ -990,7 +990,7 @@ export default function JobDetail({ jobId }) {
                 placeholder="e.g. 'Emphasize MLOps more', 'Add more GCP keywords', 'Make the tone more confident'"
                 style={{ resize:'vertical' }} />
             </div>
-            <div className="flex gap-sm">
+            <div className="flex gap-sm stack-mobile">
               <button className="btn btn-primary" onClick={runResumeGen} disabled={loading.resume}>
                 {loading.resume ? <><Spinner small /> Generating…</> : 'Generate Tailored Resume'}
               </button>
@@ -1008,7 +1008,7 @@ export default function JobDetail({ jobId }) {
             <div className="panel" style={{ padding:'1.25rem' }}>
               <h4 style={{ marginBottom:'0.75rem' }}>Resume Versions ({resumes.length})</h4>
               {resumes.map(r => (
-                <div key={r.id} style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div key={r.id} className="stack-mobile" style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                   <div>
                     <InlineNameEdit 
                       initialValue={r.name} 
@@ -1058,7 +1058,7 @@ export default function JobDetail({ jobId }) {
             <div className="panel" style={{ padding:'1.25rem' }}>
               <h4 style={{ marginBottom:'0.75rem' }}>Cover Letter Versions ({coverLetters.length})</h4>
               {coverLetters.map(c => (
-                <div key={c.id} style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div key={c.id} className="stack-mobile" style={{ padding:'0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                   <div>
                     <InlineNameEdit 
                       initialValue={c.name} 
