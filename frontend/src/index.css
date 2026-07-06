@@ -660,4 +660,19 @@ select.btn { appearance: auto; }
   .modal { padding: 1.25rem; }
   .modal-overlay { padding: 1rem; }
   .chat-window { width: calc(100vw - 2rem); right: 1rem; left: 1rem; }
+
+  /* JobList table → stacked cards. The column header is meaningless once
+     stacked; each row lays title/company on its own line with the meta
+     (status, match, platform, salary) flowing as inline chips below and the
+     star pinned top-right. Overrides the blanket 1-col grid collapse above. */
+  .job-table-head { display: none !important; }
+  .job-table-row {
+    display: flex !important;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.7rem;
+    position: relative;
+  }
+  .job-table-row > div:first-child { flex: 1 1 100%; padding-right: 2rem; }
+  .job-table-row > button { position: absolute; top: 0.75rem; right: 1rem; }
 }

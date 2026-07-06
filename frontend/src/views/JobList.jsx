@@ -116,7 +116,7 @@ export default function JobList({ onOpenJob }) {
 
       {/* Jobs Table */}
       <div className="panel">
-        <div style={{
+        <div className="job-table-head" style={{
           padding:'0.625rem 1.25rem',
           borderBottom:'1px solid var(--surface-border)',
           fontSize:'0.7rem', color:'var(--fg-subtle)',
@@ -146,6 +146,7 @@ export default function JobList({ onOpenJob }) {
           jobs.map(job => (
             <div
               key={job.id}
+              className="job-table-row"
               onClick={() => onOpenJob(job.id)}
               style={{
                 padding:'0.875rem 1.25rem',
