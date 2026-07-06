@@ -72,6 +72,7 @@ const MoonIcon = () => <Icon d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" siz
 const LinkIcon = () => <Icon d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" size={14} />
 const ClipboardIcon = () => <Icon d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2M9 2h6a1 1 0 011 1v2a1 1 0 01-1 1H9a1 1 0 01-1-1V3a1 1 0 011-1z" size={14} />
 const EditIcon = () => <Icon d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" size={14} />
+const MenuIcon = () => <Icon d="M3 12h18M3 6h18M3 18h18" size={20} />
 
 // ── Track Job Modal ───────────────────────────────────────────────────────────
 function TrackJobModal({ onClose, onAdded }) {
@@ -322,6 +323,7 @@ export default function App() {
   const [view, setView] = useState(() => parseHash().view)
   const [selectedJobId, setSelectedJobId] = useState(() => parseHash().jobId)
   const [showTrackModal, setShowTrackModal] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [authError, setAuthError] = useState('')
 
@@ -380,8 +382,11 @@ export default function App() {
     <div id="app-shell">
       {showTrackModal && <TrackJobModal onClose={() => setShowTrackModal(false)} onAdded={handleJobAdded} />}
 
+      {/* Mobile sidebar backdrop */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+
       {/* Sidebar */}
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-logo">
           <span className="logo-word">
             Hire<em>OS</em>
@@ -390,14 +395,14 @@ export default function App() {
         <div className="nav-section-label">Navigation</div>
         {NAV.map(n => (
           <button key={n.id} className={`nav-item ${(view === n.id || (view === 'job-detail' && n.id === 'jobs')) ? 'active' : ''}`}
-            onClick={() => { setView(n.id); setSelectedJobId(null) }}>
+            onClick={() => { setView(n.id); setSelectedJobId(null); setSidebarOpen(false) }}>
             {n.icon}
             {n.label}
           </button>
         ))}
         <div style={{ marginTop:'auto', paddingTop:'1rem', borderTop:'1px solid var(--surface-border)' }}>
           <button className="btn btn-primary" style={{ width:'100%', gap:'0.4rem' }}
-            onClick={() => setShowTrackModal(true)}>
+            onClick={() => { setShowTrackModal(true); setSidebarOpen(false) }}>
             <PlusIcon /> Track New Job
           </button>
         </div>
@@ -406,7 +411,10 @@ export default function App() {
       {/* Main */}
       <div className="main-area">
         <header className="topbar">
-          <h1>{view === 'job-detail' ? 'Job Detail & Tracker' : currentNav?.label}</h1>
+          <div className="flex items-center gap-sm" style={{ minWidth: 0 }}>
+            <button className="btn btn-ghost btn-icon hamburger" onClick={() => setSidebarOpen(true)} title="Menu"><MenuIcon /></button>
+            <h1>{view === 'job-detail' ? 'Job Detail & Tracker' : currentNav?.label}</h1>
+          </div>
           <div className="topbar-actions">
             {view === 'job-detail' && (
               <button className="btn btn-outline btn-sm" onClick={goBack}>Back</button>
