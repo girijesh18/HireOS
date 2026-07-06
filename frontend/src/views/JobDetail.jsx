@@ -86,6 +86,7 @@ export default function JobDetail({ jobId }) {
   const [job, setJob] = useState(null)
   const [events, setEvents] = useState([])
   const [resumes, setResumes] = useState([])
+  const [atsLoading, setAtsLoading] = useState({})  // { [resumeId]: bool }
   const [coverLetters, setCoverLetters] = useState([])
   const [activeTab, setActiveTabState] = useState(() => tabFromHash())
   const setActiveTab = (tab) => {
@@ -127,6 +128,19 @@ export default function JobDetail({ jobId }) {
 
   const showToast = (message, type='success') => setToast({ message, type })
   const toggleBlock = (key) => setExpandedBlocks(b => ({ ...b, [key]: !b[key] }))
+
+  const runAts = async (r) => {
+    setAtsLoading(s => ({ ...s, [r.id]: true }))
+    try {
+      const { ats_score } = await api.runAts(job.id, r.id, selectedLlm)
+      setResumes(rs => rs.map(x => x.id === r.id ? { ...x, ats_score } : x))
+      showToast(`ATS score: ${ats_score?.total}/100`)
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setAtsLoading(s => ({ ...s, [r.id]: false }))
+    }
+  }
 
   const loadAdditionalData = useCallback(async () => {
     try {
@@ -401,9 +415,10 @@ export default function JobDetail({ jobId }) {
     <div style={{ display:'flex', flexDirection:'column', gap:'1.25rem' }}>
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       {editingResume && (
-        <ResumeEditor 
-          jobId={job.id} 
-          initialMarkdown={editingResume.content_md} 
+        <ResumeEditor
+          jobId={job.id}
+          resumeId={editingResume.id}
+          initialMarkdown={editingResume.content_md}
           llm={selectedLlm}
           onSave={() => { setEditingResume(null); load(); }}
           onClose={() => setEditingResume(null)}
@@ -1045,6 +1060,7 @@ export default function JobDetail({ jobId }) {
                       </span>
                     )}
                     {r.content_md && <button className="btn btn-primary btn-sm" onClick={() => setEditingResume(r)}>Edit</button>}
+                    {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => runAts(r)} disabled={atsLoading[r.id]}>{atsLoading[r.id] ? <><Spinner small /> ATS…</> : (r.ats_score ? 'Re-run ATS' : 'Run ATS')}</button>}
                     {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.pdf`)}>PDF</button>}
                     {r.docx_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.docx`)}>DOCX</button>}
                   </div>

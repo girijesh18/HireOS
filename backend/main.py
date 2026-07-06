@@ -1499,6 +1499,48 @@ def get_resume_status(job_id: int, db: Session = Depends(get_db), current_user: 
     return {"status": "none"}
 
 
+@app.post("/api/agent/resume/{job_id}/ats/{resume_id}")
+async def run_ats_score(
+    job_id: int,
+    resume_id: int,
+    payload: Dict[str, Any] = {},
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually (re)run ATS scoring on an existing resume version's PDF."""
+    get_owned_job(db, job_id, current_user)
+    rv = db.query(ResumeVersion).filter_by(
+        id=resume_id, job_id=job_id, user_id=current_user.id
+    ).first()
+    if not rv:
+        raise HTTPException(404, "Resume version not found")
+    if not rv.pdf_path or not os.path.exists(rv.pdf_path):
+        raise HTTPException(400, "Resume PDF not found on disk — regenerate the resume first")
+
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
+    try:
+        from ats_score import score_resume_pdf
+        _r = get_agent("resume", db, current_user.id).router
+        ats = await asyncio.to_thread(
+            score_resume_pdf, rv.pdf_path, llm,
+            _r.gemini_key, _r.nvidia_key, _r.github_token,
+        )
+    except Exception as e:
+        logger.error(f"[ATS] manual scoring failed for resume {resume_id}: {e}")
+        raise HTTPException(500, f"ATS scoring failed: {e}")
+
+    if not ats:
+        raise HTTPException(500, "ATS scorer returned no result")
+
+    rv.ats_score = ats
+    db.commit()
+    _log_event(db, job_id, "ats_scored",
+               f"Resume v{rv.version} ATS score: {ats.get('total')}/100",
+               "Manually re-evaluated via hiring-agent",
+               source="user", user_id=current_user.id)
+    return {"ats_score": ats}
+
+
 @app.post("/api/agent/resume/{job_id}/save")
 async def save_chat_resume(
     job_id: int,
@@ -1530,11 +1572,12 @@ async def save_chat_resume(
                 except:
                     pass
                     
-            pdf_path, docx_path = save_resume(job_id, version, final_md, pdf_style)
-            
+            paths = save_resume(job_id, version, final_md, pdf_style)
+
             rv = ResumeVersion(
                 job_id=job_id, version=version, content_md=final_md,
-                pdf_path=pdf_path, docx_path=docx_path, llm_used=llm
+                pdf_path=paths.get("pdf"), docx_path=paths.get("docx"),
+                llm_used=llm, user_id=current_user.id,
             )
             db_session.add(rv)
             db_session.commit()

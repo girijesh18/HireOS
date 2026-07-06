@@ -102,6 +102,7 @@ export const api = {
   updateCoverLetter: (jobId, clId, data) => req('PATCH', `/jobs/${jobId}/cover-letters/${clId}`, data),
   resumeChat: (data) => req('POST', '/agent/resume/chat', data),
   resumeSave: (jobId, data) => req('POST', `/agent/resume/${jobId}/save`, data),
+  runAts: (jobId, resumeId, llm) => req('POST', `/agent/resume/${jobId}/ats/${resumeId}`, llm ? { llm } : {}),
 
   // Settings
   getSettings: () => req('GET', '/settings'),

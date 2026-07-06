@@ -2,14 +2,23 @@ import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api } from '../api/client';
 
-export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onClose }) {
-  const [markdown, setMarkdown] = useState(initialMarkdown);
+export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, onSave, onClose }) {
+  // Persist the in-progress edit (chat + working markdown) for the browser tab
+  // session, so closing "Edit" and reopening doesn't wipe the conversation.
+  const storeKey = `hireos_resume_edit:${jobId}:${resumeId ?? 'new'}`;
+  const saved = (() => { try { return JSON.parse(sessionStorage.getItem(storeKey)) || {} } catch { return {} } })();
+
+  const [markdown, setMarkdown] = useState(saved.markdown ?? initialMarkdown);
   const [instruction, setInstruction] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [history, setHistory] = useState([]);
+  const [history, setHistory] = useState(saved.history ?? []);
   const [pdfStyle, setPdfStyle] = useState({});
   const [pane, setPane] = useState('preview');  // mobile-only pane switch: 'preview' | 'chat'
+
+  useEffect(() => {
+    try { sessionStorage.setItem(storeKey, JSON.stringify({ markdown, history })) } catch {}
+  }, [storeKey, markdown, history]);
 
   // Load the user's PDF style so this preview matches the generated PDF exactly.
   useEffect(() => {
@@ -52,6 +61,7 @@ export default function ResumeEditor({ jobId, initialMarkdown, llm, onSave, onCl
     setIsSaving(true);
     try {
       await api.resumeSave(jobId, { final_md: markdown, llm });
+      try { sessionStorage.removeItem(storeKey) } catch {}
       if (onSave) onSave();
     } catch (e) {
       alert(e.message);
