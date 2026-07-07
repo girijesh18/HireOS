@@ -36,7 +36,10 @@ def _provider_env(model, gemini_key, nvidia_key):
     if m.startswith("gemini"):
         if not gemini_key:
             return None
-        return {"LLM_PROVIDER": "gemini", "DEFAULT_MODEL": model, "GEMINI_API_KEY": gemini_key}
+        # resolve_llm can hand us the bare provider name ("gemini"), which is not
+        # a valid model id — map it to the default model instead of 404ing.
+        model_id = model if "-" in m else "gemini-2.5-flash"
+        return {"LLM_PROVIDER": "gemini", "DEFAULT_MODEL": model_id, "GEMINI_API_KEY": gemini_key}
 
     if m.startswith("nvidia") or m.startswith("minimax"):
         if not nvidia_key:
@@ -85,7 +88,7 @@ def score_resume_pdf(pdf_path, model=None, gemini_key=None, nvidia_key=None,
         logger.warning(f"[ATS] unparseable output. stderr tail: {proc.stderr[-500:]}")
         return None
     if "error" in result:
-        logger.warning(f"[ATS] scorer error: {result['error']}")
+        logger.warning(f"[ATS] scorer error: {result['error']}. stderr tail: {proc.stderr[-500:]}")
         return None
     return result
 
