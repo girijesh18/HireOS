@@ -3,22 +3,32 @@ import ReactMarkdown from 'react-markdown';
 import { api } from '../api/client';
 
 export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, onSave, onClose }) {
-  // Persist the in-progress edit (chat + working markdown) for the browser tab
-  // session, so closing "Edit" and reopening doesn't wipe the conversation.
+  // Unsaved markdown draft: per resume version, tab-session only, cleared on save.
   const storeKey = `hireos_resume_edit:${jobId}:${resumeId ?? 'new'}`;
+  // Chat history: per JOB (survives new versions created by saving) and kept in
+  // localStorage so the conversation is there every time Edit is reopened.
+  const chatKey = `hireos_resume_chat:${jobId}`;
   const saved = (() => { try { return JSON.parse(sessionStorage.getItem(storeKey)) || {} } catch { return {} } })();
+  const savedChat = (() => { try { return JSON.parse(localStorage.getItem(chatKey)) || [] } catch { return [] } })();
 
   const [markdown, setMarkdown] = useState(saved.markdown ?? initialMarkdown);
   const [instruction, setInstruction] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [history, setHistory] = useState(saved.history ?? []);
+  const [history, setHistory] = useState(savedChat);
   const [pdfStyle, setPdfStyle] = useState({});
   const [pane, setPane] = useState('preview');  // mobile-only pane switch: 'preview' | 'chat'
 
   useEffect(() => {
-    try { sessionStorage.setItem(storeKey, JSON.stringify({ markdown, history })) } catch {}
-  }, [storeKey, markdown, history]);
+    try { sessionStorage.setItem(storeKey, JSON.stringify({ markdown })) } catch {}
+  }, [storeKey, markdown]);
+
+  useEffect(() => {
+    // ponytail: cap at last 100 messages so localStorage never bloats
+    try { localStorage.setItem(chatKey, JSON.stringify(history.slice(-100))) } catch {}
+  }, [chatKey, history]);
+
+  const clearChat = () => { setHistory([]); try { localStorage.removeItem(chatKey) } catch {} };
 
   // Load the user's PDF style so this preview matches the generated PDF exactly.
   useEffect(() => {
@@ -62,7 +72,7 @@ export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, on
     try {
       const res = await api.resumeSave(jobId, { final_md: markdown, llm });
       if (res && res.pdf === false) alert('Saved as v' + res.version + ', but PDF generation failed — check backend logs.');
-      try { sessionStorage.removeItem(storeKey) } catch {}
+      try { sessionStorage.removeItem(storeKey) } catch {}  // draft saved; chat history intentionally kept
       if (onSave) onSave();
     } catch (e) {
       alert(e.message);
@@ -96,6 +106,12 @@ export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, on
         {/* Left Pane: Chat */}
         <div className="editor-chat" style={{ width: '350px', borderRight: '1px solid var(--surface-border)', display: 'flex', flexDirection: 'column', background: 'var(--surface)' }}>
           <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {history.length > 0 && (
+              <button className="btn btn-ghost btn-sm" onClick={clearChat}
+                style={{ alignSelf: 'center', fontSize: '0.72rem', color: 'var(--fg-subtle)' }}>
+                Clear chat history
+              </button>
+            )}
             {history.length === 0 && (
               <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.875rem' }}>
                 Give me an instruction to modify the resume. For example: "Make the summary shorter" or "Highlight my React experience."
