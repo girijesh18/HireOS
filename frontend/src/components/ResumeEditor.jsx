@@ -60,7 +60,8 @@ export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, on
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await api.resumeSave(jobId, { final_md: markdown, llm });
+      const res = await api.resumeSave(jobId, { final_md: markdown, llm });
+      if (res && res.pdf === false) alert('Saved as v' + res.version + ', but PDF generation failed — check backend logs.');
       try { sessionStorage.removeItem(storeKey) } catch {}
       if (onSave) onSave();
     } catch (e) {

@@ -1549,49 +1549,49 @@ async def save_chat_resume(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Saves the final chat-edited markdown to the DB and generates the PDF."""
-    job = get_owned_job(db, job_id, current_user)
+    """Saves the final chat-edited markdown to the DB and generates the PDF.
+
+    Runs synchronously (PDF render takes ~1-3s) so the client gets a confirmed
+    version back — a background fire-and-forget here made successful saves look
+    like nothing happened (the UI reloaded before the row existed) and hid
+    failures entirely.
+    """
+    get_owned_job(db, job_id, current_user)
     final_md = payload.get("final_md")
     llm = payload.get("llm", "chat-editor")
     if not final_md:
         raise HTTPException(status_code=400, detail="Missing final_md")
-        
-    def _save_pdf():
-        import json as _json
-        db_session = SessionLocal()
+
+    from doc_generator import save_resume
+    latest = db.query(ResumeVersion).filter_by(job_id=job_id).order_by(ResumeVersion.version.desc()).first()
+    version = 1 if not latest else latest.version + 1
+
+    pdf_style_row = db.query(Settings).filter(Settings.key == "resume_pdf_style", Settings.user_id == current_user.id).first()
+    pdf_style = {}
+    if pdf_style_row and pdf_style_row.value:
         try:
-            from doc_generator import save_resume
-            latest = db_session.query(ResumeVersion).filter_by(job_id=job_id).order_by(ResumeVersion.version.desc()).first()
-            version = 1 if not latest else latest.version + 1
-            
-            pdf_style_row = db_session.query(Settings).filter(Settings.key == "resume_pdf_style", Settings.user_id == current_user.id).first()
-            pdf_style = {}
-            if pdf_style_row and pdf_style_row.value:
-                try:
-                    pdf_style = _json.loads(pdf_style_row.value)
-                except:
-                    pass
-                    
-            paths = save_resume(job_id, version, final_md, pdf_style)
+            pdf_style = json.loads(pdf_style_row.value)
+        except (ValueError, TypeError):
+            pass
 
-            rv = ResumeVersion(
-                job_id=job_id, version=version, content_md=final_md,
-                pdf_path=paths.get("pdf"), docx_path=paths.get("docx"),
-                llm_used=llm, user_id=current_user.id,
-            )
-            db_session.add(rv)
-            db_session.commit()
-            
-            _log_event(db_session, job_id, "document_generated",
-                       f"Resume v{version} saved via Chat Editor",
-                       f"Saved by user", source="user", user_id=current_user.id)
-        except Exception as e:
-            logger.error(f"[ResumeChatSave] Failed to save chat resume: {e}")
-        finally:
-            db_session.close()
+    try:
+        paths = await asyncio.to_thread(save_resume, job_id, version, final_md, pdf_style)
+    except Exception as e:
+        logger.error(f"[ResumeChatSave] Failed to save chat resume: {e}")
+        raise HTTPException(500, f"Failed to generate documents: {e}")
 
-    background_tasks.add_task(_save_pdf)
-    return {"status": "saving"}
+    rv = ResumeVersion(
+        job_id=job_id, version=version, content_md=final_md,
+        pdf_path=paths.get("pdf"), docx_path=paths.get("docx"),
+        llm_used=llm, user_id=current_user.id,
+    )
+    db.add(rv)
+    db.commit()
+
+    _log_event(db, job_id, "document_generated",
+               f"Resume v{version} saved via Chat Editor",
+               "Saved by user", source="user", user_id=current_user.id)
+    return {"status": "saved", "version": version, "pdf": bool(paths.get("pdf"))}
 
 
 # ── Agent: Generate Cover Letter ───────────────────────────────────────────────
