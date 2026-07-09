@@ -1219,6 +1219,134 @@ async def track_jd_text(payload: Dict[str, Any], db: Session = Depends(get_db), 
         "status": job.status, "platform": job.platform, "remote": job.remote,
     }}
 
+# ── Agent: Application-question answering (browser-extension autofill) ────────
+
+class _AppQuestion(_BaseModel):
+    id: str
+    label: str
+    type: str = "text"
+    options: Optional[List[str]] = None
+    maxlen: Optional[int] = None
+
+
+class _AppAnswer(_BaseModel):
+    id: str
+    answer: Optional[str] = None
+
+
+class _AppAnswerList(_BaseModel):
+    answers: List[_AppAnswer]
+
+
+def _validate_answers(answers: List[dict], questions: List[dict]) -> List[dict]:
+    """Post-validate LLM answers: unknown ids dropped, option answers must match
+    one of the field's options (case-insensitive), maxlen enforced, every
+    question gets a row (missing → null). Pure function — unit tested."""
+    q_by_id = {q["id"]: q for q in questions}
+    out = {}
+    for a in answers:
+        q = q_by_id.get(a.get("id"))
+        if not q:
+            continue
+        ans = a.get("answer")
+        if ans is not None:
+            ans = str(ans).strip() or None
+        if ans is not None and q.get("options"):
+            match = next((o for o in q["options"] if o.strip().lower() == ans.strip().lower()), None)
+            ans = match  # None if the model invented a choice
+        if ans is not None and q.get("maxlen"):
+            ans = ans[: int(q["maxlen"])]
+        out[q["id"]] = ans
+    return [{"id": qid, "answer": out.get(qid)} for qid in q_by_id]
+
+
+def _qa_components_text(db: Session, user_id: int) -> str:
+    """Q&A/questionnaire components — extra ground truth beyond the resume."""
+    components = db.query(MasterResumeComponent).filter(
+        MasterResumeComponent.is_active == True,
+        MasterResumeComponent.user_id == user_id,
+    ).all()
+    parts = [c.content_text for c in components
+             if _classify_component(c.name, c.content_text or "") == "qa" and c.content_text]
+    return "\n\n".join(parts)
+
+
+SYSTEM_APP_ANSWERS = """You answer job-application form questions on behalf of a candidate.
+You are given the candidate's verified background (resume + questionnaire answers) and the job description.
+STRICT RULES:
+- Answer ONLY from the provided background. Never invent, guess, or embellish facts.
+- If the background does not contain the information needed, return null for that question's answer.
+- When a question lists options, the answer MUST be exactly one of the options (verbatim).
+- Respect maxlen when given. Write in first person, concise and professional.
+- Legal/eligibility questions (visa, work authorization, criminal record, etc.): null unless explicitly stated in the background."""
+
+
+@app.post("/api/agent/answer-questions")
+async def answer_questions(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Answer application-form questions from ground truth only.
+    Body: { "job_id": 1, "questions": [{id,label,type,options?,maxlen?}], "llm"?, "guidance"? }
+    Returns: { "answers": [{id, answer|null}] }  — null = no ground truth, leave blank.
+    """
+    job_id = payload.get("job_id")
+    raw_questions = payload.get("questions") or []
+    if not job_id or not raw_questions:
+        raise HTTPException(status_code=400, detail="job_id and questions are required")
+    job = get_owned_job(db, job_id, current_user)
+
+    try:
+        questions = [_AppQuestion(**q).model_dump() for q in raw_questions]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid question shape: {e}")
+
+    background = get_master_resume(db, current_user.id)
+    qa_text = _qa_components_text(db, current_user.id)
+    contact = extract_contact_info(get_raw_resume_content(db, current_user.id))
+    if not background and not qa_text:
+        raise HTTPException(status_code=400, detail="No master resume configured — nothing to answer from.")
+
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
+    router = get_llm_router(db, current_user.id)
+    guidance = payload.get("guidance", "")
+
+    prompt = f"""JOB: {job.title} at {job.company}
+
+JOB DESCRIPTION:
+{(job.job_description or "")[:6000]}
+
+CANDIDATE CONTACT FACTS (verified):
+{json.dumps(contact)}
+
+CANDIDATE BACKGROUND (verified — the ONLY source of truth):
+{background[:12000]}
+
+{"ADDITIONAL Q&A BACKGROUND:" + chr(10) + qa_text[:6000] if qa_text else ""}
+
+{"USER GUIDANCE FOR THIS RUN: " + guidance if guidance else ""}
+
+APPLICATION QUESTIONS:
+{json.dumps(questions, indent=2)}
+
+Answer each question. Return null for any answer not grounded in the background."""
+
+    try:
+        result = await router.structured_complete(prompt, _AppAnswerList, llm=llm, system=SYSTEM_APP_ANSWERS)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
+
+    answers = _validate_answers([a.model_dump() for a in result.answers], questions)
+    _log_event(db, job.id, "agent_action", "Application questions answered",
+               f"{sum(1 for a in answers if a['answer'])} of {len(answers)} fields grounded",
+               source="agent", user_id=current_user.id)
+    return {"answers": answers}
+
+
+@app.get("/api/profile/contact")
+def profile_contact(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Verified contact facts (regex-extracted, no LLM) — extension fills profile fields locally."""
+    return extract_contact_info(get_raw_resume_content(db, current_user.id))
+
+
 # ── Agent: Fit Assessment ──────────────────────────────────────────────────────
 
 async def _bg_analyze(job_id: int, llm: str, user_id: int):
