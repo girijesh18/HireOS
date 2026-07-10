@@ -1159,8 +1159,8 @@ async def track_url(payload: Dict[str, Any], db: Session = Depends(get_db), curr
 
     # Map extracted data to DB fields
     job = Job(
-        company=data.get("company", "Unknown"),
-        title=data.get("title", "Unknown"),
+        company=data.get("company") or "Unknown",
+        title=data.get("title") or "Unknown",
         url=data.get("url") or url,
         job_description=data.get("job_description", ""),
         location=data.get("location", ""),
@@ -1205,8 +1205,8 @@ async def track_jd_text(payload: Dict[str, Any], db: Session = Depends(get_db), 
         raise HTTPException(status_code=500, detail=f"Job extraction failed: {e}")
 
     job = Job(
-        company=data.get("company", "Unknown"),
-        title=data.get("title", "Unknown"),
+        company=data.get("company") or "Unknown",
+        title=data.get("title") or "Unknown",
         url=data.get("url") or "",
         job_description=data.get("job_description") or text,
         location=data.get("location", ""),
