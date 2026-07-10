@@ -616,6 +616,16 @@ def extract_contact_info(raw: str) -> dict:
         if github and not github.startswith('http'):
             github = 'https://' + github
 
+    # Google Scholar — prefer href attribute
+    sch_href = re.search(r'href=["\']([^"\']*scholar\.google\.[a-z.]+/citations[^\s"\']*)["\']', raw, re.IGNORECASE)
+    if sch_href:
+        scholar = sch_href.group(1)
+    else:
+        sch_m = re.search(r'(?:https?://)?scholar\.google\.[a-z.]+/citations\S*', plain)
+        scholar = sch_m.group(0) if sch_m else ''
+        if scholar and not scholar.startswith('http'):
+            scholar = 'https://' + scholar
+
     return {
         'name': name,
         'email': email,
@@ -623,6 +633,7 @@ def extract_contact_info(raw: str) -> dict:
         'location': location,
         'linkedin': linkedin,
         'github': github,
+        'scholar': scholar,
     }
 
 
@@ -1275,6 +1286,7 @@ SYSTEM_APP_ANSWERS = """You answer job-application form questions on behalf of a
 You are given the candidate's verified background (resume + questionnaire answers) and the job description.
 STRICT RULES:
 - Answer ONLY from the provided background. Never invent, guess, or embellish facts.
+- Values DERIVABLE from the background count as grounded: total years of experience computed from work-history dates, seniority from titles, tech familiarity from listed skills.
 - If the background does not contain the information needed, return null for that question's answer.
 - When a question lists options, the answer MUST be exactly one of the options (verbatim).
 - Respect maxlen when given. Write in first person, concise and professional.
