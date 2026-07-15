@@ -28,7 +28,11 @@ def _version_suffix(version: int) -> str:
 # ── PDF via WeasyPrint ─────────────────────────────────────────────────────────
 
 def _inline_fmt(text: str) -> str:
-    """Convert **bold** and *italic* inline markdown to HTML spans."""
+    """Convert markdown links, **bold** and *italic* to HTML."""
+    # Links first — [text](url) → <a>. Handles http(s) and mailto.
+    text = re.sub(
+        r'\[([^\]]+)\]\((https?://[^\s)]+|mailto:[^\s)]+)\)',
+        r'<a href="\2">\1</a>', text)
     text = re.sub(r'\*\*([^*\n]+)\*\*', r'<strong>\1</strong>', text)
     text = re.sub(r'\*([^*\n]+)\*', r'<em>\1</em>', text)
     return text
@@ -110,7 +114,7 @@ def _resume_md_to_html(md_text: str, style: dict = None) -> str:
             if j < len(lines):
                 nxt = lines[j].strip()
                 if nxt and not nxt.startswith('#'):
-                    parts.append(f'<p class="rcontact">{nxt}</p>')
+                    parts.append(f'<p class="rcontact">{_inline_fmt(nxt)}</p>')
                     contact_seen = True
                     i = j + 1
                     continue

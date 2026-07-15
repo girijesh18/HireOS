@@ -584,8 +584,20 @@ def extract_contact_info(raw: str) -> dict:
 
     # Location — search inside contact-info div first (avoids matching the name)
     contact_div_m = re.search(r'class="contact-info"[^>]*>(.*?)</div>', raw, re.DOTALL | re.IGNORECASE)
-    loc_search_text = re.sub(r'<[^>]+>', ' ', contact_div_m.group(1)) if contact_div_m else plain
+    if contact_div_m:
+        loc_search_text = re.sub(r'<[^>]+>', ' ', contact_div_m.group(1))
+    else:
+        # No structured contact div (PDF/plain-text source): scan only the header
+        # block (first few non-empty lines), never the whole doc — otherwise a
+        # "Lastname, XX"-shaped string in the body is misread as the location.
+        # ponytail: first 3 non-empty lines = name + contact rows; bump if contact
+        # block is longer, add India/other state codes to the regex if needed.
+        loc_search_text = ' '.join([l.strip() for l in decoded.split('\n') if l.strip()][:3])
     loc_search_text = html_lib.unescape(loc_search_text)
+    # Strip the candidate's name so its tokens can't be read as a city (e.g. "Singh, IN").
+    for tok in name.split():
+        if len(tok) > 1:
+            loc_search_text = re.sub(re.escape(tok), ' ', loc_search_text, flags=re.IGNORECASE)
     loc_m = re.search(
         r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?,\s*'
         r'(?:Ontario|British Columbia|BC|Alberta|Quebec|Manitoba|Saskatchewan|'
