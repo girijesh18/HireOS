@@ -129,17 +129,38 @@ export default function JobDetail({ jobId }) {
   const showToast = (message, type='success') => setToast({ message, type })
   const toggleBlock = (key) => setExpandedBlocks(b => ({ ...b, [key]: !b[key] }))
 
+  // Scoring runs in the background on the server (minutes, past the 100s edge
+  // timeout), so kick it off and poll the resume list until the score lands.
   const runAts = async (r) => {
+    const previous = r.ats_score
     setAtsLoading(s => ({ ...s, [r.id]: true }))
     try {
-      const { ats_score } = await api.runAts(job.id, r.id, selectedLlm)
-      setResumes(rs => rs.map(x => x.id === r.id ? { ...x, ats_score } : x))
-      showToast(`ATS score: ${ats_score?.total}/100`)
+      await api.runAts(job.id, r.id, selectedLlm)
+      showToast('ATS scoring started — this takes a few minutes')
     } catch (e) {
       showToast(e.message, 'error')
-    } finally {
       setAtsLoading(s => ({ ...s, [r.id]: false }))
+      return
     }
+
+    for (let tries = 0; tries < 40; tries++) {          // 40 x 10s = ~7 min
+      await new Promise(res => setTimeout(res, 10000))
+      try {
+        const rv = await api.getResumes(jobId)
+        setResumes(rv)
+        const score = rv.find(x => x.id === r.id)?.ats_score
+        if (score && score !== previous) {
+          showToast(`ATS score: ${score.total}/100`)
+          break
+        }
+        const failed = (await api.getTasks(jobId)).find(t => t.task_type === 'ats' && t.status === 'failed')
+        if (failed) {
+          showToast(failed.error_message || 'ATS scoring failed', 'error')
+          break
+        }
+      } catch {}
+    }
+    setAtsLoading(s => ({ ...s, [r.id]: false }))
   }
 
   const loadAdditionalData = useCallback(async () => {

@@ -1651,15 +1651,66 @@ def get_resume_status(job_id: int, db: Session = Depends(get_db), current_user: 
     return {"status": "none"}
 
 
+async def _bg_ats(job_id: int, resume_id: int, llm: str, user_id: int):
+    from ats_score import score_resume_pdf
+    db = SessionLocal()
+    try:
+        task = db.query(LLMTaskStatus).filter_by(job_id=job_id, task_type="ats").first()
+        if not task:
+            task = LLMTaskStatus(job_id=job_id, task_type="ats", status="processing", user_id=user_id)
+            db.add(task)
+        else:
+            task.status = "processing"
+            task.error_message = None
+        db.commit()
+
+        rv = db.query(ResumeVersion).filter_by(
+            id=resume_id, job_id=job_id, user_id=user_id
+        ).first()
+        if not rv:
+            raise ValueError("Resume version not found")
+
+        _r = get_agent("resume", db, user_id).router
+        ats = await asyncio.to_thread(
+            score_resume_pdf, rv.pdf_path, llm,
+            _r.gemini_key, _r.nvidia_key, _r.github_token,
+        )
+        if not ats:
+            raise ValueError("ATS scorer returned no result")
+
+        rv.ats_score = ats
+        task.status = "completed"
+        db.commit()
+        _log_event(db, job_id, "ats_scored",
+                   f"Resume v{rv.version} ATS score: {ats.get('total')}/100",
+                   "Manually re-evaluated via hiring-agent",
+                   source="user", user_id=user_id)
+    except Exception as e:
+        logger.error(f"[ATS] manual scoring failed for resume {resume_id}: {e}")
+        task = db.query(LLMTaskStatus).filter_by(job_id=job_id, task_type="ats").first()
+        if task:
+            task.status = "failed"
+            task.error_message = str(e)
+            db.commit()
+    finally:
+        db.close()
+
+
 @app.post("/api/agent/resume/{job_id}/ats/{resume_id}")
 async def run_ats_score(
     job_id: int,
     resume_id: int,
+    background_tasks: BackgroundTasks,
     payload: Dict[str, Any] = {},
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Manually (re)run ATS scoring on an existing resume version's PDF."""
+    """Manually (re)run ATS scoring on an existing resume version's PDF.
+
+    Scoring shells out to the vendored hiring-agent and can take minutes, which
+    is well past the 100s edge-proxy timeout — so it runs in the background and
+    the client polls the resume list (or /jobs/{id}/tasks) for the result.
+    """
     get_owned_job(db, job_id, current_user)
     rv = db.query(ResumeVersion).filter_by(
         id=resume_id, job_id=job_id, user_id=current_user.id
@@ -1670,27 +1721,8 @@ async def run_ats_score(
         raise HTTPException(400, "Resume PDF not found on disk — regenerate the resume first")
 
     llm = resolve_llm(db, current_user.id, payload.get("llm"))
-    try:
-        from ats_score import score_resume_pdf
-        _r = get_agent("resume", db, current_user.id).router
-        ats = await asyncio.to_thread(
-            score_resume_pdf, rv.pdf_path, llm,
-            _r.gemini_key, _r.nvidia_key, _r.github_token,
-        )
-    except Exception as e:
-        logger.error(f"[ATS] manual scoring failed for resume {resume_id}: {e}")
-        raise HTTPException(500, f"ATS scoring failed: {e}")
-
-    if not ats:
-        raise HTTPException(500, "ATS scorer returned no result")
-
-    rv.ats_score = ats
-    db.commit()
-    _log_event(db, job_id, "ats_scored",
-               f"Resume v{rv.version} ATS score: {ats.get('total')}/100",
-               "Manually re-evaluated via hiring-agent",
-               source="user", user_id=current_user.id)
-    return {"ats_score": ats}
+    background_tasks.add_task(_bg_ats, job_id, resume_id, llm, current_user.id)
+    return {"status": "processing"}
 
 
 @app.post("/api/agent/resume/{job_id}/save")

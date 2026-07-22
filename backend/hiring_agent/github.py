@@ -3,8 +3,8 @@ import re
 import json
 import requests
 import datetime
-import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from typing import Dict, List, Optional, Any
 from models import GitHubProfile
@@ -13,6 +13,10 @@ from prompts.template_manager import TemplateManager
 from prompt import DEFAULT_MODEL, MODEL_PARAMETERS
 from llm_utils import initialize_llm_provider, extract_json_from_response
 from config import DEVELOPMENT_MODE
+
+
+class RateLimited(Exception):
+    """GitHub API quota is spent — abort enrichment rather than wait it out."""
 
 
 def _create_cache_filename(api_url: str, params: dict = None) -> str:
@@ -64,36 +68,16 @@ def _fetch_github_api(api_url, params=None):
         remaining = int(rate_limit_remaining)
         limit = int(rate_limit_limit)
 
-        # Log rate limit information and handle proactively
+        # Never block on the rate limit: this runs inside a bounded scoring
+        # subprocess, so sleeping until reset (up to an hour) just guarantees a
+        # timeout. Give up on enrichment instead — GitHub data is optional.
         if remaining < 10 and rate_limit_reset:
-            reset_timestamp = int(rate_limit_reset)
-            current_timestamp = int(time.time())
-            wait_seconds = (
-                max(0, reset_timestamp - current_timestamp) + 5
-            )  # Add 5 second buffer
-            reset_time = datetime.datetime.fromtimestamp(reset_timestamp)
-
-            # Cap maximum wait time at 1 hour
-            max_wait = 3600
-            if wait_seconds > max_wait:
-                print(
-                    f"⚠️  Rate limit reset time is too far in the future ({wait_seconds}s). Capping wait to {max_wait}s"
-                )
-                wait_seconds = max_wait
-
+            reset_time = datetime.datetime.fromtimestamp(int(rate_limit_reset))
             logger.error(
-                f"⚠️  GitHub API rate limit low: {remaining}/{limit} requests remaining. Resets at {reset_time}"
+                f"⚠️  GitHub API rate limit exhausted: {remaining}/{limit} remaining, resets at {reset_time}. "
+                f"Skipping GitHub enrichment. Set GITHUB_TOKEN to raise the limit (60/hour → 5000/hour)."
             )
-            print(
-                f"💡 Tip: Set GITHUB_TOKEN environment variable to increase rate limits (60/hour → 5000/hour)"
-            )
-
-            if wait_seconds > 0:
-                logger.info(
-                    f"⏳ Proactively sleeping for {wait_seconds} seconds until rate limit resets..."
-                )
-                time.sleep(wait_seconds)
-                print(f"✅ Rate limit should be reset now. Continuing...")
+            raise RateLimited(f"GitHub rate limit exhausted, resets at {reset_time}")
         elif remaining < 100:
             logger.info(
                 f"ℹ️  GitHub API rate limit: {remaining}/{limit} requests remaining"
@@ -210,8 +194,19 @@ def fetch_repo_contributors(owner: str, repo_name: str) -> list[dict]:
         else:
             return []
 
+    except RateLimited:
+        raise
     except Exception as e:
         logger.error(f"Error fetching contributors for {owner}/{repo_name}: {e}")
+        return []
+
+
+def _safe_contributors(owner: str, repo_name: str) -> list[dict]:
+    """Contributors for one repo, swallowing a spent quota so the remaining
+    repos still get scored with whatever came back before the limit hit."""
+    try:
+        return fetch_repo_contributors(owner, repo_name)
+    except RateLimited:
         return []
 
 
@@ -230,13 +225,19 @@ def fetch_all_github_repos(github_url: str, max_repos: int = 100) -> List[Dict]:
 
         if status_code == 200:
             projects = []
-            for repo in repos_data:
-                if repo.get("fork") and repo.get("forks_count", 0) < 5:
-                    continue
+            kept = [
+                r for r in repos_data
+                if not (r.get("fork") and r.get("forks_count", 0) < 5)
+            ]
 
-                repo_name = repo.get("name")
+            # One contributors call per repo, so fan them out — serially this was
+            # ~1 request/second and blew past the caller's scoring timeout.
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                all_contributors = list(pool.map(
+                    lambda r: _safe_contributors(username, r.get("name")), kept
+                ))
 
-                contributors_data = fetch_repo_contributors(username, repo_name)
+            for repo, contributors_data in zip(kept, all_contributors):
                 contributor_count = len(contributors_data)
 
                 user_contributions, total_contributions = fetch_contributions_count(
