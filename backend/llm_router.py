@@ -19,6 +19,24 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 
+class OutputTruncated(RuntimeError):
+    """The model hit its output-token ceiling mid-answer.
+
+    Raised instead of returning the partial text: for a resume, a silently
+    truncated reply is saved as a document with its tail sections missing and
+    nothing anywhere says so. Callers that can afford a bigger budget catch this
+    and retry.
+    """
+
+
+def _openai_text(resp, provider: str) -> str:
+    """Text from an OpenAI-shaped response, refusing a length-truncated one."""
+    choice = resp.choices[0]
+    if getattr(choice, "finish_reason", None) == "length":
+        raise OutputTruncated(f"{provider} hit max_tokens before finishing its answer.")
+    return choice.message.content
+
+
 class LLMRouter:
     """Route prompts to any configured LLM provider."""
 
@@ -121,6 +139,8 @@ class LLMRouter:
         for i, model in enumerate(chain):
             try:
                 return await self._complete_one(prompt, model, system, max_tokens, temperature)
+            except OutputTruncated:
+                raise      # same budget truncates on every provider — let the caller raise max_tokens
             except Exception as e:
                 if primary_err is None:
                     primary_err = e  # keep the requested model's error — most relevant
@@ -284,12 +304,19 @@ class LLMRouter:
                 else:
                     raise
 
-        # Warn on truncation (finish_reason MAX_TOKENS=2) — thinking tokens can eat the budget on 2.5+/3.x models
+        # finish_reason MAX_TOKENS=2 — thinking tokens can eat the budget on 2.5+/3.x models.
+        # Raise rather than return the partial text: the caller retries with a bigger
+        # budget, and a half-written resume never reaches the database.
+        truncated = False
         try:
-            if response and response.candidates and int(response.candidates[0].finish_reason) == 2:
-                logger.warning(f"[Gemini] Output TRUNCATED (MAX_TOKENS) on {model_name}. Increase max_tokens.")
+            truncated = bool(response and response.candidates
+                             and int(response.candidates[0].finish_reason) == 2)
         except Exception:
             pass
+        if truncated:
+            raise OutputTruncated(
+                f"Gemini ({model_name}) hit max_tokens ({max_tokens}) before finishing its answer."
+            )
 
         # Handle blocked/truncated responses gracefully
         try:
@@ -320,7 +347,7 @@ class LLMRouter:
             model=model_name, messages=messages,
             max_tokens=max_tokens, temperature=temperature
         )
-        return resp.choices[0].message.content
+        return _openai_text(resp, "groq")
 
     # ── OpenRouter ────────────────────────────────────────────────────────────
 
@@ -340,7 +367,7 @@ class LLMRouter:
             model=model_name, messages=messages,
             max_tokens=max_tokens, temperature=temperature
         )
-        return resp.choices[0].message.content
+        return _openai_text(resp, "openrouter")
 
     # ── Together AI ───────────────────────────────────────────────────────────
 
@@ -360,7 +387,7 @@ class LLMRouter:
             model=model_name, messages=messages,
             max_tokens=max_tokens, temperature=temperature
         )
-        return resp.choices[0].message.content
+        return _openai_text(resp, "together")
 
     # ── Claude (Anthropic) ───────────────────────────────────────────────────
 
@@ -387,6 +414,8 @@ class LLMRouter:
             kwargs["temperature"] = temperature
 
         resp = await client.messages.create(**kwargs)
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            raise OutputTruncated(f"Claude ({model_name}) hit max_tokens ({max_tokens}) before finishing.")
         return resp.content[0].text
 
     # ── Ollama (local) ────────────────────────────────────────────────────────
@@ -429,7 +458,7 @@ class LLMRouter:
             model=model_name, messages=messages,
             max_tokens=max_tokens, temperature=temperature
         )
-        return resp.choices[0].message.content
+        return _openai_text(resp, "nvidia")
 
     def available_providers(self) -> List[str]:
         """Return list of providers that have credentials configured."""

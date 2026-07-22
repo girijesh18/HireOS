@@ -661,6 +661,13 @@ def _classify_component(name: str, content: str) -> str:
     if "style guide" in n or "styleguide" in n or "style_guide" in n:
         return "style"
 
+    # Positive evidence of resume content beats every heuristic below. Misclassifying
+    # a real component drops those sections from the tailoring prompt entirely, and
+    # nothing downstream can recover content the LLM never saw.
+    if re.search(r'^#{1,3}\s*(work\s+)?experience\b', content or "", re.IGNORECASE | re.MULTILINE) \
+            or "professional summary" in cl or "work experience" in cl:
+        return "resume"
+
     # Q&A / questionnaire / intake doc → not resume content
     if ("needs your input" in cl
             or "section 1: positioning" in cl
@@ -693,6 +700,20 @@ def _resume_components(db: Session, user_id: int):
     if skipped:
         logger.info(f"[MasterResume] Skipped non-resume components: {skipped}")
     return resume_only
+
+
+def excluded_component_names(db: Session, user_id: int) -> List[str]:
+    """Active components the classifier keeps out of the tailoring prompt.
+
+    Exclusion happens before the LLM sees anything, so a wrongly-excluded
+    component looks exactly like the model dropping a section. Surface it.
+    """
+    active = db.query(MasterResumeComponent).filter(
+        MasterResumeComponent.is_active == True,
+        MasterResumeComponent.user_id == user_id,
+    ).all()
+    used = {c.id for c in _resume_components(db, user_id)}
+    return [c.name for c in active if c.id not in used]
 
 
 def get_master_resume(db: Session, user_id: int) -> str:
@@ -1477,6 +1498,14 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
         # ── Step 2: Get structured markdown of full resume ──
         master_resume = get_master_resume(db, user_id)
         logger.info(f"[Resume] Master resume: {len(master_resume)} chars")
+
+        excluded = excluded_component_names(db, user_id)
+        if excluded:
+            _log_event(db, job_id, "components_excluded",
+                       f"{len(excluded)} master-resume component(s) excluded from generation",
+                       "Classified as questionnaire/style-guide content, not resume content: "
+                       + ", ".join(excluded),
+                       source="agent", user_id=user_id)
 
         # ── Step 3: Optional GitHub context (per-user keys) ──
         agent_resume = get_agent("resume", db, user_id)

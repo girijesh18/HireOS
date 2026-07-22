@@ -20,7 +20,7 @@ from loguru import logger
 from database import Job, EvaluationReport, StoryBankEntry, FollowUpLog
 from scraper import StealthScraper
 
-from llm_router import LLMRouter
+from llm_router import LLMRouter, OutputTruncated
 
 
 # ── System prompts ─────────────────────────────────────────────────────────────
@@ -102,6 +102,39 @@ def _resume_body(text: str, name: str = "") -> str:
         return '\n'.join(lines[idx:]).strip()
     # every section matched the name (shouldn't happen) — keep from the last
     return '\n'.join(lines[section_idxs[-1]:]).strip()
+
+
+def _section_headings(md: str) -> List[str]:
+    """`## SECTION` headings, upper-cased and de-duplicated, in document order.
+
+    Both the master resume (normalised by _html_resume_to_markdown) and every
+    generated resume use `## SECTION`, so section coverage is a plain set diff —
+    no LLM needed to tell whether the tailored version dropped something.
+    """
+    seen, out = set(), []
+    for line in md.split('\n'):
+        s = line.strip()
+        if s.startswith('## ') and not s.startswith('### '):
+            h = s.lstrip('#').strip().upper()
+            if h and h not in seen:
+                seen.add(h)
+                out.append(h)
+    return out
+
+
+def _missing_sections(source_md: str, generated_md: str) -> List[str]:
+    """Sections present in the source but absent from the generated resume.
+
+    Matching is loose on purpose: the tailor is allowed to rename `## WORK
+    EXPERIENCE` to `## EXPERIENCE`, so a heading counts as present when either
+    name contains the other.
+    """
+    have = _section_headings(generated_md)
+    missing = []
+    for want in _section_headings(source_md):
+        if not any(want == h or want in h or h in want for h in have):
+            missing.append(want)
+    return missing
 
 
 def _guard_truncation(edited: str, original: str) -> str:
@@ -622,6 +655,9 @@ class ResumeTailoringAgent:
         if design_rules:
             extras += f"\n\nUSER STYLE REQUIREMENTS (follow all of these):\n{design_rules}"
 
+        required = _section_headings(master_resume)
+        required_text = "\n".join(f"  - ## {s}" for s in required)
+
         prompt = f"""Tailor this resume for {title} at {company}.
 
 MASTER RESUME — this is the ONLY source of facts. Do not invent anything not here.
@@ -634,11 +670,15 @@ GAPS TO ADDRESS: {gaps_text or "None"}
 ACTION ITEMS: {actions_text or "None"}
 {extras}
 
+REQUIRED SECTIONS — the output MUST contain every one of these, none omitted:
+{required_text or "  (use the master resume's own sections)"}
+
 Write the resume body sections. Rules:
 1. Every company name, job title, date, metric, skill MUST exist verbatim or as a clear paraphrase in the master resume above
 2. Do NOT invent companies, titles, dates, phone numbers, emails, or metrics
-3. Tailor bullet points to emphasize what matters for this specific role — reorder, reframe, select — but never fabricate
-4. Strong action verbs, specific numbers, ATS keywords from the JD
+3. Tailor WITHIN each section — reorder sections, reorder bullets, reframe wording, drop an individual bullet that is irrelevant to this role. Never drop a whole section, and never fabricate.
+4. Section coverage is not optional: every heading in the REQUIRED SECTIONS list must appear in your output, even if the role only needs a short version of it. Shorten it — do not omit it.
+5. Strong action verbs, specific numbers, ATS keywords from the JD
 
 MARKDOWN SYNTAX — PDF renderer requires this EXACT format:
   Section header:   ## SECTION NAME
@@ -652,18 +692,85 @@ CRITICAL formatting rules (breaking these corrupts the PDF):
   - Job titles must keep the **bold** markers on their own line.
   - No ``` fences. No preamble. Start output with ## (first section)."""
 
-        # max_tokens must cover thinking tokens (Gemini 2.5+/3.x reason ~2-4k) PLUS the full resume output
-        raw = await self.router.complete(
-            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=16000
-        )
+        # max_tokens must cover thinking tokens (Gemini 2.5+/3.x reason ~2-4k) PLUS the full resume output.
+        # A truncated reply raises, so retry once with double the budget before giving up —
+        # a long master resume is the normal reason the first attempt runs out.
+        try:
+            raw = await self.router.complete(
+                prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=16000
+            )
+        except OutputTruncated:
+            logger.warning("[ResumeTailor] Output truncated at 16k — retrying at 32k")
+            raw = await self.router.complete(
+                prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=32000
+            )
+
         # Prepend verified header built from pre-extracted facts; drop whatever header the LLM wrote
         facts = contact_facts or {}
         name = facts.get('name', '')
         body = _resume_body(_strip_code_fences(raw), name)
+
+        body = await self._repair_missing_sections(body, master_resume, required, llm)
+
         contact_parts = [v for k in ('email', 'phone', 'location', 'linkedin', 'github')
                          if (v := facts.get(k, '').strip())]
         header = f"# {name}\n{' | '.join(contact_parts)}" if name else ""
         return (header + '\n\n' + body).strip() if header else body
+
+    async def _repair_missing_sections(
+        self, body: str, master_resume: str, required: List[str], llm: str
+    ) -> str:
+        """Re-add master-resume sections the tailoring pass dropped.
+
+        The prompt asks for full coverage but cannot guarantee it, so the check is
+        a set diff and the repair is one extra call that runs only when something
+        is actually missing. If the repair also fails, raise rather than save a
+        resume that is quietly missing the candidate's content.
+        """
+        if not required:
+            return body
+        missing = _missing_sections(master_resume, body)
+        if not missing:
+            return body
+
+        logger.warning(f"[ResumeTailor] Dropped sections {missing} — running repair pass")
+        prompt = f"""This tailored resume is missing sections that exist in the candidate's master resume.
+
+MISSING SECTIONS: {", ".join(missing)}
+
+MASTER RESUME (source of truth — take the missing content from here, verbatim or lightly condensed):
+{master_resume}
+
+CURRENT TAILORED RESUME:
+{body}
+
+Add the missing sections back, placed where they belong in a resume's normal order.
+Rules:
+- Change NOTHING that is already present — every existing section, bullet, date and metric stays byte-for-byte identical.
+- Only add the missing sections listed above, sourced strictly from the master resume. Invent nothing.
+- Keep the exact markdown format: `## SECTION`, `### Company, Location || Month Year – Month Year`, `**Job Title**` on its own line, `*italic role line*`, `- **Category:** bullet`.
+- Return ONLY the complete markdown body starting with ## (first section). No preamble, no fences."""
+
+        repaired = _strip_code_fences(await self.router.complete(
+            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.2, max_tokens=32000
+        ))
+        repaired = _resume_body(repaired)
+
+        still = _missing_sections(master_resume, repaired)
+        if still:
+            raise ValueError(
+                "Resume generation dropped master-resume sections and the repair pass could not "
+                f"restore them: {', '.join(still)}. Try a different model, or split very long "
+                "master-resume components."
+            )
+        # Repair must not cost content either — it only ever adds.
+        if len(repaired) < 0.9 * len(body):
+            raise ValueError(
+                "The repair pass shrank the resume instead of restoring sections — generation "
+                "aborted so a partial resume is not saved."
+            )
+        logger.info(f"[ResumeTailor] Repair pass restored: {missing}")
+        return repaired
 
     async def chat_edit(
         self,
@@ -776,6 +883,14 @@ Return ONLY the edited body starting with ## (first section). No preamble."""
             prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.2, max_tokens=16000
         )
         corrected = _strip_code_fences(corrected)
+
+        # A style rule like "keep it to one page" makes deleting a section the
+        # easiest way to comply. Styling is cosmetic — if it costs content, drop
+        # the styled version and keep the tailored one.
+        dropped = _missing_sections(body, corrected)
+        if dropped:
+            logger.warning(f"[ResumeTailor] Style pass dropped sections {dropped} — keeping unstyled resume")
+            return resume_md
         logger.info("[ResumeTailor] Style-guide pass complete.")
 
         # Re-attach header
