@@ -1584,7 +1584,35 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
         task.status = "completed"
         db.commit()
 
-        # ── Step 9: Auto ATS scoring (best-effort, runs after resume is ready) ──
+        # ── Step 9: Critic pass (best-effort, runs after the resume is ready) ──
+        # Same placement as the ATS pass below: the resume is already marked
+        # completed, so this never delays it. Gets the master resume as well as
+        # the JD, so it can flag invented claims and content tailoring dropped —
+        # neither of which it can see from the job description alone.
+        try:
+            critic = get_agent("critic", db, user_id)
+            notes = await critic.critique(
+                resume_md=resume_md,
+                job_description=job.job_description or "",
+                company=job.company,
+                title=job.title,
+                master_resume=master_resume,
+                llm=critic_llm or llm,
+            )
+            rv.critic_notes = notes
+            db.commit()
+            fabs = len(notes.get("fabrications") or [])
+            drops = len(notes.get("dropped_strengths") or [])
+            detail = f"Score {notes.get('score', '?')}/10"
+            if fabs or drops:
+                detail += f" — {fabs} unsupported claim(s), {drops} dropped strength(s)"
+            _log_event(db, job_id, "resume_critiqued",
+                       f"Resume v{version} critiqued", detail,
+                       source="agent", user_id=user_id)
+        except Exception as critic_err:
+            logger.warning(f"[Critic] critique failed for job {job_id}: {critic_err}")
+
+        # ── Step 10: Auto ATS scoring (best-effort, runs after resume is ready) ──
         # Resume is already marked completed above, so the UI shows it immediately;
         # the ATS score fills in a bit later once the vendored scorer returns.
         try:

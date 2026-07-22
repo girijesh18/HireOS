@@ -1082,6 +1082,43 @@ export default function JobDetail({ jobId }) {
                         </div>
                       </details>
                     )}
+                    {r.critic_notes && (
+                      <details style={{ marginTop:6 }}>
+                        <summary style={{ cursor:'pointer', fontSize:'0.8rem', fontWeight:700,
+                          color: r.critic_notes.fabrications?.length ? 'var(--danger)'
+                               : r.critic_notes.score >= 7 ? 'var(--success)' : 'var(--warning)' }}>
+                          Critic: {r.critic_notes.score ?? '?'}/10
+                          {r.critic_notes.fabrications?.length > 0 && ` · ${r.critic_notes.fabrications.length} unsupported claim(s)`}
+                          {r.critic_notes.dropped_strengths?.length > 0 && ` · ${r.critic_notes.dropped_strengths.length} dropped`}
+                        </summary>
+                        <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)', marginTop:6, lineHeight:1.5 }}>
+                          {r.critic_notes.verdict && <div style={{ marginBottom:6 }}>{r.critic_notes.verdict}</div>}
+                          {/* Truth axis first — an invented claim is worse than a weak bullet. */}
+                          {r.critic_notes.fabrications?.length > 0 && (
+                            <div style={{ marginBottom:6 }}>
+                              <strong style={{ color:'var(--danger)' }}>Not in master resume:</strong>
+                              {r.critic_notes.fabrications.map((f,i) => (
+                                <div key={i}>• “{f.claim}” — {f.why} <em>({f.location})</em></div>
+                              ))}
+                            </div>
+                          )}
+                          {r.critic_notes.dropped_strengths?.length > 0 && (
+                            <div style={{ marginBottom:6 }}>
+                              <strong>Dropped from master resume:</strong>
+                              {r.critic_notes.dropped_strengths.map((d,i) => (
+                                <div key={i}>• {d.content} — {d.relevance}</div>
+                              ))}
+                            </div>
+                          )}
+                          {r.critic_notes.jd_keyword_misses?.length > 0 && (
+                            <div style={{ marginBottom:6 }}><strong>JD keywords missing:</strong> {r.critic_notes.jd_keyword_misses.join(' · ')}</div>
+                          )}
+                          {r.critic_notes.top_3_actions?.length > 0 && (
+                            <div><strong>Do next:</strong>{r.critic_notes.top_3_actions.map((a,i) => <div key={i}>{i+1}. {a}</div>)}</div>
+                          )}
+                        </div>
+                      </details>
+                    )}
                   </div>
                   <div className="flex gap-sm" style={{ alignItems:'center' }}>
                     {r.llm_used && (

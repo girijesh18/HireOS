@@ -1297,15 +1297,49 @@ class ResumeCriticAgent:
         job_description: str,
         company: str = "",
         title: str = "",
+        master_resume: str = "",
         llm: str = "gemini",
     ) -> Dict:
+        """Critique the tailored resume against BOTH the JD and the master resume.
+
+        Without the master resume this is one-sided: it can only ask "does this
+        match the job", never "is this actually true". A fabricated bullet reads
+        as a strength, a dropped achievement is invisible, and the `rewrite`
+        field has no real data to rewrite from.
+        """
+        master_block = (
+            f"\n== MASTER RESUME (ground truth — everything real about this candidate) ==\n{master_resume}\n"
+            if master_resume else ""
+        )
+        truth_fields = """  "fabrications": [
+    {
+      "claim": "The exact text in the generated resume that is not supported by the master resume",
+      "location": "Which section/bullet",
+      "severity": "high | medium | low",
+      "why": "What in the master resume it contradicts, or what it invents outright"
+    }
+  ],
+  "dropped_strengths": [
+    {
+      "content": "Achievement/skill/section present in the master resume but missing from the generated resume",
+      "relevance": "Why it matters for THIS role",
+      "where_to_add": "Which section it belongs in"
+    }
+  ],
+""" if master_resume else ""
+
         prompt = f"""Brutally critique this resume for the role below. Your job is to help this candidate get hired — not to make them feel good.
 
 == TARGET ROLE: {title} at {company} ==
 {job_description[:4000]}
-
+{master_block}
 == GENERATED RESUME ==
 {resume_md}
+
+Judge on two axes:
+A. FIT — does the generated resume win this specific job?
+B. TRUTH — is every claim in it supported by the master resume, and did tailoring throw away anything valuable?
+{"Anything in the generated resume with no basis in the master resume is a fabrication, however plausible it sounds. Anything strong in the master resume that the generated resume left out is a dropped strength. Report both." if master_resume else ""}
 
 Return JSON with this exact structure:
 {{
@@ -1320,11 +1354,11 @@ Return JSON with this exact structure:
       "fix": "Exact fix — rewrite the bullet, add this metric, delete this line"
     }}
   ],
-  "weak_bullets": [
+{truth_fields}  "weak_bullets": [
     {{
       "original": "The exact weak bullet text",
       "problem": "What's wrong with it",
-      "rewrite": "A stronger version using real resume data"
+      "rewrite": "A stronger version — every fact in it must come from the master resume above. Invent nothing."
     }}
   ],
   "ats_red_flags": [
@@ -1356,7 +1390,11 @@ Be the mentor who gives the hard truth, not the friend who lies. Cite exact line
             prompt, llm=llm, system=SYSTEM_CRITIC_AGENT, temperature=0.4, max_tokens=5000
         )
         result = _parse_json(text)
-        logger.info(f"[ResumeCritic] Score: {result.get('score', '?')}/10 for {title} at {company}")
+        logger.info(
+            f"[ResumeCritic] Score: {result.get('score', '?')}/10 for {title} at {company} "
+            f"({len(result.get('fabrications') or [])} fabrication(s), "
+            f"{len(result.get('dropped_strengths') or [])} dropped strength(s))"
+        )
         return result
 
 
