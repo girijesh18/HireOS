@@ -46,7 +46,8 @@ export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, on
   const handleSend = async () => {
     if (!instruction.trim()) return;
     setIsEditing(true);
-    setHistory([...history, { role: 'user', text: instruction }]);
+    const nextHistory = [...history, { role: 'user', text: instruction }];
+    setHistory(nextHistory);
     const currentInstruction = instruction;
     setInstruction('');
 
@@ -55,6 +56,7 @@ export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, on
         job_id: jobId,
         current_md: markdown,
         instruction: currentInstruction,
+        history: nextHistory,   // so a later edit doesn't silently undo an earlier one
         llm: llm
       });
       setMarkdown(res.updated_md);

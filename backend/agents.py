@@ -104,6 +104,30 @@ def _resume_body(text: str, name: str = "") -> str:
     return '\n'.join(lines[section_idxs[-1]:]).strip()
 
 
+def _guard_truncation(edited: str, original: str) -> str:
+    """Reject a chat edit that mangled the resume instead of editing it.
+
+    Cheap deterministic check, not an LLM critic: a truncated or format-stripped
+    reply is the failure mode that compounds, because the bad output becomes the
+    next edit's input. Raising leaves the editor showing the last good markdown.
+    """
+    if not original.strip():
+        return edited
+    if not edited.strip():
+        raise ValueError("The model returned an empty resume — edit rejected, nothing changed.")
+    # ponytail: length + section count catches the real failures (truncated reply,
+    # sections silently dropped). Per-bullet diffing if that stops being enough.
+    if len(edited) < 0.6 * len(original):
+        raise ValueError(
+            f"The model returned a resume {round(100 * len(edited) / len(original))}% "
+            "of the original length — edit rejected, nothing changed. Try a narrower instruction."
+        )
+    before = original.count('\n## ')
+    if before and edited.count('\n## ') < before - 1:
+        raise ValueError("The model dropped resume sections — edit rejected, nothing changed.")
+    return edited
+
+
 def _parse_json(text: str) -> Dict:
     """Extract JSON from LLM output, handling markdown fences and malformed output."""
     # Strip markdown code fences
@@ -641,26 +665,71 @@ CRITICAL formatting rules (breaking these corrupts the PDF):
         header = f"# {name}\n{' | '.join(contact_parts)}" if name else ""
         return (header + '\n\n' + body).strip() if header else body
 
-    async def chat_edit(self, current_resume_md: str, instruction: str, llm: str = "gemini") -> str:
-        """Applies a human instruction to an existing generated resume (Live Chat Editor)."""
-        prompt = f"""You are an elite executive resume editor. 
+    async def chat_edit(
+        self,
+        current_resume_md: str,
+        instruction: str,
+        master_resume: str = "",
+        job_description: str = "",
+        company: str = "",
+        title: str = "",
+        design_rules: str = "",
+        history: Optional[List[Dict]] = None,
+        contact_facts: Optional[Dict] = None,
+        llm: str = "gemini",
+    ) -> str:
+        """Applies a human instruction to an existing generated resume (Live Chat Editor).
+
+        Each edit re-feeds its own output as the next edit's input, so without the
+        master resume in context the model can never restore a fact it dropped and
+        the resume degrades round over round. Same context the generation flow gets:
+        master resume (source of truth), JD, style guide, plus the edit history so
+        instruction N+1 does not silently undo instruction N.
+        """
+        sections = ""
+        if master_resume:
+            sections += (
+                "\n\nMASTER RESUME — the ONLY source of facts. Anything missing from the "
+                "current resume may be restored from here; nothing outside it may be invented.\n"
+                f"{master_resume}"
+            )
+        if job_description:
+            sections += f"\n\nTARGET ROLE: {title} at {company}\nJOB DESCRIPTION:\n{job_description[:4000]}"
+        if design_rules:
+            sections += f"\n\nUSER STYLE REQUIREMENTS (keep the resume compliant with these):\n{design_rules}"
+        if history:
+            # Only the user's own instructions matter; the agent's replies are canned.
+            past = [h.get("text", "") for h in history if h.get("role") == "user" and h.get("text")]
+            if past[:-1]:   # drop the current instruction, it is stated separately below
+                joined = "\n".join(f"- {p}" for p in past[:-1][-10:])
+                sections += f"\n\nEDITS ALREADY APPLIED (do not undo these):\n{joined}"
+
+        prompt = f"""You are an elite executive resume editor.
 The user wants to modify this exact resume based on the following instruction.
 
 INSTRUCTION: {instruction}
 
 CURRENT RESUME:
 {current_resume_md}
+{sections}
 
-Apply the requested changes. 
+Apply the requested change — and ONLY that change.
 CRITICAL RULES:
-1. Keep all markdown formatting EXACTLY as it is (## Headers, ### Company || Date, **Job Title**, *Role*).
-2. Do not hallucinate or invent new companies/dates.
-3. Return ONLY the updated markdown resume. No preamble, no explanation, no markdown fences. Start immediately with the first # or ##."""
-        
+1. Change only what the instruction asks for. Leave every other section, bullet, date and metric byte-for-byte identical.
+2. Never invent companies, titles, dates, metrics or skills. Every fact must trace to the master resume above (or already be in the current resume).
+3. If the instruction asks for content that is missing, pull it from the master resume rather than writing something new.
+4. Keep the markdown format EXACTLY: `## SECTION`, `### Company, Location || Month Year – Month Year`, `**Job Title**` on its own line, `*italic role line*`, `- **Category:** bullet`.
+5. `**text**` IS the bold mechanism — the PDF renderer needs it. Never strip `**`. Never wrap the date after `||` in `**` or `*`.
+6. Do not touch the name/contact header — it is managed separately.
+7. Return ONLY the complete updated markdown resume. No preamble, no explanation, no markdown fences. Start immediately with the first # or ##."""
+
         raw = await self.router.complete(
-            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=16000
+            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.2, max_tokens=16000
         )
-        return _strip_code_fences(raw)
+        edited = _strip_code_fences(raw)
+        if contact_facts:
+            edited = self.enforce_header(edited, contact_facts)
+        return _guard_truncation(edited, current_resume_md)
 
     async def validate_design(
         self,

@@ -1600,12 +1600,33 @@ async def resume_chat(payload: Dict[str, Any] = {}, db: Session = Depends(get_db
     if not job_id or not current_md or not instruction:
         raise HTTPException(status_code=400, detail="Missing required fields: job_id, current_md, instruction")
 
-    get_owned_job(db, job_id, current_user)
+    job = get_owned_job(db, job_id, current_user)
     agent = get_agent("resume", db, current_user.id)
 
+    # Same context the generation flow gets. Without the master resume the editor
+    # can only ever lose information: each edit's output is the next edit's input.
+    master_resume = get_master_resume(db, current_user.id)
+    raw_content = get_raw_resume_content(db, current_user.id)
+    contact_facts = extract_contact_info(raw_content) if raw_content else None
+    style_row = db.query(Settings).filter(
+        Settings.key == "resume_style_guide", Settings.user_id == current_user.id
+    ).first()
+
     try:
-        updated_md = await agent.chat_edit(current_md, instruction, llm=llm)
+        updated_md = await agent.chat_edit(
+            current_md, instruction,
+            master_resume=master_resume,
+            job_description=job.job_description or "",
+            company=job.company or "",
+            title=job.title or "",
+            design_rules=(style_row.value if style_row and style_row.value else ""),
+            history=payload.get("history") or [],
+            contact_facts=contact_facts,
+            llm=llm,
+        )
         return {"updated_md": updated_md}
+    except ValueError as e:      # guard rejected the edit — resume left untouched
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.error(f"[ResumeChat] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
