@@ -133,14 +133,35 @@ class LLMRouter:
         fallback: bool = True,
     ) -> str:
         """Call an LLM and return the text. On failure, gracefully fall back to
-        the next best available provider (unless fallback=False)."""
+        the next best available provider (unless fallback=False).
+
+        A truncated answer is retried once with a bigger budget rather than
+        falling back — the same ceiling truncates on every provider. Reasoning
+        models spend thinking tokens out of this same budget, so a caller's
+        nominal limit can be consumed before a single output token is written.
+        """
+        try:
+            return await self._complete_chain(prompt, llm, system, max_tokens, temperature, fallback)
+        except OutputTruncated as e:
+            bumped = min(max(max_tokens * 2, self.MIN_RETRY_TOKENS), self.MAX_RETRY_TOKENS)
+            if bumped <= max_tokens:
+                raise
+            logger.warning(f"[LLMRouter] {e} → retrying at max_tokens={bumped}")
+            return await self._complete_chain(prompt, llm, system, bumped, temperature, fallback)
+
+    # Retry budget for a truncated answer. The floor matters more than the
+    # doubling: a 300- or 2000-token call has no headroom for thinking tokens.
+    MIN_RETRY_TOKENS = 8000
+    MAX_RETRY_TOKENS = 32000
+
+    async def _complete_chain(self, prompt, llm, system, max_tokens, temperature, fallback) -> str:
         chain = self._fallback_chain(llm) if fallback else [llm]
         primary_err = None
         for i, model in enumerate(chain):
             try:
                 return await self._complete_one(prompt, model, system, max_tokens, temperature)
             except OutputTruncated:
-                raise      # same budget truncates on every provider — let the caller raise max_tokens
+                raise      # a bigger budget is the fix, not a different provider
             except Exception as e:
                 if primary_err is None:
                     primary_err = e  # keep the requested model's error — most relevant

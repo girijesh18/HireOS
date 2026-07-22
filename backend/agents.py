@@ -20,7 +20,7 @@ from loguru import logger
 from database import Job, EvaluationReport, StoryBankEntry, FollowUpLog
 from scraper import StealthScraper
 
-from llm_router import LLMRouter, OutputTruncated
+from llm_router import LLMRouter
 
 
 # ── System prompts ─────────────────────────────────────────────────────────────
@@ -692,18 +692,11 @@ CRITICAL formatting rules (breaking these corrupts the PDF):
   - Job titles must keep the **bold** markers on their own line.
   - No ``` fences. No preamble. Start output with ## (first section)."""
 
-        # max_tokens must cover thinking tokens (Gemini 2.5+/3.x reason ~2-4k) PLUS the full resume output.
-        # A truncated reply raises, so retry once with double the budget before giving up —
-        # a long master resume is the normal reason the first attempt runs out.
-        try:
-            raw = await self.router.complete(
-                prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=16000
-            )
-        except OutputTruncated:
-            logger.warning("[ResumeTailor] Output truncated at 16k — retrying at 32k")
-            raw = await self.router.complete(
-                prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=32000
-            )
+        # max_tokens must cover thinking tokens (Gemini 2.5+/3.x reason ~2-4k) PLUS the
+        # full resume output. The router retries a truncated answer at a bigger budget.
+        raw = await self.router.complete(
+            prompt, llm=llm, system=SYSTEM_RESUME_AGENT, temperature=0.3, max_tokens=16000
+        )
 
         # Prepend verified header built from pre-extracted facts; drop whatever header the LLM wrote
         facts = contact_facts or {}
@@ -956,7 +949,7 @@ Write a 3-4 paragraph cover letter that:
 - Reads like a real human wrote it — not a template
 
 Return ONLY the cover letter in markdown. Start with "Dear Hiring Team," or the recruiter's name if known."""
-        raw = await self.router.complete(prompt, llm=llm, system=SYSTEM_COVER_LETTER_AGENT, temperature=0.75, max_tokens=2000)
+        raw = await self.router.complete(prompt, llm=llm, system=SYSTEM_COVER_LETTER_AGENT, temperature=0.75, max_tokens=6000)
         return _strip_code_fences(raw)
 
 
@@ -1027,7 +1020,7 @@ The system performed an action and returned: {json.dumps(action_result, default=
 Write a brief, friendly, natural-language reply (2-3 sentences max) summarizing what happened.
 Be specific. Mention key numbers/names from the result if available."""
         try:
-            return await self.router.complete(prompt, llm=llm, temperature=0.7, max_tokens=300)
+            return await self.router.complete(prompt, llm=llm, temperature=0.7, max_tokens=2000)
         except Exception:
             return str(action_result)
 
@@ -1459,7 +1452,7 @@ Momentum score (1-10):
 Be specific to the DATA. Don't give generic advice."""
 
         text = await self.router.complete(
-            prompt, llm=llm, system=SYSTEM_INSIGHTS_AGENT, temperature=0.4, max_tokens=2000
+            prompt, llm=llm, system=SYSTEM_INSIGHTS_AGENT, temperature=0.4, max_tokens=4000
         )
         return _parse_json(text)
 
