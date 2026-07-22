@@ -132,7 +132,7 @@ export default function JobDetail({ jobId }) {
   // Scoring runs in the background on the server (minutes, past the 100s edge
   // timeout), so kick it off and poll the resume list until the score lands.
   const runAts = async (r) => {
-    const previous = r.ats_score
+    const previous = r.ats_score?.total ?? null
     setAtsLoading(s => ({ ...s, [r.id]: true }))
     try {
       await api.runAts(job.id, r.id, selectedLlm)
@@ -148,14 +148,23 @@ export default function JobDetail({ jobId }) {
       try {
         const rv = await api.getResumes(jobId)
         setResumes(rv)
+        // Compare the number, not the object — every poll returns a fresh object,
+        // so `score !== previous` was true on the first poll and toasted a
+        // half-written / stale score as "undefined/100".
         const score = rv.find(x => x.id === r.id)?.ats_score
-        if (score && score !== previous) {
+        if (score?.total != null && score.total !== previous) {
           showToast(`ATS score: ${score.total}/100`)
           break
         }
-        const failed = (await api.getTasks(jobId)).find(t => t.task_type === 'ats' && t.status === 'failed')
-        if (failed) {
-          showToast(failed.error_message || 'ATS scoring failed', 'error')
+        const task = (await api.getTasks(jobId)).find(t => t.task_type === 'ats')
+        if (task?.status === 'failed') {
+          showToast(task.error_message || 'ATS scoring failed', 'error')
+          break
+        }
+        // tries > 0: on the very first poll the task row may still be the
+        // 'completed' one from a previous run (it's one row per job).
+        if (tries > 0 && task?.status === 'completed') {   // same score as before — still done
+          if (score?.total != null) showToast(`ATS score: ${score.total}/100`)
           break
         }
       } catch {}
