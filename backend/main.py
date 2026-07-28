@@ -426,6 +426,18 @@ def _owns_job(db: Session, job_id: int, user_id: int) -> bool:
     return db.query(Job.id).filter(Job.id == job_id, Job.user_id == user_id).first() is not None
 
 
+def _as_int(value):
+    """Salary columns are Integer; LLM extraction sometimes returns floats
+    (e.g. '$117,923.72 per annum'). SQLite stores those as REAL, and JobOut
+    then fails validation, 500-ing the whole job list."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _strip_html(text: str) -> str:
     """Generic HTML tag stripper (used outside resume pipeline)."""
     import html as html_lib
@@ -1198,8 +1210,8 @@ async def track_url(payload: Dict[str, Any], db: Session = Depends(get_db), curr
         job_description=data.get("job_description", ""),
         location=data.get("location", ""),
         remote=data.get("remote", False),
-        salary_min=data.get("salary_min"),
-        salary_max=data.get("salary_max"),
+        salary_min=_as_int(data.get("salary_min")),
+        salary_max=_as_int(data.get("salary_max")),
         platform=data.get("platform", "direct"),
         status="found",
         meta={"tech_stack": data.get("tech_stack", []), "seniority": data.get("seniority")},
@@ -1244,8 +1256,8 @@ async def track_jd_text(payload: Dict[str, Any], db: Session = Depends(get_db), 
         job_description=data.get("job_description") or text,
         location=data.get("location", ""),
         remote=data.get("remote", False),
-        salary_min=data.get("salary_min"),
-        salary_max=data.get("salary_max"),
+        salary_min=_as_int(data.get("salary_min")),
+        salary_max=_as_int(data.get("salary_max")),
         platform=data.get("platform", "linkedin"),
         status="found",
         meta={"tech_stack": data.get("tech_stack", []), "seniority": data.get("seniority")},
