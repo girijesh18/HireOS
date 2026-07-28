@@ -1725,6 +1725,10 @@ def get_resume_status(job_id: int, db: Session = Depends(get_db), current_user: 
 
     if task and task.status == "processing":
         return {"status": "processing"}
+    # Failure outranks an older version: otherwise a failed regeneration serves
+    # the previous resume back as "completed" and the error never reaches the user.
+    if task and task.status == "failed":
+        return {"status": "failed", "error": task.error_message}
     if latest:
         return {
             "status": "completed",
@@ -1736,8 +1740,6 @@ def get_resume_status(job_id: int, db: Session = Depends(get_db), current_user: 
             "ats_score": latest.ats_score,
             "llm_used": latest.llm_used,
         }
-    if task and task.status == "failed":
-        return {"status": "failed", "error": task.error_message}
     return {"status": "none"}
 
 

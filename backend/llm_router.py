@@ -290,10 +290,8 @@ class LLMRouter:
             model_name = "gemini-2.0-flash-lite"
         elif "2.0-flash" in m:
             model_name = "gemini-2.0-flash"
-        elif "1.5-pro" in m:
-            model_name = "gemini-1.5-pro"
-        elif "1.5-flash" in m:
-            model_name = "gemini-1.5-flash"
+        # 1.5-* is retired by Google and no longer served -- anything still asking
+        # for it falls through to the current default rather than 404-ing.
         else:
             model_name = "gemini-2.5-flash"
 
@@ -314,14 +312,16 @@ class LLMRouter:
                 break
             except Exception as e:
                 if "429" in str(e) or "ResourceExhausted" in str(e) or "Quota" in str(e):
-                    wait = (attempt + 1) * 20
-                    logger.warning(f"[Gemini] Rate limited (attempt {attempt+1}/3), retrying in {wait}s")
-                    await asyncio.sleep(wait)
+                    # Give up before sleeping on the last attempt -- the old order
+                    # burned 60s waiting for a retry it was never going to make.
                     if attempt == 2:
                         raise RuntimeError(
                             f"Gemini rate limit exceeded. Free tier allows 5 req/min. "
                             "Wait 60 seconds and try again."
                         )
+                    wait = (attempt + 1) * 20
+                    logger.warning(f"[Gemini] Rate limited (attempt {attempt+1}/3), retrying in {wait}s")
+                    await asyncio.sleep(wait)
                 else:
                     raise
 
@@ -461,12 +461,15 @@ class LLMRouter:
         if not self.nvidia_key:
             raise RuntimeError("NVIDIA_API_KEY not configured. Go to Settings -> LLM Providers and paste your NVIDIA API key.")
         from openai import AsyncOpenAI
-        # ponytail: hard 90s cap + no retries so a slow/hung MiniMax response fails
+        # ponytail: hard 60s cap + no retries so a slow/hung MiniMax response fails
         # fast instead of blocking the request for the SDK-default 10 minutes.
+        # This is usually the *fallback* leg, reached after the primary already
+        # burned a minute -- 90s x 2 attempts turned a dead call into a 5-minute
+        # spinner. Raise the cap if a legitimate long generation starts timing out.
         client = AsyncOpenAI(
             api_key=self.nvidia_key,
             base_url="https://integrate.api.nvidia.com/v1",
-            timeout=90.0, max_retries=1,
+            timeout=60.0, max_retries=0,
         )
 
         model_name = model if "/" in model else "minimaxai/minimax-m3"
@@ -496,7 +499,12 @@ class LLMRouter:
             providers.append("together")
         if self.nvidia_key:
             providers.append("nvidia")
-        providers.append("ollama")  # Always show local as option
+        # Only offer Ollama when a host was actually configured. The hosted
+        # deployment has no local Ollama, so advertising it unconditionally put a
+        # dead option in every user's model dropdown. Set OLLAMA_BASE_URL (or the
+        # ollama_url setting) to get it back for local runs.
+        if self._key("ollama_url", "OLLAMA_BASE_URL"):
+            providers.append("ollama")
         return providers
 
     def default_llm(self) -> str:
