@@ -773,6 +773,27 @@ def startup():
             logger.info(f"[ChatStore] Purged {purged} old interactions on startup")
     except Exception as e:
         logger.warning(f"[ChatStore] Startup init failed (non-fatal): {e}")
+
+    # Background generation runs in-process, so a deploy or crash takes every
+    # in-flight task with it and leaves the row at "processing" -- which the UI
+    # polls forever. Nothing can still be running at startup, so any such row is
+    # by definition orphaned: fail it with a message the user can act on.
+    db = SessionLocal()
+    try:
+        orphaned = db.query(LLMTaskStatus).filter(LLMTaskStatus.status == "processing").update(
+            {"status": "failed",
+             "error_message": "Interrupted by a server restart before it finished. Press Generate again."},
+            synchronize_session=False,
+        )
+        db.commit()
+        if orphaned:
+            logger.warning(f"[Startup] Failed {orphaned} task(s) orphaned by the last restart")
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"[Startup] Orphaned-task sweep failed (non-fatal): {e}")
+    finally:
+        db.close()
+
     logger.info("HireOS API started ✓")
 
 
