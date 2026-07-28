@@ -114,15 +114,11 @@ export default function JobDetail({ jobId }) {
   const [researchData, setResearchData] = useState(null)
   const [interviewData, setInterviewData] = useState(null)
   const [expandedBlocks, setExpandedBlocks] = useState({})
-  const [activeProviders, setActiveProviders] = useState([])
 
   // Sync tab when the user uses browser back/forward or edits the hash
   useEffect(() => {
     const onHash = () => setActiveTabState(tabFromHash())
     window.addEventListener('hashchange', onHash)
-    
-    api.getProviders().then(res => setActiveProviders(res.available || [])).catch(() => {})
-    
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 

@@ -39,13 +39,16 @@ function ModelSelector() {
   const [providers, setProviders] = useState([])
   useEffect(() => { api.getProviders().then(r => setProviders(r.available || [])).catch(() => {}) }, [])
   const isAvail = v => providers.some(p => v === p || v.startsWith(p + '-') || v.startsWith(p + ':'))
+  // Hide models the user has no key for instead of listing them greyed out --
+  // with one provider configured that was 5 real choices buried in 9 dead ones.
+  // Before the providers call lands (or if it fails) show everything.
+  const all = getLlmOptions()
+  const options = providers.length ? all.filter(o => isAvail(o.value) || o.value === llm) : all
   return (
     <select className="btn btn-outline btn-sm" style={{ maxWidth: 220 }} value={llm}
       onChange={e => setPreferredLlm(e.target.value)} title="Model used across the whole platform">
-      {getLlmOptions().map(o => (
-        <option key={o.value} value={o.value} disabled={!isAvail(o.value)}>
-          {o.label}{!isAvail(o.value) ? ' (Unavailable)' : ''}
-        </option>
+      {options.map(o => (
+        <option key={o.value} value={o.value}>{o.label}</option>
       ))}
     </select>
   )
