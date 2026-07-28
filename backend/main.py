@@ -426,6 +426,33 @@ def _owns_job(db: Session, job_id: int, user_id: int) -> bool:
     return db.query(Job.id).filter(Job.id == job_id, Job.user_id == user_id).first() is not None
 
 
+# Background generation runs in-process, so a task can be abandoned two ways: a
+# restart kills the worker, or the worker wedges on a provider call that never
+# returns. Either way the row sits at "processing" and the UI polls it forever.
+# ponytail: a wall-clock cutoff, no heartbeat. It cannot tell a wedged task from
+# a legitimately slow one, so keep the cutoff well above the slowest real run
+# (resumes take 40-90s, ATS a few minutes). Add a heartbeat if that stops holding.
+STALE_TASK_TIMEOUT = timedelta(minutes=15)
+
+
+def _fail_abandoned_tasks(db: Session, message: str, job_id: int = None,
+                          older_than: timedelta = None) -> int:
+    """Flip abandoned 'processing' rows to failed. Returns how many were swept."""
+    q = db.query(LLMTaskStatus).filter(LLMTaskStatus.status == "processing")
+    if job_id is not None:
+        q = q.filter(LLMTaskStatus.job_id == job_id)
+    if older_than is not None:
+        q = q.filter(LLMTaskStatus.updated_at < datetime.utcnow() - older_than)
+    try:
+        swept = q.update({"status": "failed", "error_message": message}, synchronize_session=False)
+        db.commit()
+        return swept
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"[Tasks] Abandoned-task sweep failed (non-fatal): {e}")
+        return 0
+
+
 def _as_int(value):
     """Salary columns are Integer; LLM extraction sometimes returns floats
     (e.g. '$117,923.72 per annum'). SQLite stores those as REAL, and JobOut
@@ -774,23 +801,14 @@ def startup():
     except Exception as e:
         logger.warning(f"[ChatStore] Startup init failed (non-fatal): {e}")
 
-    # Background generation runs in-process, so a deploy or crash takes every
-    # in-flight task with it and leaves the row at "processing" -- which the UI
-    # polls forever. Nothing can still be running at startup, so any such row is
-    # by definition orphaned: fail it with a message the user can act on.
+    # Nothing can still be running at startup, so every "processing" row is
+    # orphaned by definition -- no age cutoff needed.
     db = SessionLocal()
     try:
-        orphaned = db.query(LLMTaskStatus).filter(LLMTaskStatus.status == "processing").update(
-            {"status": "failed",
-             "error_message": "Interrupted by a server restart before it finished. Press Generate again."},
-            synchronize_session=False,
-        )
-        db.commit()
+        orphaned = _fail_abandoned_tasks(
+            db, message="Interrupted by a server restart before it finished. Press Generate again.")
         if orphaned:
             logger.warning(f"[Startup] Failed {orphaned} task(s) orphaned by the last restart")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"[Startup] Orphaned-task sweep failed (non-fatal): {e}")
     finally:
         db.close()
 
@@ -918,6 +936,13 @@ def delete_job(job_id: int, db: Session = Depends(get_db), current_user: User = 
 def get_job_tasks(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Get status of all async LLM tasks for a job."""
     get_owned_job(db, job_id, current_user)
+    # This is the poll that drives every spinner in JobDetail, so expiring stale
+    # rows here is what actually ends a hung one -- and it persists the failure,
+    # so the per-task status endpoints agree without each repeating the check.
+    _fail_abandoned_tasks(
+        db, job_id=job_id, older_than=STALE_TASK_TIMEOUT,
+        message=f"Timed out after {int(STALE_TASK_TIMEOUT.total_seconds() // 60)} minutes "
+                "with no result. Press Generate again.")
     return db.query(LLMTaskStatus).filter(
         LLMTaskStatus.job_id == job_id
     ).all()
