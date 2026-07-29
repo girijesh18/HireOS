@@ -62,6 +62,9 @@ export default function Settings() {
   const [nvModels, setNvModels] = useState([])   // custom NVIDIA models: {id, label}
   const [nvId, setNvId] = useState('')
   const [nvLabel, setNvLabel] = useState('')
+  const [mcpToken, setMcpToken] = useState(null)      // full token, only right after creation
+  const [mcpExists, setMcpExists] = useState(false)
+  const [mcpBusy, setMcpBusy] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -83,7 +86,32 @@ export default function Settings() {
     }).catch(err => {
       console.error("Failed to load settings:", err);
     }).finally(() => setLoading(false))
+    api.getMcpToken().then(r => setMcpExists(!!r.exists)).catch(() => {})
   }, [])
+
+  const generateMcpToken = async () => {
+    setMcpBusy(true)
+    try {
+      const r = await api.createMcpToken()
+      setMcpToken(r.token)
+      setMcpExists(true)
+    } catch (err) {
+      console.error('MCP token generation failed:', err)
+    }
+    setMcpBusy(false)
+  }
+
+  const revokeMcpToken = async () => {
+    setMcpBusy(true)
+    try {
+      await api.revokeMcpToken()
+      setMcpToken(null)
+      setMcpExists(false)
+    } catch (err) {
+      console.error('MCP token revoke failed:', err)
+    }
+    setMcpBusy(false)
+  }
 
   const save = async () => {
     const merged = { ...values, resume_pdf_style: JSON.stringify(pdfStyle) }
@@ -519,6 +547,41 @@ export default function Settings() {
                 description="Link your GitHub to allow agents to 'read' your code and projects."
                 fields={GITHUB}
               />
+
+              <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem' }}>
+                <div>
+                  <h3 style={{ fontSize:'1rem' }}>MCP Access Token</h3>
+                  <p style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginTop:4 }}>
+                    For MCP clients that can't open a browser to sign in. Paste it as
+                    <code style={{ margin:'0 4px' }}>Authorization: Bearer &lt;token&gt;</code>.
+                    Valid for one year. Generating a new one immediately stops the old one working.
+                  </p>
+                </div>
+
+                {mcpToken && (
+                  <div className="alert alert-warning" style={{ padding:'1rem' }}>
+                    <p style={{ fontSize:'0.8rem', marginBottom:8 }}>
+                      <strong>Copy this now — it is not shown again.</strong>
+                    </p>
+                    <textarea readOnly value={mcpToken} rows={3} onFocus={e => e.target.select()}
+                      style={{ width:'100%', fontFamily:'monospace', fontSize:'0.7rem' }} />
+                  </div>
+                )}
+
+                <div style={{ display:'flex', gap:'0.75rem', alignItems:'center' }}>
+                  <button className="btn btn-outline" onClick={generateMcpToken} disabled={mcpBusy}>
+                    {mcpExists ? 'Regenerate Token' : 'Generate Token'}
+                  </button>
+                  {mcpExists && (
+                    <button className="btn btn-ghost btn-sm" onClick={revokeMcpToken} disabled={mcpBusy}>
+                      Revoke
+                    </button>
+                  )}
+                  <span style={{ fontSize:'0.75rem', color:'var(--fg-subtle)' }}>
+                    {mcpExists ? 'A token is active.' : 'No token issued.'}
+                  </span>
+                </div>
+              </div>
               <div className="alert alert-warning" style={{ padding:'1rem 1.5rem' }}>
                 <p style={{ fontSize:'0.8rem' }}>
                   <strong>Security First:</strong> Keys are stored locally in your SQLite database. Never expose port 8000 externally.

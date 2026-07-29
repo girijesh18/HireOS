@@ -89,24 +89,48 @@ def _oauth_redirect_uri(provider: str) -> str:
     return f"{APP_BASE_URL}/auth/oauth/{provider}/callback"
 
 
-def _make_oauth_state(provider: str) -> str:
-    """Signed, short-lived CSRF state — stateless, no server-side session store."""
+# Exact URLs (comma-separated) allowed to receive an auth token after SSO, for
+# clients that aren't the web app -- the MCP server's OAuth bridge. Exact match
+# only: a prefix rule would let an attacker append a path and walk off with a
+# session JWT, since the token rides in the redirect query string.
+OAUTH_RETURN_ALLOWLIST = {
+    u.strip().rstrip("/") for u in os.getenv("OAUTH_RETURN_ALLOWLIST", "").split(",") if u.strip()
+}
+
+
+def _allowed_return_to(return_to: str) -> bool:
+    return bool(return_to) and return_to.rstrip("/") in OAUTH_RETURN_ALLOWLIST
+
+
+def _make_oauth_state(provider: str, return_to: str = None, return_state: str = None) -> str:
+    """Signed, short-lived CSRF state — stateless, no server-side session store.
+    Also carries the post-login destination; signing is what stops a caller from
+    swapping in their own URL after we've allowlisted ours."""
     payload = {
         "p": provider,
         "typ": "oauth_state",
         "exp": datetime.utcnow() + timedelta(minutes=10),
     }
+    if return_to:
+        payload["rt"] = return_to
+    if return_state:
+        # Opaque to us; echoed back so the caller can bind the round trip to the
+        # browser that started it (CSRF protection for their own flow).
+        payload["rs"] = return_state
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-def _verify_oauth_state(state: str, provider: str) -> bool:
+def _oauth_state_payload(state: str, provider: str) -> Optional[dict]:
+    """Decoded state if valid for this provider, else None."""
     if not state:
-        return False
+        return None
     try:
         payload = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except JWTError:
-        return False
-    return payload.get("typ") == "oauth_state" and payload.get("p") == provider
+        return None
+    if payload.get("typ") != "oauth_state" or payload.get("p") != provider:
+        return None
+    return payload
 
 def _hash_pw(password: str) -> str:
     return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
@@ -114,9 +138,17 @@ def _hash_pw(password: str) -> str:
 def _verify_pw(password: str, hashed: str) -> bool:
     return _bcrypt.checkpw(password.encode(), hashed.encode())
 
-def _create_token(email: str) -> str:
-    exp = datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS)
-    return jwt.encode({"sub": email, "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+def _create_token(email: str, days: int = None, extra: dict = None) -> str:
+    exp = datetime.utcnow() + timedelta(days=days if days is not None else JWT_EXPIRE_DAYS)
+    return jwt.encode({"sub": email, "exp": exp, **(extra or {})}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+# Long-lived token for MCP clients that can't run the browser OAuth flow. The
+# jti is mirrored into Settings so regenerating one invalidates its predecessor
+# -- otherwise a leaked year-long token would be unrevokable.
+MCP_TOKEN_DAYS = 365
+MCP_TOKEN_JTI_KEY = "mcp_token_jti"
+
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_bearer), db: Session = Depends(get_db)):
     if not credentials:
@@ -129,6 +161,12 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_bearer
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if payload.get("typ") == "mcp":
+        row = db.query(Settings).filter(
+            Settings.key == MCP_TOKEN_JTI_KEY, Settings.user_id == user.id
+        ).first()
+        if not row or not row.value or row.value != payload.get("jti"):
+            raise HTTPException(status_code=401, detail="MCP token revoked — generate a new one in Settings")
     return user
 
 app = FastAPI(title="HireOS API", version="2.0.0")
@@ -207,13 +245,26 @@ def login(data: _AuthBody, db: Session = Depends(get_db)):
     return {"token": _create_token(email), "email": email}
 
 
-@app.post("/auth/reset-password")
-def reset_password(data: _AuthBody, db: Session = Depends(get_db)):
-    email = data.email.lower().strip()
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise HTTPException(404, "User not found")
-    user.password_hash = _hash_pw(data.password)
+class _PasswordBody(_BaseModel):
+    password: str
+
+
+@app.post("/auth/change-password")
+def change_password(data: _PasswordBody, db: Session = Depends(get_db),
+                    current_user: User = Depends(get_current_user)):
+    """Set the *caller's* password. Replaces /auth/reset-password, which took an
+    email and a new password from anyone -- no token, no proof of ownership -- so
+    knowing an address was enough to take over the account. SSO accounts were the
+    worst case: it wrote a password_hash onto an account created without one,
+    which then satisfied /auth/login.
+
+    Self-serve reset for a locked-out user needs an emailed link, which needs mail
+    infrastructure we don't have. Until then, locked-out password users sign in
+    with Google/GitHub on the same email -- _upsert_oauth_user links by address.
+    """
+    if len(data.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    current_user.password_hash = _hash_pw(data.password)
     db.commit()
     return {"status": "ok"}
 
@@ -253,17 +304,21 @@ def _fail_redirect(reason: str) -> RedirectResponse:
 
 
 @app.get("/auth/oauth/{provider}/login")
-def oauth_login(provider: str):
+def oauth_login(provider: str, return_to: str = None, return_state: str = None):
     cfg = OAUTH_PROVIDERS.get(provider)
     if not cfg:
         raise HTTPException(404, "Unknown provider")
     if not cfg["client_id"] or not cfg["client_secret"]:
         raise HTTPException(503, f"{provider} SSO is not configured")
+    if return_to and not _allowed_return_to(return_to):
+        raise HTTPException(400, "return_to is not an allowed destination")
+    if return_state and len(return_state) > 256:
+        raise HTTPException(400, "return_state too long")
     params = {
         "client_id": cfg["client_id"],
         "redirect_uri": _oauth_redirect_uri(provider),
         "scope": cfg["scope"],
-        "state": _make_oauth_state(provider),
+        "state": _make_oauth_state(provider, return_to, return_state),
         "response_type": "code",
     }
     if provider == "google":
@@ -285,8 +340,14 @@ async def oauth_callback(
         raise HTTPException(404, "Unknown provider")
     if error:
         return _fail_redirect(error)
-    if not code or not _verify_oauth_state(state, provider):
+    state_payload = _oauth_state_payload(state, provider)
+    if not code or not state_payload:
         return _fail_redirect("invalid_state")
+    return_to = state_payload.get("rt")
+    # Re-check on the way out: the allowlist may have changed since the state was
+    # signed, and a signed-but-no-longer-allowed URL should not be honoured.
+    if return_to and not _allowed_return_to(return_to):
+        return _fail_redirect("return_to_not_allowed")
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -339,6 +400,12 @@ async def oauth_callback(
 
     user = _upsert_oauth_user(db, email, provider, name=name, avatar_url=avatar_url)
     token = _create_token(user.email)
+    if return_to:
+        q = {"auth_token": token}
+        if state_payload.get("rs"):
+            q["rs"] = state_payload["rs"]
+        sep = "&" if "?" in return_to else "?"
+        return RedirectResponse(f"{return_to}{sep}{urlencode(q)}")
     return RedirectResponse(f"{APP_BASE_URL}/?auth_token={token}")
 
 # ── Per-user (BYOK) LLM routing ────────────────────────────────────────────────
@@ -1096,6 +1163,49 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db), curr
             db.add(Settings(key=item.key, value=item.value, user_id=current_user.id))
     db.commit()
     return {"status": "saved"}
+
+
+# ── MCP personal access token ─────────────────────────────────────────────────
+
+def _mcp_token_row(db: Session, user_id: int) -> Settings:
+    return db.query(Settings).filter(
+        Settings.key == MCP_TOKEN_JTI_KEY, Settings.user_id == user_id
+    ).first()
+
+
+@app.get("/api/settings/mcp-token")
+def mcp_token_status(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Whether a token exists. The token itself is shown once, at creation, and
+    is not recoverable -- we store only its jti, never the token."""
+    row = _mcp_token_row(db, current_user.id)
+    return {"exists": bool(row and row.value),
+            "created_at": row.updated_at.isoformat() if row and row.value and row.updated_at else None}
+
+
+@app.post("/api/settings/mcp-token")
+def create_mcp_token(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Issue a token for an MCP client. Any previously issued one stops working."""
+    import secrets
+    jti = secrets.token_urlsafe(12)
+    row = _mcp_token_row(db, current_user.id)
+    if row:
+        row.value = jti
+        row.updated_at = datetime.utcnow()
+    else:
+        db.add(Settings(key=MCP_TOKEN_JTI_KEY, value=jti, user_id=current_user.id))
+    db.commit()
+    token = _create_token(current_user.email, days=MCP_TOKEN_DAYS, extra={"typ": "mcp", "jti": jti})
+    return {"token": token, "expires_days": MCP_TOKEN_DAYS}
+
+
+@app.delete("/api/settings/mcp-token")
+def revoke_mcp_token(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    row = _mcp_token_row(db, current_user.id)
+    if row:
+        row.value = ""
+        row.updated_at = datetime.utcnow()
+        db.commit()
+    return {"status": "revoked"}
 
 
 # ── Master Resume Components ──────────────────────────────────────────────────

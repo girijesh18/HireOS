@@ -69,7 +69,7 @@ export const api = {
   // Auth
   signup: (email, password) => authReq('POST', '/auth/signup', { email, password }),
   login: (email, password) => authReq('POST', '/auth/login', { email, password }),
-  resetPassword: (email, password) => authReq('POST', '/auth/reset-password', { email, password }),
+  changePassword: (password) => authReq('POST', '/auth/change-password', { password }),
   me: () => authReq('GET', '/auth/me'),
 
   // Health
@@ -107,6 +107,11 @@ export const api = {
   // Settings
   getSettings: () => req('GET', '/settings'),
   saveSettings: (settings) => req('POST', '/settings', { settings }),
+
+  // MCP access token (shown once at creation — only its id is stored)
+  getMcpToken: () => req('GET', '/settings/mcp-token'),
+  createMcpToken: () => req('POST', '/settings/mcp-token'),
+  revokeMcpToken: () => req('DELETE', '/settings/mcp-token'),
 
   // LLM Providers
   getProviders: () => req('GET', '/llm/providers'),

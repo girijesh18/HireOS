@@ -8,6 +8,9 @@ primary_region = "iad"
   CHROMA_PATH = "/app/data/chroma"
   OUTPUT_DIR = "/app/data/output"
   DATABASE_URL = "sqlite:////app/data/swarm.db"
+  # Exact URLs allowed to receive an auth token after SSO, for clients that
+  # aren't the web app. Exact match only — see _allowed_return_to.
+  OAUTH_RETURN_ALLOWLIST = "https://hireos-mcp.fly.dev/oauth/sso-return"
 
 [[mounts]]
   source = "hireos_data"

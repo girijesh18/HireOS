@@ -30,16 +30,9 @@ export default function Auth({ onAuth, ssoError }) {
   const submit = async (e) => {
     e.preventDefault()
     setError('')
-    if ((mode === 'signup' || mode === 'reset') && password !== confirm) { setError('Passwords do not match'); return }
+    if (mode === 'signup' && password !== confirm) { setError('Passwords do not match'); return }
     setLoading(true)
     try {
-      if (mode === 'reset') {
-        await api.resetPassword(email, password)
-        setMode('login')
-        setError('Password reset successfully. Please login.')
-        setLoading(false)
-        return
-      }
       const res = mode === 'login' ? await api.login(email, password) : await api.signup(email, password)
       setToken(res.token)
       onAuth(res.email)
@@ -68,14 +61,12 @@ export default function Auth({ onAuth, ssoError }) {
             fontFamily: 'var(--font-display)',
             color: 'var(--fg)', marginBottom: '0.35rem',
           }}>
-            {mode === 'login' ? 'Welcome back' : mode === 'reset' ? 'Reset Password' : 'Get started free'}
+            {mode === 'login' ? 'Welcome back' : 'Get started free'}
           </h2>
           <p className="text-muted text-sm">
             {mode === 'login'
               ? 'Sign in to your HireOS account'
-              : mode === 'reset'
-                ? 'Set a new password for your account'
-                : 'Create your account in seconds'}
+              : 'Create your account in seconds'}
           </p>
         </div>
 
@@ -95,18 +86,16 @@ export default function Auth({ onAuth, ssoError }) {
             <input
               type="password" value={password}
               onChange={e => setPassword(e.target.value)}
-              placeholder={mode === 'signup' || mode === 'reset' ? 'Minimum 6 characters' : '••••••••'}
+              placeholder={mode === 'signup' ? 'Minimum 6 characters' : '••••••••'}
               required
             />
           </div>
 
-          {mode === 'login' && (
-            <div style={{ textAlign: 'right', marginTop: '-0.5rem' }}>
-              <button type="button" onClick={() => { setMode('reset'); setError(''); setPassword(''); setConfirm(''); }} className="btn btn-ghost btn-sm" style={{ padding: 0 }}>Forgot password?</button>
-            </div>
-          )}
+          {/* No self-serve reset: it needs an emailed link, and the old endpoint
+              reset any account by email alone. Locked out? Sign in with Google or
+              GitHub on the same address — accounts link by email. */}
 
-          {(mode === 'signup' || mode === 'reset') && (
+          {mode === 'signup' && (
             <div className="form-group">
               <label className="form-label">Confirm password</label>
               <input
@@ -128,7 +117,7 @@ export default function Auth({ onAuth, ssoError }) {
             className="btn btn-primary"
             style={{ width: '100%', marginTop: '0.25rem', padding: '0.7rem' }}
           >
-            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In →' : mode === 'reset' ? 'Reset Password →' : 'Create Account →'}
+            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In →' : 'Create Account →'}
           </button>
 
           {/* SSO divider */}
@@ -159,7 +148,7 @@ export default function Auth({ onAuth, ssoError }) {
           </div>
 
           <div className="text-sm text-muted" style={{ borderTop: '1px solid var(--surface-border)', paddingTop: '1rem', textAlign: 'center' }}>
-            {mode === 'login' ? "Don't have an account? " : mode === 'reset' ? "Remembered your password? " : 'Already have an account? '}
+            {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
             <button
               type="button"
               onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError('') }}
