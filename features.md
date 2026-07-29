@@ -76,3 +76,18 @@ Strategic gap analysis to determine if a job is worth applying for.
 ### 3. Settings Configuration
 * **Master Profile:** Ability to load a master resume into the system settings that serves as the baseline ground truth for all downstream AI tasks.
 * **LLM API Configuration:** Manage your keys natively for Gemini, Groq, Together, and OpenRouter.
+
+---
+
+## 📋 Backlog
+
+### 1. SECURITY: `/auth/reset-password` takes over any account (fix first)
+Unauthenticated, no token, no email verification — `POST /auth/reset-password` sets a new password for any registered email (`main.py:210`). Anyone who knows a user's address owns the account, SSO accounts included: it writes a `password_hash` onto an account created without one, which then passes `/auth/login`. Verified reachable on prod (a bogus email returns `404 User not found`, which also enumerates registered emails). The web UI's forgot-password flow depends on this endpoint, so the fix needs a decision: emailed reset link, or drop the flow and require SSO.
+
+### 2. Google/GitHub users cannot authenticate to the MCP server
+SSO accounts are created with `password_hash=""` (`main.py:244`) and `/auth/login` rejects every user without one (`main.py:202`), so a Google/GitHub user has no credential an email+password prompt can accept. The OAuth routes only support a browser redirect back to `APP_BASE_URL` — there is no authorization-server surface a third-party MCP client could complete. Two ways out:
+* **Personal access tokens (small):** a "Generate MCP token" button in Settings issues a long-lived bearer token the user pastes into their client (`--header "Authorization: Bearer <token>"`). Works for SSO users, no password ever involved.
+* **Real OAuth 2.0 provider (large):** `/authorize` + `/token` + dynamic client registration, so clients get the browser sign-in that hosted servers like Sentry and Linear offer.
+
+### 3. Keyless resume generation over MCP
+Let someone use HireOS from Claude without any LLM provider key, using their Claude subscription as the model. MCP `sampling` is **not** supported by Claude Code, so the route is an MCP **prompt** (`/mcp__hireos__tailor_resume <job_id>`) that injects JD + master resume + style guide into the conversation; Claude writes the markdown and calls `hireos_save_resume`, which makes zero LLM calls. Needs: the prompt handler on the MCP server (separate repo), and `enforce_header` (`agents.py:619`) applied in `save_chat_resume` (`main.py:1867`) so model-authored contact details can never reach a PDF. Everything else — analysis, cover letters, ATS, research — still requires a provider key.
