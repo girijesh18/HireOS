@@ -239,7 +239,9 @@ const NAV = [
   { id: 'settings', label: 'Settings', icon: <SettingsIcon /> },
 ]
 
-const TOP_VIEWS = ['dashboard', 'jobs', 'insights', 'stories', 'settings']
+// 'landing' is routable but deliberately absent from NAV: it's the public
+// marketing page, reachable at #/landing whether or not you're signed in.
+const TOP_VIEWS = ['dashboard', 'jobs', 'insights', 'stories', 'settings', 'landing']
 
 // URL-hash routing so the current view survives a page refresh and works with browser back/forward.
 function parseHash() {
@@ -312,6 +314,19 @@ export default function App() {
   }, [])
 
   const logout = () => { clearToken(); setUser(null) }
+
+  // #/landing renders the marketing page for everyone. Without this it's
+  // unreachable the moment you have a session, so it can't be previewed or
+  // shared. Signed-in visitors get a "Go to dashboard" CTA instead of signup.
+  if (view === 'landing') {
+    return (
+      <Landing
+        signedIn={!!user}
+        onGetStarted={() => user ? setView('dashboard') : (setAuthPane('signup'), setView('dashboard'))}
+        onSignIn={() => user ? setView('dashboard') : (setAuthPane('login'), setView('dashboard'))}
+      />
+    )
+  }
 
   if (!authChecked) return null
   if (!user) {

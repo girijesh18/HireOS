@@ -67,7 +67,7 @@ const MOCK_ROWS = [
   { title: 'ML Platform Lead', co: 'Ramp', score: '78', state: 'Applied', tint: 'var(--success)' },
 ]
 
-export default function Landing({ onGetStarted, onSignIn }) {
+export default function Landing({ onGetStarted, onSignIn, signedIn = false }) {
   const scrollRef = useRef(null)
   const navRef = useRef(null)
   const deckRef = useRef(null)
@@ -146,10 +146,12 @@ export default function Landing({ onGetStarted, onSignIn }) {
             <button className="l-nav-link" onClick={() => goTo('why')}>Why</button>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <button className="l-btn l-btn-ghost" style={{ padding: '0.5rem 0.95rem', fontSize: '0.85rem' }}
-              onClick={onSignIn}>Sign in</button>
+            {!signedIn && (
+              <button className="l-btn l-btn-ghost" style={{ padding: '0.5rem 0.95rem', fontSize: '0.85rem' }}
+                onClick={onSignIn}>Sign in</button>
+            )}
             <button className="l-btn l-btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
-              onClick={onGetStarted}>Get started</button>
+              onClick={onGetStarted}>{signedIn ? 'Go to dashboard' : 'Get started'}</button>
           </div>
         </div>
       </nav>
@@ -179,7 +181,7 @@ export default function Landing({ onGetStarted, onSignIn }) {
 
           <div className="l-hero-cta">
             <button className="l-btn l-btn-primary" onClick={onGetStarted}>
-              Start free <IconArrow />
+              {signedIn ? 'Open HireOS' : 'Start free'} <IconArrow />
             </button>
             <button className="l-btn l-btn-ghost" onClick={() => goTo('how')}>
               See how it works
@@ -314,9 +316,11 @@ export default function Landing({ onGetStarted, onSignIn }) {
         </p>
         <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
           <button className="l-btn l-btn-primary" onClick={onGetStarted}>
-            Create your account <IconArrow />
+            {signedIn ? 'Back to your pipeline' : 'Create your account'} <IconArrow />
           </button>
-          <button className="l-btn l-btn-ghost" onClick={onSignIn}>I already have one</button>
+          {!signedIn && (
+            <button className="l-btn l-btn-ghost" onClick={onSignIn}>I already have one</button>
+          )}
         </div>
       </section>
 
