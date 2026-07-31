@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import './index.css'
 import { api, setToken, clearToken } from './api/client'
 import Auth from './views/Auth'
+import Landing from './views/Landing'
 import Dashboard from './views/Dashboard'
 import JobList from './views/JobList'
 import JobDetail from './views/JobDetail'
@@ -255,6 +256,20 @@ function hashFor(view, jobId) {
   return `#/${view}`
 }
 
+// An SSO redirect lands back here as ?auth_token / ?auth_error. Read it once at
+// module load — before the first render — so the token is stored and the query
+// string scrubbed without a setState-inside-an-effect round trip.
+const SSO_ERROR = (() => {
+  const params = new URLSearchParams(window.location.search)
+  const token = params.get('auth_token')
+  const error = params.get('auth_error')
+  if (token) setToken(token)
+  if (token || error) {
+    window.history.replaceState({}, '', window.location.pathname + window.location.hash)
+  }
+  return error || ''
+})()
+
 export default function App() {
   const [user, setUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
@@ -263,19 +278,13 @@ export default function App() {
   const [showTrackModal, setShowTrackModal] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
-  const [authError, setAuthError] = useState('')
+  const [authError, setAuthError] = useState(SSO_ERROR)
+  // Logged-out visitors land on the marketing page; null = show Landing,
+  // 'login' | 'signup' = show the Auth panel in that mode. A failed SSO round
+  // trip skips the landing page and reports the error straight away.
+  const [authPane, setAuthPane] = useState(SSO_ERROR ? 'login' : null)
 
   useEffect(() => {
-    // Pick up an SSO redirect (?auth_token / ?auth_error) before checking session.
-    const params = new URLSearchParams(window.location.search)
-    const ssoToken = params.get('auth_token')
-    const ssoError = params.get('auth_error')
-    if (ssoToken) setToken(ssoToken)
-    if (ssoError) setAuthError(ssoError)
-    if (ssoToken || ssoError) {
-      window.history.replaceState({}, '', window.location.pathname + window.location.hash)
-    }
-
     const token = localStorage.getItem('hireos_token')
     if (!token) { setAuthChecked(true); return }
     api.me().then(data => { setUser(data.email); setAuthChecked(true) })
@@ -305,7 +314,17 @@ export default function App() {
   const logout = () => { clearToken(); setUser(null) }
 
   if (!authChecked) return null
-  if (!user) return <Auth onAuth={email => setUser(email)} ssoError={authError} />
+  if (!user) {
+    if (!authPane) return <Landing onGetStarted={() => setAuthPane('signup')} onSignIn={() => setAuthPane('login')} />
+    return (
+      <Auth
+        onAuth={email => setUser(email)}
+        ssoError={authError}
+        initialMode={authPane}
+        onBack={() => { setAuthError(''); setAuthPane(null) }}
+      />
+    )
+  }
 
   const openJob = (id) => { setSelectedJobId(id); setView('job-detail') }
   const goBack = () => { setSelectedJobId(null); setView('jobs') }

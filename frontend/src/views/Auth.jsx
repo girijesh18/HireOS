@@ -17,8 +17,8 @@ const SSO_ERRORS = {
   access_denied: 'Sign-in was cancelled.',
 }
 
-export default function Auth({ onAuth, ssoError }) {
-  const [mode, setMode] = useState('login')
+export default function Auth({ onAuth, ssoError, initialMode = 'login', onBack }) {
+  const [mode, setMode] = useState(initialMode)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -54,6 +54,13 @@ export default function Auth({ onAuth, ssoError }) {
         <div style={{ marginBottom: '1.75rem', textAlign: 'center' }}>
           <span className="logo-word" style={{ fontSize: '1.75rem' }}>Hire<em>OS</em></span>
         </div>
+
+        {onBack && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onBack}
+            style={{ marginBottom: '0.75rem', paddingInline: 0 }}>
+            ← Back to home
+          </button>
+        )}
 
         <div style={{ marginBottom: '1.5rem' }}>
           <h2 style={{

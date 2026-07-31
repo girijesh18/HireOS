@@ -1,0 +1,620 @@
+/* ════════════════════════════════════════════════════════════════════════════
+   HireOS Landing — 3D motion marketing page.
+
+   Self-contained: every rule is scoped under .landing so it cannot leak into
+   the app shell. Uses the same design tokens as index.css (var(--bg),
+   var(--primary), ...) so it follows the dark/light theme toggle for free.
+
+   No animation library. Depth comes from real CSS 3D (perspective +
+   preserve-3d + translateZ), driven by two custom properties the React layer
+   writes on pointermove: --mx / --my (pointer, -1..1) and --tilt-x / --tilt-y.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.landing {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  scroll-behavior: smooth;
+  --mx: 0;
+  --my: 0;
+}
+
+.landing * { box-sizing: border-box; }
+
+/* ── Shared section rhythm ─────────────────────────────────────────────────── */
+.l-section {
+  position: relative;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 7rem 1.5rem;
+}
+.l-eyebrow {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  font-size: 0.7rem; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--primary);
+  margin-bottom: 1rem;
+}
+.l-h2 {
+  font-family: var(--font-display);
+  font-size: clamp(1.9rem, 4vw, 2.9rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin-bottom: 0.9rem;
+}
+.l-sub {
+  font-size: 1.02rem;
+  line-height: 1.65;
+  color: var(--fg-muted);
+  max-width: 62ch;
+}
+.l-center { text-align: center; }
+.l-center .l-sub,
+.l-sub.l-center { margin-left: auto; margin-right: auto; }
+
+/* ── Scroll reveal (IntersectionObserver adds .in) ─────────────────────────── */
+.reveal {
+  opacity: 0;
+  transform: translate3d(0, 34px, 0) rotateX(8deg);
+  transform-origin: 50% 100%;
+  transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: var(--d, 0ms);
+  will-change: transform, opacity;
+}
+.reveal.in { opacity: 1; transform: none; }
+
+/* ── Ambient 3D backdrop ───────────────────────────────────────────────────── */
+.l-aurora {
+  position: fixed;
+  inset: -20%;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(120px);
+  opacity: 0.28;
+}
+[data-theme="light"] .l-aurora { opacity: 0.22; }
+.l-aurora span {
+  position: absolute;
+  border-radius: 50%;
+  mix-blend-mode: screen;
+}
+[data-theme="light"] .l-aurora span { mix-blend-mode: multiply; }
+.l-aurora span:nth-child(1) {
+  width: 46vw; height: 46vw; top: 4%; left: 8%;
+  background: var(--primary);
+  animation: l-drift-a 22s ease-in-out infinite;
+}
+.l-aurora span:nth-child(2) {
+  width: 38vw; height: 38vw; top: 22%; right: 4%;
+  background: var(--purple);
+  animation: l-drift-b 27s ease-in-out infinite;
+}
+.l-aurora span:nth-child(3) {
+  width: 32vw; height: 32vw; bottom: 6%; left: 34%;
+  background: var(--cyan);
+  animation: l-drift-c 31s ease-in-out infinite;
+}
+@keyframes l-drift-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(9vw, 7vh, 0) scale(1.18); }
+}
+@keyframes l-drift-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.1); }
+  50%      { transform: translate3d(-11vw, 9vh, 0) scale(0.9); }
+}
+@keyframes l-drift-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(0.95); }
+  50%      { transform: translate3d(7vw, -8vh, 0) scale(1.2); }
+}
+
+/* Perspective grid floor — sells the 3D space behind the hero. */
+.l-grid-floor {
+  position: absolute;
+  left: 50%; bottom: -2rem;
+  width: 260vw; height: 60vh;
+  transform: translateX(-50%) perspective(600px) rotateX(72deg);
+  background-image:
+    linear-gradient(to right, var(--surface-border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--surface-border) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 60% 70% at 50% 30%, #000 10%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 60% 70% at 50% 30%, #000 10%, transparent 75%);
+  opacity: 0.7;
+  pointer-events: none;
+  animation: l-floor 12s linear infinite;
+}
+@keyframes l-floor {
+  to { background-position: 0 64px, 0 64px; }
+}
+
+/* ── Nav ───────────────────────────────────────────────────────────────────── */
+.l-nav {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.5rem;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.25s, background 0.25s;
+}
+.l-nav.stuck {
+  border-bottom-color: var(--surface-border);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+}
+.l-nav-inner {
+  width: 100%; max-width: 1180px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+}
+.l-nav-links { display: flex; align-items: center; gap: 0.35rem; }
+.l-nav-link {
+  background: none; border: none; cursor: pointer;
+  font-size: 0.85rem; font-weight: 500; color: var(--fg-muted);
+  padding: 0.45rem 0.7rem; border-radius: var(--radius-sm);
+  transition: color 0.15s, background 0.15s;
+}
+.l-nav-link:hover { color: var(--fg); background: var(--surface-hover); }
+
+/* ── Buttons (landing-scale, built on the app's .btn tokens) ───────────────── */
+.l-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.72rem 1.35rem;
+  border-radius: var(--radius);
+  font-family: var(--font-sans);
+  font-size: 0.92rem; font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.18s ease, background 0.15s, border-color 0.15s, color 0.15s;
+  transform-style: preserve-3d;
+}
+.l-btn-primary {
+  background: linear-gradient(135deg, var(--primary), var(--purple));
+  color: var(--primary-fg);
+  box-shadow: 0 10px 30px -10px var(--primary-glow), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+.l-btn-primary:hover { transform: translateY(-2px) translateZ(20px); box-shadow: 0 18px 42px -12px var(--primary-glow); }
+.l-btn-ghost {
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  border-color: var(--surface-border);
+  color: var(--fg);
+}
+.l-btn-ghost:hover { transform: translateY(-2px); border-color: var(--fg-subtle); background: var(--surface-hover); }
+.l-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+
+/* ── Hero ──────────────────────────────────────────────────────────────────── */
+.l-hero {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 4.5rem 1.5rem 6rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1.02fr) minmax(0, 1fr);
+  gap: 3.5rem;
+  align-items: center;
+  perspective: 1400px;
+}
+.l-hero-copy { position: relative; z-index: 2; }
+
+.l-badge {
+  display: inline-flex; align-items: center; gap: 0.5rem;
+  padding: 0.35rem 0.8rem 0.35rem 0.4rem;
+  border-radius: 9999px;
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  font-size: 0.76rem; font-weight: 500; color: var(--fg-muted);
+  margin-bottom: 1.5rem;
+  box-shadow: var(--shadow-sm);
+}
+.l-badge b {
+  padding: 0.15rem 0.5rem; border-radius: 9999px;
+  background: var(--primary-subtle); color: var(--primary);
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+}
+
+.l-h1 {
+  font-family: var(--font-display);
+  font-size: clamp(2.5rem, 5.6vw, 4.1rem);
+  font-weight: 800;
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+  margin-bottom: 1.2rem;
+}
+/* Per-word 3D fly-in — each word gets --i from React for the stagger.
+   inline-block collapses the trailing space, so the word gap is a margin. */
+.l-word {
+  display: inline-block;
+  margin-right: 0.22em;
+  animation: l-word-in 0.85s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--i) * 70ms);
+}
+@keyframes l-word-in {
+  from { opacity: 0; transform: translate3d(0, 0.5em, -180px) rotateX(-55deg); }
+  to   { opacity: 1; transform: none; }
+}
+.l-gradient {
+  background: linear-gradient(100deg, var(--primary) 0%, var(--purple) 45%, var(--cyan) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  background-size: 220% 100%;
+  animation: l-sheen 7s linear infinite;
+}
+@keyframes l-sheen { to { background-position: 220% 0; } }
+
+.l-hero-sub {
+  font-size: 1.08rem; line-height: 1.65;
+  color: var(--fg-muted);
+  max-width: 46ch;
+  margin-bottom: 2rem;
+  animation: l-fade-up 0.8s 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.l-hero-cta {
+  display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center;
+  animation: l-fade-up 0.8s 0.58s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.l-hero-note {
+  margin-top: 1.1rem; font-size: 0.78rem; color: var(--fg-subtle);
+  animation: l-fade-up 0.8s 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes l-fade-up {
+  from { opacity: 0; transform: translate3d(0, 22px, 0); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Hero 3D stage: tilting dashboard + floating satellite cards ───────────── */
+.l-stage {
+  position: relative;
+  transform-style: preserve-3d;
+  animation: l-fade-up 0.9s 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.l-deck {
+  position: relative;
+  transform-style: preserve-3d;
+  /* --tilt-x / --tilt-y written by the pointer handler; the transition makes
+     the return-to-rest springy instead of snapping. */
+  transform: rotateX(var(--tilt-x, 6deg)) rotateY(var(--tilt-y, -9deg));
+  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: l-float 8s ease-in-out infinite;
+}
+.l-deck.tracking { transition: transform 0.12s linear; }
+@keyframes l-float {
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -14px; }
+}
+
+.l-window {
+  position: relative;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--shadow-lg), 0 0 0 1px color-mix(in srgb, var(--primary) 12%, transparent);
+  overflow: hidden;
+  transform: translateZ(0);
+}
+/* Moving specular highlight tied to the pointer position. */
+.l-window::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    420px circle at calc(50% + var(--mx) * 45%) calc(50% + var(--my) * 45%),
+    color-mix(in srgb, var(--primary) 22%, transparent), transparent 65%);
+  opacity: 0.8;
+}
+.l-window-bar {
+  display: flex; align-items: center; gap: 0.45rem;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--surface-border);
+  background: var(--surface-2);
+}
+.l-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--surface-border); }
+.l-window-title {
+  margin-left: 0.5rem; font-size: 0.72rem; font-weight: 600;
+  color: var(--fg-subtle); letter-spacing: 0.02em;
+}
+.l-window-body { padding: 0.9rem; display: flex; flex-direction: column; gap: 0.6rem; }
+
+.l-mini-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+.l-mini-stat {
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--surface-border);
+}
+.l-mini-stat span { display: block; font-size: 0.62rem; color: var(--fg-subtle); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+.l-mini-stat b { font-family: var(--font-display); font-size: 1.25rem; font-weight: 700; }
+
+.l-mini-row {
+  display: grid; grid-template-columns: 1fr auto auto;
+  align-items: center; gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--surface-border);
+  /* rows slide in on a loop so the mockup reads as "live" */
+  animation: l-row-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(0.75s + var(--i) * 120ms);
+}
+@keyframes l-row-in {
+  from { opacity: 0; transform: translate3d(24px, 0, -60px); }
+  to   { opacity: 1; transform: none; }
+}
+.l-mini-title { font-size: 0.76rem; font-weight: 600; }
+.l-mini-co { font-size: 0.66rem; color: var(--fg-subtle); margin-top: 1px; }
+.l-mini-score { font-family: var(--font-display); font-size: 0.82rem; font-weight: 700; color: var(--success); }
+.l-chip {
+  font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 0.15rem 0.45rem; border-radius: 9999px;
+}
+
+/* Satellite cards float on their own Z planes in front of the window. */
+.l-sat {
+  position: absolute;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-2) 82%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--shadow-md);
+  display: flex; align-items: center; gap: 0.55rem;
+  white-space: nowrap;
+}
+.l-sat b { font-family: var(--font-display); font-size: 0.9rem; font-weight: 700; display: block; }
+.l-sat span { font-size: 0.66rem; color: var(--fg-subtle); }
+.l-sat-icon {
+  width: 30px; height: 30px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.l-sat-1 {
+  top: -6%; left: -9%;
+  transform: translateZ(110px);
+  animation: l-bob 6s ease-in-out infinite;
+}
+.l-sat-2 {
+  bottom: 12%; right: -12%;
+  transform: translateZ(85px);
+  animation: l-bob 7.5s ease-in-out infinite 0.8s;
+}
+.l-sat-3 {
+  bottom: -8%; left: 6%;
+  transform: translateZ(140px);
+  animation: l-bob 6.8s ease-in-out infinite 1.6s;
+}
+@keyframes l-bob {
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -12px; }
+}
+
+/* ── Logo marquee (social proof) ───────────────────────────────────────────── */
+.l-marquee {
+  position: relative; z-index: 1;
+  overflow: hidden;
+  padding: 2rem 0;
+  border-block: 1px solid var(--surface-border);
+  background: color-mix(in srgb, var(--surface) 45%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+}
+.l-marquee-label {
+  text-align: center; font-size: 0.7rem; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-subtle);
+  margin-bottom: 1.25rem;
+}
+.l-marquee-track {
+  display: flex; gap: 3.5rem; width: max-content;
+  animation: l-scroll 26s linear infinite;
+}
+.l-marquee:hover .l-marquee-track { animation-play-state: paused; }
+@keyframes l-scroll { to { transform: translateX(-50%); } }
+.l-marquee-item {
+  font-family: var(--font-display);
+  font-size: 1.15rem; font-weight: 600; letter-spacing: -0.02em;
+  color: var(--fg-subtle);
+  transition: color 0.2s;
+}
+.l-marquee-item:hover { color: var(--fg); }
+
+/* ── Bento feature grid with 3D hover lift ─────────────────────────────────── */
+.l-bento {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 1rem;
+  margin-top: 3rem;
+  perspective: 1200px;
+}
+.l-card {
+  position: relative;
+  grid-column: span 2;
+  padding: 1.5rem;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  overflow: hidden;
+  transform-style: preserve-3d;
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 0.25s, box-shadow 0.35s;
+}
+.l-card:hover {
+  transform: translateY(-6px) rotateX(4deg) scale(1.015);
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--surface-border));
+  box-shadow: var(--shadow-md);
+}
+.l-card-wide { grid-column: span 3; }
+.l-card-full { grid-column: span 6; }
+.l-card-icon {
+  width: 40px; height: 40px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 1rem;
+  transform: translateZ(30px);
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.l-card:hover .l-card-icon { transform: translateZ(55px) scale(1.06); }
+.l-card h3 {
+  font-family: var(--font-display);
+  font-size: 1.02rem; font-weight: 650; margin-bottom: 0.4rem;
+  transform: translateZ(18px);
+}
+.l-card p { font-size: 0.85rem; line-height: 1.6; color: var(--fg-muted); transform: translateZ(10px); }
+/* Glow that follows the pointer inside the card. */
+.l-card::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(280px circle at var(--cx, 50%) var(--cy, 50%),
+              color-mix(in srgb, var(--primary) 14%, transparent), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+.l-card:hover::before { opacity: 1; }
+
+/* ── 3D pipeline carousel ──────────────────────────────────────────────────── */
+.l-ring-stage {
+  height: 400px;
+  margin-top: 3rem;
+  perspective: 1200px;
+  perspective-origin: 50% 45%;
+  position: relative;
+}
+.l-ring {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  animation: l-spin 34s linear infinite;
+}
+/* ponytail: hover pauses the carousel — cheaper and steadier than drag-to-spin. */
+.l-ring-stage:hover .l-ring { animation-play-state: paused; }
+@keyframes l-spin {
+  from { transform: rotateX(-8deg) rotateY(0deg); }
+  to   { transform: rotateX(-8deg) rotateY(360deg); }
+}
+.l-ring-face {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 230px; margin-left: -115px; margin-top: -90px;
+  padding: 1.15rem 1.25rem;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--shadow-md);
+  backface-visibility: hidden;
+  /* --a = this face's angle around the ring; --r = ring radius */
+  transform: rotateY(var(--a)) translateZ(var(--r, 260px));
+}
+.l-ring-step {
+  font-family: var(--font-display);
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.12em;
+  color: var(--primary); margin-bottom: 0.5rem;
+}
+.l-ring-face h4 { font-family: var(--font-display); font-size: 0.98rem; font-weight: 650; margin-bottom: 0.35rem; }
+.l-ring-face p { font-size: 0.78rem; line-height: 1.55; color: var(--fg-muted); }
+/* ── Stats ─────────────────────────────────────────────────────────────────── */
+.l-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+.l-stat {
+  padding: 1.6rem 1.4rem;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  text-align: center;
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.25s;
+}
+.l-stat:hover { transform: translateY(-4px); border-color: var(--primary); }
+.l-stat b {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 2.3rem; font-weight: 800; letter-spacing: -0.03em;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--primary), var(--purple));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.l-stat span { display: block; margin-top: 0.45rem; font-size: 0.82rem; color: var(--fg-muted); }
+
+/* ── Final CTA ─────────────────────────────────────────────────────────────── */
+.l-cta {
+  position: relative;
+  max-width: 1180px;
+  margin: 0 auto 5rem;
+  padding: 4.5rem 2rem;
+  border-radius: 22px;
+  text-align: center;
+  overflow: hidden;
+  background:
+    radial-gradient(90% 130% at 50% 0%, color-mix(in srgb, var(--primary) 22%, transparent), transparent 70%),
+    var(--surface);
+  border: 1px solid var(--surface-border);
+  transform-style: preserve-3d;
+}
+.l-cta::before {
+  content: '';
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(to right, var(--surface-border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--surface-border) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000, transparent 75%);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.l-cta > * { position: relative; }
+
+/* ── Footer ────────────────────────────────────────────────────────────────── */
+.l-footer {
+  position: relative; z-index: 1;
+  border-top: 1px solid var(--surface-border);
+  padding: 2rem 1.5rem;
+  display: flex; flex-wrap: wrap; gap: 1rem;
+  align-items: center; justify-content: space-between;
+  max-width: 1180px; margin: 0 auto;
+  font-size: 0.8rem; color: var(--fg-subtle);
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────────── */
+@media (max-width: 980px) {
+  .l-hero { grid-template-columns: 1fr; gap: 4rem; padding-top: 3rem; }
+  .l-hero-sub { max-width: none; }
+  .l-stage { margin-inline: 2.5rem; }   /* room for the satellite cards */
+  .l-bento { grid-template-columns: repeat(2, 1fr); }
+  .l-card, .l-card-wide { grid-column: span 1; }
+  .l-card-full { grid-column: span 2; }
+}
+
+@media (max-width: 640px) {
+  .l-section { padding: 4.5rem 1.15rem; }
+  .l-nav-links { display: none; }
+  .l-bento { grid-template-columns: 1fr; }
+  .l-card-full { grid-column: span 1; }
+  .l-stage { margin-inline: 0.5rem; }
+  .l-sat-1 { left: -2%; top: -9%; }
+  .l-sat-2 { right: -4%; }
+  .l-sat-3 { display: none; }
+  .l-ring-stage { height: 330px; }
+  .l-cta { padding: 3rem 1.25rem; margin-inline: 1rem; }
+  .l-hero-cta .l-btn { flex: 1 1 100%; }
+}
+
+/* ── Reduced motion: kill every ambient/looping animation ──────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .landing *,
+  .landing *::before,
+  .landing *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .landing { scroll-behavior: auto; }
+  .reveal { opacity: 1; transform: none; }
+  .l-deck { transform: none; }
+}
