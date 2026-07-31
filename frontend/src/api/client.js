@@ -16,7 +16,11 @@ async function req(method, path, body, isFormData = false) {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
-    throw new Error(errMsg(err.detail, res.status))
+    // Attach the status so callers can branch on it -- 402 means "out of free
+    // generations" and should open the upgrade prompt, not show a red toast.
+    const e = new Error(errMsg(err.detail, res.status))
+    e.status = res.status
+    throw e
   }
   return res.json()
 }
@@ -109,6 +113,11 @@ export const api = {
   saveSettings: (settings) => req('POST', '/settings', { settings }),
 
   // MCP access token (shown once at creation — only its id is stored)
+  // Billing
+  getBillingStatus: () => req('GET', '/billing/status'),
+  startCheckout: () => req('POST', '/billing/checkout'),
+  openBillingPortal: () => req('POST', '/billing/portal'),
+
   getMcpToken: () => req('GET', '/settings/mcp-token'),
   createMcpToken: () => req('POST', '/settings/mcp-token'),
   revokeMcpToken: () => req('DELETE', '/settings/mcp-token'),

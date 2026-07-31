@@ -262,6 +262,32 @@ class User(Base):
     avatar_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # ── Billing ───────────────────────────────────────────────────────────────
+    # plan is the authority on what the user may do; it is only ever written
+    # from a verified Stripe webhook (or the unlimited-email escape hatch), never
+    # from anything the client sends.
+    plan = Column(String, default="free", nullable=False)          # free | pro
+    plan_status = Column(String, nullable=True)                    # raw Stripe subscription status
+    stripe_customer_id = Column(String, index=True, nullable=True)
+    stripe_subscription_id = Column(String, nullable=True)
+    current_period_end = Column(DateTime, nullable=True)
+    # Lifetime counter — free generations never reset. Incremented only after a
+    # resume is actually written to the DB, so a failed LLM call costs nothing.
+    free_resumes_used = Column(Integer, default=0, nullable=False)
+
+
+class StripeEvent(Base):
+    """Ledger of processed Stripe webhook event ids.
+
+    Stripe retries a webhook until it gets a 2xx, and can deliver the same event
+    more than once even after success. Recording the id and skipping duplicates
+    is what stops a retry from double-applying a plan change.
+    """
+    __tablename__ = "stripe_events"
+    id = Column(String, primary_key=True)          # Stripe's evt_... id
+    event_type = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 
 # Tables that hold per-user data and gained a user_id column (settings handled separately)
 _TENANT_TABLES = [
@@ -370,12 +396,42 @@ def migrate_version_names():
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN name TEXT")
 
 
+def migrate_billing():
+    """Add billing columns to the users table on an existing DB. Idempotent.
+
+    Existing accounts start on the free plan with a zeroed counter, so nobody
+    who signed up before billing existed gets locked out by their past usage.
+    """
+    with engine.begin() as conn:
+        if not _table_exists(conn, "users"):
+            return
+        columns = {
+            "plan": "VARCHAR DEFAULT 'free'",
+            "plan_status": "VARCHAR",
+            "stripe_customer_id": "VARCHAR",
+            "stripe_subscription_id": "VARCHAR",
+            "current_period_end": "DATETIME",
+            "free_resumes_used": "INTEGER DEFAULT 0",
+        }
+        for col, ddl in columns.items():
+            if not _column_exists(conn, "users", col):
+                conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+        # ALTER TABLE ... DEFAULT only applies to rows inserted afterwards; rows
+        # that already existed come back NULL without these backfills.
+        conn.exec_driver_sql("UPDATE users SET plan = 'free' WHERE plan IS NULL")
+        conn.exec_driver_sql("UPDATE users SET free_resumes_used = 0 WHERE free_resumes_used IS NULL")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_users_stripe_customer_id ON users(stripe_customer_id)"
+        )
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     migrate_multitenant()
     migrate_user_oauth()
     migrate_version_names()
     migrate_ats_score()
+    migrate_billing()
 
 
 def get_db():

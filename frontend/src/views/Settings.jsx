@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../api/client'
 import { setCustomNvidiaModels } from '../llmOptions'
+import BillingPanel from '../components/BillingPanel'
 
 const LLM_PROVIDERS = [
   { key:'gemini_api_key', label:'Gemini API Key', provider:'Google Gemini', placeholder:'AIza...' },
@@ -236,6 +237,7 @@ export default function Settings() {
     { id: 'models', label: 'AI Models' },
     { id: 'strategy', label: 'Job Discovery' },
     { id: 'stealth', label: 'Stealth & Integrations' },
+    { id: 'billing', label: 'Plan & Billing' },
   ]
 
   if (loading) return <div style={{ color:'var(--fg-muted)', padding:'2rem' }}>Loading settings…</div>
@@ -281,6 +283,8 @@ export default function Settings() {
 
         {/* Categories Content */}
         <div style={{ flex: 1, overflowY: 'auto', paddingRight: '1rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          {activeCategory === 'billing' && <BillingPanel />}
+
           {activeCategory === 'resume' && (
             <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1.5rem', borderLeft: '4px solid var(--primary)' }}>

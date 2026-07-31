@@ -123,6 +123,8 @@ export default function JobDetail({ jobId }) {
   }, [])
 
   const showToast = (message, type='success') => setToast({ message, type })
+  // Set when the backend answers 402 -- the free resume allowance is spent.
+  const [paywall, setPaywall] = useState('')
   const toggleBlock = (key) => setExpandedBlocks(b => ({ ...b, [key]: !b[key] }))
 
   // Scoring runs in the background on the server (minutes, past the 100s edge
@@ -346,12 +348,17 @@ export default function JobDetail({ jobId }) {
 
   const runResumeGen = async () => {
     setLoading(l => ({ ...l, resume:true }))
-    showToast('Started Resume Generation in the background...')
     try {
+      // Toast only after the request is accepted -- an optimistic one fires even
+      // when the server rejects the call, e.g. the 402 paywall below.
       await api.generateResume(job.id, { llm: selectedLlm, feedback })
+      showToast('Started Resume Generation in the background...')
       setFeedback('')
     } catch (e) {
-      showToast(e.message, 'error')
+      // 402 is the paywall, not a failure -- prompt to upgrade instead of
+      // flashing a red error toast the user can't act on.
+      if (e.status === 402) setPaywall(e.message)
+      else showToast(e.message, 'error')
       setLoading(l => ({ ...l, resume:false }))
     }
   }
@@ -440,6 +447,28 @@ export default function JobDetail({ jobId }) {
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:'1.25rem' }}>
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+      {paywall && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setPaywall('')}>
+          <div className="modal" style={{ maxWidth: 440 }}>
+            <div className="modal-header">
+              <h3 className="modal-title">You&rsquo;re out of free generations</h3>
+              <button className="btn btn-ghost btn-icon" onClick={() => setPaywall('')}>&times;</button>
+            </div>
+            <p className="text-sm text-muted" style={{ lineHeight: 1.6 }}>{paywall}</p>
+            <p className="text-sm text-muted" style={{ lineHeight: 1.6, marginTop: '0.75rem' }}>
+              Pro is $15/month for unlimited tailored resumes. Everything you&rsquo;ve already
+              generated stays yours either way.
+            </p>
+            <div className="flex gap-sm" style={{ justifyContent: 'flex-end', marginTop: '1.5rem' }}>
+              <button className="btn btn-outline btn-sm" onClick={() => setPaywall('')}>Not now</button>
+              <button className="btn btn-primary" onClick={() => { setPaywall(''); window.location.hash = '#/settings' }}>
+                See plans
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {editingResume && (
         <ResumeEditor
           jobId={job.id}

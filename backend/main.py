@@ -32,6 +32,7 @@ from database import (
     MasterResumeComponent, ChatInteraction, User,
     LLMTaskStatus, ResearchReport, LinkedInOutreachReport, InterviewPrepReport,
 )
+import billing
 from schemas import (
     JobCreate, JobUpdate, JobOut,
     EventCreate, EventOut,
@@ -168,6 +169,23 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_bearer
         if not row or not row.value or row.value != payload.get("jti"):
             raise HTTPException(status_code=401, detail="MCP token revoked — generate a new one in Settings")
     return user
+
+def require_resume_quota(user: User):
+    """Block a free user who has spent their lifetime resume allowance.
+
+    402 rather than 403: the client distinguishes "you must pay" from "you may
+    not" and shows the upgrade prompt only for the former.
+    """
+    if billing.can_generate_resume(user):
+        return
+    raise HTTPException(
+        status_code=402,
+        detail=(
+            f"You've used all {billing.FREE_RESUME_LIMIT} free resume generations. "
+            "Upgrade to Pro for unlimited generations."
+        ),
+    )
+
 
 app = FastAPI(title="HireOS API", version="2.0.0")
 
@@ -1134,6 +1152,79 @@ def download_file(job_id: int, filename: str, db: Session = Depends(get_db), cur
 
 # ── Settings (per-user) ─────────────────────────────────────────────────────────
 
+# ── Billing ───────────────────────────────────────────────────────────────────
+# Free tier is 30 lifetime resume generations; Pro is an unlimited monthly
+# subscription. Checkout and cancellation are hosted by Stripe, so no card data
+# ever reaches this server.
+
+@app.get("/api/billing/status")
+def billing_status(current_user: User = Depends(get_current_user)):
+    return billing.plan_snapshot(current_user)
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if billing.is_pro(current_user):
+        raise HTTPException(400, "You're already on Pro")
+    if not billing.is_configured():
+        raise HTTPException(503, "Billing isn't configured on this server")
+    # Land back on Settings either way; the query flag drives the toast.
+    base = f"{APP_BASE_URL}/#/settings"
+    try:
+        url = billing.create_checkout_session(
+            db, current_user,
+            success_url=f"{base}?billing=success",
+            cancel_url=f"{base}?billing=cancelled",
+        )
+    except billing.StripeError as e:
+        logger.error(f"[Billing] checkout failed for user {current_user.id}: {e}")
+        raise HTTPException(502, str(e))
+    return {"url": url}
+
+
+@app.post("/api/billing/portal")
+def billing_portal(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        url = billing.create_portal_session(
+            db, current_user, return_url=f"{APP_BASE_URL}/#/settings"
+        )
+    except billing.StripeError as e:
+        logger.error(f"[Billing] portal failed for user {current_user.id}: {e}")
+        raise HTTPException(502, str(e))
+    return {"url": url}
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
+    """Stripe's callback. Deliberately outside /api/ so the bearer-token auth
+    middleware doesn't 401 it — the signature check below is what authenticates
+    this endpoint, and it is the only thing allowed to change a user's plan.
+    """
+    payload = await request.body()   # raw bytes: re-serialising breaks the HMAC
+    try:
+        billing.verify_webhook(payload, request.headers.get("Stripe-Signature", ""))
+    except billing.StripeError as e:
+        logger.warning(f"[Stripe] rejected webhook: {e}")
+        raise HTTPException(400, "Invalid signature")
+
+    try:
+        event = json.loads(payload)
+    except ValueError:
+        raise HTTPException(400, "Invalid payload")
+
+    event_id = event.get("id")
+    if not event_id:
+        raise HTTPException(400, "Event missing id")
+
+    if not billing.record_event_once(db, event_id, event.get("type", "")):
+        # Already handled. 200 so Stripe stops retrying.
+        return {"received": True, "duplicate": True}
+
+    changed, summary = billing.apply_event(db, event)
+    logger.info(f"[Stripe] {event.get('type')} {event_id}: {summary}")
+    return {"received": True, "changed": changed}
+
+
 @app.get("/api/settings")
 def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     rows = db.query(Settings).filter(Settings.user_id == current_user.id).all()
@@ -1752,6 +1843,12 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
         task.status = "completed"
         db.commit()
 
+        # Charge the free allowance only now: the resume row is committed and the
+        # task is marked complete, so every path that reaches here produced a
+        # document the user can actually download. A failed generation costs
+        # nothing. Pro users are not counted (see consume_resume_credit).
+        billing.consume_resume_credit(db, user_id)
+
         # ── Step 9: Critic pass (best-effort, runs after the resume is ready) ──
         # Same placement as the ATS pass below: the resume is already marked
         # completed, so this never delays it. Gets the master resume as well as
@@ -1866,6 +1963,7 @@ async def start_generate_resume(
     current_user: User = Depends(get_current_user),
 ):
     get_owned_job(db, job_id, current_user)
+    require_resume_quota(current_user)
     llm = resolve_llm(db, current_user.id, payload.get("llm"))
     feedback = payload.get("feedback", "")
     critic_llm = payload.get("critic_llm", "claude")
@@ -2215,7 +2313,14 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
 
         elif action_type == "generate_resume":
             job_id = action.get("job_id")
-            if _owned(job_id):
+            if _owned(job_id) and not billing.can_generate_resume(current_user):
+                # Same quota as the REST route — otherwise asking the chat agent
+                # for a resume is a free bypass of the paywall.
+                reply = (
+                    f"You've used all {billing.FREE_RESUME_LIMIT} free resume generations. "
+                    "Upgrade to Pro in Settings → Billing for unlimited generations."
+                )
+            elif _owned(job_id):
                 asyncio.create_task(_bg_resume(job_id, llm, "", uid, "claude"))
                 reply = f"📄 Resume generation started for job #{job_id} — check the Resumes tab shortly."
             elif job_id:
