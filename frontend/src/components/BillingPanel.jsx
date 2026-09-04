@@ -117,11 +117,16 @@ export default function BillingPanel() {
   }
 
   const isPro = status.plan === 'pro'
-  const used = status.free_used ?? 0
-  const limit = status.free_limit ?? 30
-  const pct = Math.min(100, Math.round((used / limit) * 100))
-  const exhausted = !isPro && used >= limit
-  const meterColor = exhausted ? 'var(--danger)' : pct >= 80 ? 'var(--warning)' : 'var(--primary)'
+  // Free usage is metered in tokens: input and output are priced an order of
+  // magnitude apart, so they get their own budgets and their own bars.
+  const limits = status.token_limits || { input: 0, output: 0 }
+  const usedTokens = status.tokens_used || { input: 0, output: 0 }
+  const meters = [
+    { label: 'Input tokens', used: usedTokens.input, limit: limits.input },
+    { label: 'Output tokens', used: usedTokens.output, limit: limits.output },
+  ].map(m => ({ ...m, pct: m.limit ? Math.min(100, Math.round((m.used / m.limit) * 100)) : 0 }))
+  const exhausted = !isPro && meters.some(m => m.limit && m.used >= m.limit)
+  const fmt = (n) => (n || 0).toLocaleString()
 
   return (
     <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -142,7 +147,7 @@ export default function BillingPanel() {
             <p style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', marginTop: 4 }}>
               {isPro
                 ? 'Unlimited resume generations.'
-                : `${limit} resume generations, one time. They don’t reset.`}
+                : 'Around 20 tailored resumes on our AI credits, one time. They don’t reset — or add your own API key in LLM Providers and generate without limit.'}
             </p>
           </div>
           <span className="badge" style={{
@@ -154,25 +159,31 @@ export default function BillingPanel() {
         </div>
 
         {!isPro && (
-          <div>
-            <div className="flex justify-between" style={{ fontSize: '0.8rem', marginBottom: 6 }}>
-              <span style={{ color: 'var(--fg-muted)' }}>Resume generations used</span>
-              <span style={{ fontWeight: 600, color: exhausted ? 'var(--danger)' : 'var(--fg)' }}>
-                {used} / {limit}
-              </span>
-            </div>
-            <div style={{
-              height: 8, borderRadius: 9999, background: 'var(--surface-2)',
-              overflow: 'hidden', border: '1px solid var(--surface-border)',
-            }}>
-              <div style={{
-                width: `${pct}%`, height: '100%', background: meterColor,
-                transition: 'width 0.4s ease, background 0.3s ease',
-              }} />
-            </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {meters.map(m => (
+              <div key={m.label}>
+                <div className="flex justify-between" style={{ fontSize: '0.8rem', marginBottom: 6 }}>
+                  <span style={{ color: 'var(--fg-muted)' }}>{m.label}</span>
+                  <span style={{ fontWeight: 600, color: m.limit && m.used >= m.limit ? 'var(--danger)' : 'var(--fg)' }}>
+                    {fmt(m.used)} / {fmt(m.limit)}
+                  </span>
+                </div>
+                <div style={{
+                  height: 8, borderRadius: 9999, background: 'var(--surface-2)',
+                  overflow: 'hidden', border: '1px solid var(--surface-border)',
+                }}>
+                  <div style={{
+                    width: `${m.pct}%`, height: '100%',
+                    background: m.pct >= 100 ? 'var(--danger)' : m.pct >= 80 ? 'var(--warning)' : 'var(--primary)',
+                    transition: 'width 0.4s ease, background 0.3s ease',
+                  }} />
+                </div>
+              </div>
+            ))}
             {exhausted && (
-              <p style={{ fontSize: '0.8rem', color: 'var(--danger)', marginTop: 8 }}>
-                You’ve used every free generation. Upgrade to keep tailoring resumes.
+              <p style={{ fontSize: '0.8rem', color: 'var(--danger)' }}>
+                You’ve used all your free AI credits. Upgrade for unlimited generations,
+                or add your own API key in LLM Providers to keep going free.
               </p>
             )}
           </div>

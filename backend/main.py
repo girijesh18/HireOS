@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, Response, JSONResponse, RedirectResp
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 from datetime import datetime, timedelta
 from typing import List, Optional, Any, Dict
 import os
@@ -48,11 +48,32 @@ from schemas import (
     ChatInteractionOut, InsightsOut,
 )
 import chat_store
+import connectors
 from search import router as search_router
 from dotenv import load_dotenv
 from loguru import logger
 
 load_dotenv()
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# loguru was imported in eight modules but never configured, so everything went
+# to stderr and nothing survived a restart. diagnose=False is not optional here:
+# diagnose=True writes local variables into the traceback, and the locals around
+# these call sites hold API keys.
+LOG_DIR = Path(os.getenv("LOG_DIR", "./logs"))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+logger.add(
+    LOG_DIR / "hireos_{time:YYYY-MM-DD}.log",
+    rotation="10 MB", retention="7 days", level=os.getenv("LOG_LEVEL", "INFO"),
+    backtrace=True, diagnose=False, enqueue=True,
+)
+
+# ── Admin ─────────────────────────────────────────────────────────────────────
+# Same shape as BILLING_UNLIMITED_EMAILS: an env allowlist, so admin rights need
+# no column, no migration, and no way for a request to grant them to itself.
+ADMIN_EMAILS = {
+    e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()
+}
 
 # ── Auth config ───────────────────────────────────────────────────────────────
 JWT_SECRET = os.getenv("JWT_SECRET", "hireos-dev-secret-change-in-prod")
@@ -170,19 +191,37 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_bearer
             raise HTTPException(status_code=401, detail="MCP token revoked — generate a new one in Settings")
     return user
 
+def is_admin(user: User) -> bool:
+    return (user.email or "").lower() in ADMIN_EMAILS
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Gate for every /api/admin route.
+
+    The bearer middleware only checks that a JWT is valid -- it does no
+    authorization at all. Without this dependency on the route itself, an admin
+    endpoint is open to every logged-in user.
+    """
+    if not is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+
 def require_resume_quota(user: User):
-    """Block a free user who has spent their lifetime resume allowance.
+    """Block a free user who has spent their platform-key token allowance.
 
     402 rather than 403: the client distinguishes "you must pay" from "you may
-    not" and shows the upgrade prompt only for the former.
+    not" and shows the upgrade prompt only for the former. Both ways out are
+    named, because adding your own key is a real answer here -- own-key usage
+    is not metered.
     """
-    if billing.can_generate_resume(user):
+    if billing.has_token_quota(user):
         return
     raise HTTPException(
         status_code=402,
         detail=(
-            f"You've used all {billing.FREE_RESUME_LIMIT} free resume generations. "
-            "Upgrade to Pro for unlimited generations."
+            "You've used all your free AI credits. Upgrade to Pro for unlimited "
+            "generations, or add your own API key in Settings to keep going free."
         ),
     )
 
@@ -288,8 +327,16 @@ def change_password(data: _PasswordBody, db: Session = Depends(get_db),
 
 
 @app.get("/auth/me")
-def me(current_user: User = Depends(get_current_user)):
-    return {"email": current_user.email}
+def me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # is_admin drives whether the admin nav item renders. Hiding the link is
+    # cosmetic -- require_admin on each route is the actual control.
+    # on_platform_key drives whether the model picker renders: a user on our key
+    # gets the admin's model whatever they select, so offering the choice lies.
+    return {
+        "email": current_user.email,
+        "is_admin": is_admin(current_user),
+        "on_platform_key": on_platform_key(db, current_user.id),
+    }
 
 
 # ── SSO / OAuth endpoints ───────────────────────────────────────────────────────
@@ -436,6 +483,7 @@ _USER_KEY_MAP = {
     "openrouter_api_key": "openrouter",
     "together_api_key": "together",
     "anthropic_api_key": "anthropic",
+    "openai_api_key": "openai",
     "nvidia_api_key": "nvidia",
     "ollama_base_url": "ollama_url",
     "github_token": "github_token",
@@ -469,10 +517,72 @@ def _load_agent_classes():
     return _AGENT_CLASSES
 
 
+# ── Platform config (global Settings rows, user_id IS NULL) ───────────────────
+# A NULL user_id row is invisible to every per-user query in the app, so the
+# settings table doubles as platform config with no new table and no migration.
+
+def get_platform_setting(db: Session, key: str, default: str = "") -> str:
+    row = db.query(Settings).filter(Settings.key == key, Settings.user_id.is_(None)).first()
+    return (row.value if row and row.value else "") or default
+
+
+def set_platform_setting(db: Session, key: str, value: str) -> None:
+    row = db.query(Settings).filter(Settings.key == key, Settings.user_id.is_(None)).first()
+    if row:
+        row.value = value
+        row.updated_at = datetime.utcnow()
+    else:
+        db.add(Settings(key=key, value=value, user_id=None))
+    db.commit()
+
+
+def platform_key_for(db: Session, provider: str) -> str:
+    """The platform's key for one provider. The DB row wins; the env var is only
+    the bootstrap for a fresh deploy that has no admin panel visit yet."""
+    saved = get_platform_setting(db, connectors.PLATFORM_KEY_SETTING.get(provider, ""))
+    if saved:
+        return saved
+    return os.getenv(connectors.PLATFORM_KEY_ENV.get(provider, ""), "")
+
+
+def platform_selection(db: Session) -> tuple:
+    """(provider, model) the admin chose for the free tier."""
+    provider = get_platform_setting(db, "platform_provider", connectors.DEFAULT_PROVIDER)
+    model = get_platform_setting(db, "platform_model", "")
+    if provider == connectors.DEFAULT_PROVIDER and not model:
+        model = connectors.DEFAULT_MODEL
+    return provider, model
+
+
+def platform_llm(db: Session) -> str:
+    """The llm string the router dispatches on, e.g. "gemini:gemini-2.5-flash"."""
+    provider, model = platform_selection(db)
+    routed = connectors.ROUTER_PROVIDER.get(provider, provider)
+    return f"{routed}:{model}" if model else routed
+
+
+def _usage_meter(user_id: int):
+    """Charge platform-key usage to one user.
+
+    Opens its own session on purpose: generation runs on FastAPI background
+    threads, and the request's session is closed by then.
+    """
+    def meter(in_tokens: int, out_tokens: int):
+        db = SessionLocal()
+        try:
+            billing.consume_tokens(db, user_id, in_tokens, out_tokens)
+        finally:
+            db.close()
+    return meter
+
+
 def get_llm_router(db: Session = None, user_id: int = None):
     """Router scoped strictly to a user's BYOK keys when a user is given (no env fallback,
     so one user's generations never use another user's or a shared server key).
-    With no user, returns a server-fallback router (health/diagnostics only)."""
+
+    A user with no key of their own falls back to the platform's key, metered
+    against their free token allowance. With no user, returns a server-fallback
+    router (health/diagnostics only)."""
     from llm_router import LLMRouter
     if db is not None and user_id is not None:
         keys = {}
@@ -480,8 +590,35 @@ def get_llm_router(db: Session = None, user_id: int = None):
         for r in rows:
             if r.key in _USER_KEY_MAP and r.value and "•" not in r.value:
                 keys[_USER_KEY_MAP[r.key]] = r.value
+        if _provider_keys(keys):
+            # Own key: unmetered, unrestricted, exactly as before.
+            return LLMRouter(keys=keys, allow_env=False)
+
+        provider, _ = platform_selection(db)
+        key = platform_key_for(db, provider)
+        if key:
+            # Only the selected provider's key is loaded, so FALLBACK_ORDER has
+            # nowhere else to go -- a free user cannot spend the platform's money
+            # on a model the admin didn't pick.
+            slot = connectors.ROUTER_KEY_SLOT.get(provider, provider)
+            return LLMRouter(keys={slot: key, **_non_provider_keys(keys)},
+                             allow_env=False, on_usage=_usage_meter(user_id))
         return LLMRouter(keys=keys, allow_env=False)
     return LLMRouter(allow_env=True)
+
+
+# github_token / github_username are not LLM providers -- they must survive the
+# swap to the platform key, or GitHub project context silently disappears for
+# free users.
+_NON_PROVIDER_SLOTS = {"github_token", "github_username"}
+
+
+def _provider_keys(keys: dict) -> dict:
+    return {k: v for k, v in keys.items() if k not in _NON_PROVIDER_SLOTS}
+
+
+def _non_provider_keys(keys: dict) -> dict:
+    return {k: v for k, v in keys.items() if k in _NON_PROVIDER_SLOTS}
 
 
 def get_agent(name: str, db: Session = None, user_id: int = None):
@@ -491,9 +628,28 @@ def get_agent(name: str, db: Session = None, user_id: int = None):
     return classes[name](router)
 
 
+def on_platform_key(db: Session, user_id: int) -> bool:
+    """True when this user's generations run on the platform's key rather than
+    their own -- the condition for metering, for the model lock, and for
+    skipping the expensive extras."""
+    rows = db.query(Settings).filter(Settings.user_id == user_id).all()
+    own = {_USER_KEY_MAP[r.key] for r in rows
+           if r.key in _USER_KEY_MAP and r.value and "•" not in r.value}
+    if own - _NON_PROVIDER_SLOTS:
+        return False
+    provider, _ = platform_selection(db)
+    return bool(platform_key_for(db, provider))
+
+
 def resolve_llm(db: Session, user_id: int, requested=None) -> str:
     """The model to use: the caller's explicit choice, else the user's first
-    configured provider (not a hardcoded gemini)."""
+    configured provider (not a hardcoded gemini).
+
+    A user on the platform's key gets the admin's choice regardless of what they
+    asked for -- otherwise the model picker in the top bar would let anyone run
+    the most expensive model available on our account."""
+    if on_platform_key(db, user_id):
+        return platform_llm(db)
     if requested:
         return requested
     return get_llm_router(db, user_id).default_llm()
@@ -1333,16 +1489,29 @@ async def upload_resume_file(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Upload a PDF or Markdown file as a resume component."""
+    """Upload a PDF, DOCX, HTML, Markdown or text file as a resume component."""
     from pdf_utils import extract_text_from_pdf
-    
+
     file_content = await file.read()
     filename = file.filename
     content_text = ""
-    
+
     # Extract text based on extension
     if filename.lower().endswith(".pdf"):
         content_text = extract_text_from_pdf(file_content)
+    elif filename.lower().endswith(".docx"):
+        # python-docx is already a dependency (it writes the generated .docx).
+        # Most people's resume is a Word file, and this used to 400.
+        import io
+        from docx import Document
+        doc = Document(io.BytesIO(file_content))
+        blocks = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    blocks.append(" | ".join(cells))
+        content_text = "\n".join(b for b in blocks if b.strip())
     elif filename.lower().endswith(".html") or filename.lower().endswith(".htm"):
         raw = file_content.decode("utf-8", errors="ignore")
         content_text = _strip_html(raw)
@@ -1350,7 +1519,7 @@ async def upload_resume_file(
         raw = file_content.decode("utf-8", errors="ignore")
         content_text = _strip_html(raw) if ('<html' in raw.lower() or '<div' in raw.lower()) else raw
     else:
-        raise HTTPException(status_code=400, detail="Unsupported file type. Upload PDF, HTML, Markdown, or TXT.")
+        raise HTTPException(status_code=400, detail="Unsupported file type. Upload PDF, DOCX, HTML, Markdown, or TXT.")
 
     if not content_text:
         raise HTTPException(status_code=400, detail="Could not extract text from file.")
@@ -1415,6 +1584,462 @@ def delete_resume_component(id: int, db: Session = Depends(get_db), current_user
     db.delete(component)
     db.commit()
     return {"status": "deleted"}
+
+
+# ── Onboarding ────────────────────────────────────────────────────────────────
+# Two independent ways in, not a forced sequence: upload documents, OR answer a
+# few questions. Uploading also unlocks a better version of the questions --
+# the documents are analysed first, so the follow-ups ask only about what the
+# documents did NOT already say.
+#
+# The profile is a list of key/value facts with LLM-chosen keys, not a fixed
+# schema. A career-changer, a new grad and a staff engineer need different
+# questions asked, so nothing here hardcodes what a person consists of.
+#
+# Facts are rendered back into an ordinary master-resume component, which is
+# how they reach every prompt in the app: _resume_components collects it and
+# get_master_resume concatenates it. See _classify_component for why the
+# markdown must read as statements under a "## Professional Summary" heading --
+# question-shaped text is classified "qa" and silently dropped from prompts.
+
+ONBOARDING_COMPONENT_NAME = "Career Context"
+ONBOARDING_PROFILE_KEY = "onboarding_profile"
+ONBOARDING_DONE_KEY = "onboarding_done"
+
+# Cap what we send for analysis. Whole resumes are ~10k chars; several uploads
+# plus a schema is still comfortably inside a Flash-class context.
+_ANALYSIS_CHAR_BUDGET = 24000
+
+# Hard wall-clock budget for the two onboarding LLM calls. Onboarding is the
+# first thing a new user ever does, so it must degrade to the canned questions
+# rather than leave them watching a spinner: providers do go slow (a model that
+# answered in 14s yesterday can hang for minutes today, or EOL out from under
+# you mid-session). The router's own per-provider timeouts are longer because
+# they serve generation, where waiting is worth it.
+_ONBOARDING_LLM_TIMEOUT = float(os.getenv("ONBOARDING_LLM_TIMEOUT", "60"))
+# Analysis gets a bigger budget than the question call: it ships every uploaded
+# document, so the prompt is an order of magnitude larger. The UI also tells the
+# user their documents are being read, which buys the extra wait honestly --
+# the scratch-question path has no such cover and must stay snappy.
+_ONBOARDING_ANALYSIS_TIMEOUT = float(os.getenv("ONBOARDING_ANALYSIS_TIMEOUT", "150"))
+
+
+class ProfileFact(_BaseModel):
+    """One key/value fact. `key` is invented by the model per user -- there is
+    deliberately no enum here.
+
+    `source` says where it came from. It decides what gets written back into the
+    prompt: facts read out of an uploaded document must NOT be, because that
+    document is already part of the master resume and restating it would make
+    every future generation pay for the same content twice.
+    """
+    key: str
+    label: str = ""
+    value: str = ""
+    source: str = "answer"      # "answer" | "document"
+
+
+class OnboardingQuestion(_BaseModel):
+    key: str                 # the profile key this answer fills
+    label: str = ""          # human name for that key
+    question: str
+    prefix: str = ""         # opening words of the user's own answer
+    placeholder: str = ""
+
+
+class DocAnalysis(_BaseModel):
+    """What the uploaded documents already say, and what is still missing."""
+    extracted: List[ProfileFact] = []
+    questions: List[OnboardingQuestion] = []
+
+
+class QuestionSet(_BaseModel):
+    questions: List[OnboardingQuestion] = []
+
+
+class OnboardingAnswersIn(_BaseModel):
+    facts: List[ProfileFact] = []
+
+
+# Used only when the model is unreachable. Deliberately short: it exists so the
+# flow never dead-ends, not to be a good interview.
+_FALLBACK_QUESTIONS = [
+    {"key": "target_role", "label": "Target role", "question": "What roles are you targeting right now?",
+     "prefix": "I'm targeting", "placeholder": "Senior ML Engineer roles at product companies"},
+    {"key": "experience", "label": "Experience", "question": "How many years of relevant experience, and at what level?",
+     "prefix": "I have", "placeholder": "8 years, currently senior"},
+    {"key": "strengths", "label": "Strengths", "question": "What are you genuinely best at?",
+     "prefix": "I'm strongest at", "placeholder": "production ML systems, Python, mentoring"},
+    {"key": "signature_win", "label": "Signature achievement", "question": "What achievement would you most want a hiring manager to see?",
+     "prefix": "My biggest win was", "placeholder": "cut inference cost 60% by rebuilding the serving layer"},
+    {"key": "tools", "label": "Tools", "question": "Which tools and technologies belong on the resume?",
+     "prefix": "I work with", "placeholder": "PyTorch, Kubernetes, GCP"},
+    {"key": "location", "label": "Location", "question": "Where are you looking to work?",
+     "prefix": "I'm looking for work", "placeholder": "remote in Canada, or hybrid in Toronto"},
+]
+
+_SCRATCH_PROMPT = """A new user has uploaded nothing. Write the 6-8 questions that would
+tell you the most about them for tailoring resumes.
+
+Rules:
+- Each question fills one profile fact. Invent a short snake_case `key` for it and a
+  human `label`. Choose keys that suit a general professional -- do not assume an industry.
+- Answers must be short: a phrase or one sentence. Never ask for a paragraph.
+- `prefix` is the opening words of the user's own answer ("I'm targeting"), so they
+  only type the ending. `placeholder` is a realistic example answer.
+- Cover positioning and target role first, then seniority, strengths, a signature
+  achievement, tools, and any constraint (location, authorization, things to omit).
+
+Return only the questions."""
+
+_ANALYSIS_PROMPT = """You are reading a new user's uploaded career documents so you can
+tailor resumes for them later.
+
+Do two things:
+
+1. `extracted` -- the facts the documents already establish. One entry per fact, with a
+   short snake_case `key`, a human `label`, and the `value` in the user's own terms.
+   Choose the keys that matter for THIS person; a career-changer, a new grad and a staff
+   engineer do not need the same fields. Do not invent anything the documents do not say.
+
+2. `questions` -- 4-7 questions covering only what the documents did NOT answer, ranked
+   by how much a resume would improve if you knew. Never ask something the documents
+   already state. Prefer intent and positioning (target role, seniority aim, constraints,
+   what to leave off) over restating history. Each question carries the `key` and `label`
+   of the fact it will fill, a `prefix` (the opening words of the user's own answer) and
+   a realistic `placeholder`. Answers must be short.
+
+THE USER'S DOCUMENTS:
+{material}"""
+
+
+def _profile_facts(db: Session, user_id: int) -> List[dict]:
+    row = db.query(Settings).filter(
+        Settings.key == ONBOARDING_PROFILE_KEY, Settings.user_id == user_id
+    ).first()
+    if not row or not row.value:
+        return []
+    try:
+        data = json.loads(row.value)
+    except (ValueError, TypeError):
+        return []
+    return data.get("facts", []) if isinstance(data, dict) else []
+
+
+def _merge_facts(existing: List[dict], incoming: List[dict]) -> List[dict]:
+    """Later answers win, order of first appearance is kept, blanks never
+    overwrite something we already knew."""
+    merged = {f["key"]: dict(f) for f in existing if f.get("key")}
+    order = [f["key"] for f in existing if f.get("key")]
+    for f in incoming:
+        key = (f.get("key") or "").strip()
+        value = (f.get("value") or "").strip()
+        if not key or not value:
+            continue
+        if key not in merged:
+            order.append(key)
+        merged[key] = {
+            "key": key,
+            "label": (f.get("label") or key.replace("_", " ")).strip(),
+            "value": value,
+            "source": f.get("source") or "answer",
+        }
+    return [merged[k] for k in order if k in merged]
+
+
+def _render_career_context(facts: List[dict]) -> str:
+    """Facts -> markdown that _classify_component reads as resume content.
+
+    Only what the user TOLD us. Facts extracted from an uploaded document are
+    skipped: that document is already a master-resume component, so repeating
+    its contents here would duplicate it in every prompt for no new information.
+    What the extraction is actually for is knowing which questions to skip.
+
+    Two silent traps: three or more `**Q1`-style labels, or more than 40 question
+    marks, and the classifier files this as "qa" and drops it from every prompt.
+    So only the values appear, as statements, under a heading it recognises.
+    """
+    lines = ["## Professional Summary", "",
+             "Context the candidate gave about themselves:", ""]
+    for f in facts:
+        if (f.get("source") or "answer") == "document":
+            continue
+        value = (f.get("value") or "").strip()
+        if not value:
+            continue
+        label = (f.get("label") or f.get("key") or "").strip().rstrip(":")
+        lines.append(f"- **{label}:** {value.rstrip('.?')}." if label else f"- {value.rstrip('.?')}.")
+    return "\n".join(lines)
+
+
+def _upsert_career_context(db: Session, user_id: int, markdown: str) -> None:
+    component = db.query(MasterResumeComponent).filter(
+        MasterResumeComponent.user_id == user_id,
+        MasterResumeComponent.name == ONBOARDING_COMPONENT_NAME,
+    ).first()
+    if component:
+        component.content_text = markdown
+        component.is_active = True
+        component.updated_at = datetime.utcnow()
+    else:
+        db.add(MasterResumeComponent(
+            name=ONBOARDING_COMPONENT_NAME, type="text", content_text=markdown,
+            is_active=True, order=99, user_id=user_id,
+        ))
+    db.commit()
+
+
+def _uploaded_components(db: Session, user_id: int):
+    """Everything the user supplied, minus the component we generate ourselves."""
+    return [c for c in db.query(MasterResumeComponent).filter(
+        MasterResumeComponent.user_id == user_id,
+        MasterResumeComponent.is_active == True,
+    ).order_by(MasterResumeComponent.order.asc()).all()
+        if c.name != ONBOARDING_COMPONENT_NAME]
+
+
+def _set_user_setting(db: Session, user_id: int, key: str, value: str) -> None:
+    row = db.query(Settings).filter(Settings.key == key, Settings.user_id == user_id).first()
+    if row:
+        row.value = value
+        row.updated_at = datetime.utcnow()
+    else:
+        db.add(Settings(key=key, value=value, user_id=user_id))
+    db.commit()
+
+
+def _fallback_questions(exclude_keys=()) -> List[OnboardingQuestion]:
+    return [OnboardingQuestion(**q) for q in _FALLBACK_QUESTIONS if q["key"] not in set(exclude_keys)]
+
+
+@app.get("/api/onboarding/status")
+def onboarding_status(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    uploaded = _uploaded_components(db, current_user.id)
+    done_row = db.query(Settings).filter(
+        Settings.key == ONBOARDING_DONE_KEY, Settings.user_id == current_user.id
+    ).first()
+    return {
+        "done": bool(done_row and done_row.value == "1"),
+        "has_components": bool(uploaded),
+        "component_count": len(uploaded),
+        "documents": [{"id": c.id, "name": c.name} for c in uploaded],
+        "facts": _profile_facts(db, current_user.id),
+    }
+
+
+@app.post("/api/onboarding/analyze", response_model=DocAnalysis)
+async def analyze_documents(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Read what was uploaded, then ask only about what it does not say.
+
+    This is the pay-off for uploading: the questions get sharper instead of the
+    user answering things their own resume already answered.
+    """
+    components = _uploaded_components(db, current_user.id)
+    if not components:
+        raise HTTPException(status_code=400, detail="Upload a document first, or answer the questions instead.")
+
+    material = "\n\n".join(
+        f"--- {c.name} ---\n{(c.content_text or '')}" for c in components
+    )[:_ANALYSIS_CHAR_BUDGET]
+
+    try:
+        router = get_llm_router(db, current_user.id)
+        result = await asyncio.wait_for(router.structured_complete(
+            _ANALYSIS_PROMPT.format(material=material),
+            DocAnalysis,
+            llm=resolve_llm(db, current_user.id),
+            system="You extract structured facts from career documents and ask only what is missing.",
+        ), timeout=_ONBOARDING_ANALYSIS_TIMEOUT)
+        if result.questions or result.extracted:
+            # Remember what the documents told us, so answers merge on top of it
+            # rather than the two living in different places.
+            if result.extracted:
+                extracted = [{**f.model_dump(), "source": "document"} for f in result.extracted]
+                facts = _merge_facts(_profile_facts(db, current_user.id), extracted)
+                _set_user_setting(db, current_user.id, ONBOARDING_PROFILE_KEY,
+                                  json.dumps({"facts": facts}))
+            if not result.questions:
+                result.questions = _fallback_questions([f.key for f in result.extracted])
+            return result
+        logger.warning("[Onboarding] analysis returned nothing — using the fallback questions")
+    except asyncio.TimeoutError:
+        logger.warning(f"[Onboarding] analysis exceeded {_ONBOARDING_ANALYSIS_TIMEOUT}s — using fallback questions")
+    except Exception as e:
+        # A dead provider key must not dead-end the one flow that earns the user
+        # a working profile. Degrade to the generic questions instead.
+        logger.warning(f"[Onboarding] document analysis failed, using fallback: {e}")
+    return DocAnalysis(extracted=[], questions=_fallback_questions())
+
+
+@app.post("/api/onboarding/questions", response_model=QuestionSet)
+async def onboarding_questions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """The no-documents path: ask from scratch."""
+    try:
+        router = get_llm_router(db, current_user.id)
+        result = await asyncio.wait_for(router.structured_complete(
+            _SCRATCH_PROMPT, QuestionSet,
+            llm=resolve_llm(db, current_user.id),
+            system="You write short, high-signal onboarding questions. Never ask for an essay.",
+        ), timeout=_ONBOARDING_LLM_TIMEOUT)
+        if result.questions:
+            return result
+        logger.warning("[Onboarding] empty question set — using the fallback")
+    except asyncio.TimeoutError:
+        logger.warning(f"[Onboarding] question generation exceeded {_ONBOARDING_LLM_TIMEOUT}s — using fallback")
+    except Exception as e:
+        logger.warning(f"[Onboarding] question generation failed, using fallback: {e}")
+    return QuestionSet(questions=_fallback_questions())
+
+
+@app.post("/api/onboarding/answers")
+def save_onboarding_answers(
+    payload: OnboardingAnswersIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    answered = [{**f.model_dump(), "source": "answer"} for f in payload.facts]
+    facts = _merge_facts(_profile_facts(db, current_user.id), answered)
+    _set_user_setting(db, current_user.id, ONBOARDING_PROFILE_KEY, json.dumps({"facts": facts}))
+    _set_user_setting(db, current_user.id, ONBOARDING_DONE_KEY, "1")
+
+    if facts:
+        _upsert_career_context(db, current_user.id, _render_career_context(facts))
+    return {"status": "saved", "fact_count": len(facts), "component_written": bool(facts)}
+
+
+@app.post("/api/onboarding/skip")
+def skip_onboarding(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Mark onboarding done without answering. Skippable on purpose: a hard gate
+    at signup costs more in drop-off than it wins in resume quality."""
+    _set_user_setting(db, current_user.id, ONBOARDING_DONE_KEY, "1")
+    return {"status": "skipped"}
+
+
+# ── Admin ─────────────────────────────────────────────────────────────────────
+# Which provider and model the platform's own key runs on, chosen from each
+# provider's live catalogue rather than a hardcoded list. Every route here takes
+# Depends(require_admin) -- the bearer middleware authenticates but authorizes
+# nothing, so a route without it is open to every logged-in user.
+
+def _mask(value: str) -> str:
+    if not value:
+        return ""
+    return "••••••••" + value[-4:] if len(value) > 4 else "••••••••"
+
+
+class PlatformModelIn(_BaseModel):
+    provider: str
+    model: str
+
+
+class PlatformKeyIn(_BaseModel):
+    provider: str
+    key: str = ""
+
+
+@app.get("/api/admin/providers")
+def admin_providers(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    provider, model = platform_selection(db)
+    out = []
+    for name in connectors.PROVIDERS:
+        key = platform_key_for(db, name)
+        models, error = connectors.list_models(name, key)
+        out.append({
+            "provider": name,
+            "key_masked": _mask(key),
+            "configured": bool(key),
+            "model_count": len(models),
+            "error": error,
+            "active": name == provider,
+        })
+    return {"providers": out, "active_provider": provider, "active_model": model}
+
+
+@app.get("/api/admin/models")
+def admin_models(
+    provider: str = Query(...),
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    if provider not in connectors.PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+    models, error = connectors.list_models(provider, platform_key_for(db, provider), refresh=refresh)
+    return {"provider": provider, "models": models, "error": error}
+
+
+@app.put("/api/admin/platform-model")
+def admin_set_platform_model(
+    payload: PlatformModelIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    if payload.provider not in connectors.PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {payload.provider}")
+    key = platform_key_for(db, payload.provider)
+    if not key:
+        # Listing a catalogue and running a generation are different privileges:
+        # OpenRouter publishes its model list to anyone but still charges a key
+        # to answer a prompt. Without this, selecting it leaves every free user
+        # with a router that has no usable provider.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Save a {payload.provider} API key before making it the free-tier provider.",
+        )
+    models, error = connectors.list_models(payload.provider, key)
+    if error and not models:
+        raise HTTPException(status_code=400, detail=f"Cannot verify model: {error}")
+    # Validated against the live catalogue on purpose: a typo saved here breaks
+    # generation for every free user at once, and it would fail at their request
+    # time rather than here.
+    if payload.model not in {m["id"] for m in models}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{payload.model} is not in {payload.provider}'s model list.",
+        )
+    set_platform_setting(db, "platform_provider", payload.provider)
+    set_platform_setting(db, "platform_model", payload.model)
+    logger.info(f"[Admin] platform model set to {payload.provider}:{payload.model}")
+    return {"status": "saved", "provider": payload.provider, "model": payload.model}
+
+
+@app.put("/api/admin/keys")
+def admin_set_key(
+    payload: PlatformKeyIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    if payload.provider not in connectors.PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {payload.provider}")
+    # Same rule as /api/settings: a masked value coming back from the UI is the
+    # display string, not a key, and saving it would destroy the real one.
+    if payload.key and "••••" in payload.key:
+        return {"status": "unchanged"}
+    set_platform_setting(db, connectors.PLATFORM_KEY_SETTING[payload.provider], payload.key.strip())
+    models, error = connectors.list_models(payload.provider, payload.key.strip(), refresh=True)
+    return {"status": "saved", "model_count": len(models), "error": error}
+
+
+@app.get("/api/admin/usage")
+def admin_usage(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    users = db.query(User).all()
+    rows = [{
+        "id": u.id,
+        "email": u.email,
+        "plan": "pro" if billing.is_pro(u) else "free",
+        "input_tokens": u.free_input_tokens_used or 0,
+        "output_tokens": u.free_output_tokens_used or 0,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+    } for u in users]
+    rows.sort(key=lambda r: r["input_tokens"] + r["output_tokens"], reverse=True)
+    return {
+        "users": rows,
+        "limits": {"input": billing.FREE_INPUT_TOKENS, "output": billing.FREE_OUTPUT_TOKENS},
+        "totals": {
+            "input": sum(r["input_tokens"] for r in rows),
+            "output": sum(r["output_tokens"] for r in rows),
+        },
+    }
 
 
 # ── Agent: Track Job from URL ──────────────────────────────────────────────────
@@ -1843,11 +2468,10 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
         task.status = "completed"
         db.commit()
 
-        # Charge the free allowance only now: the resume row is committed and the
-        # task is marked complete, so every path that reaches here produced a
-        # document the user can actually download. A failed generation costs
-        # nothing. Pro users are not counted (see consume_resume_credit).
-        billing.consume_resume_credit(db, user_id)
+        # Nothing to charge here any more: the free allowance is spent in tokens,
+        # metered per call by the router's usage hook (see _usage_meter). That
+        # bills real provider usage rather than a flat per-resume guess, and it
+        # counts the calls that failed halfway too -- those cost money as well.
 
         # ── Step 9: Critic pass (best-effort, runs after the resume is ready) ──
         # Same placement as the ATS pass below: the resume is already marked
@@ -1883,7 +2507,12 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
         try:
             from ats_score import score_resume_pdf
             pdf_path = paths.get("pdf")
-            if pdf_path:
+            # The vendored scorer fans out to 7-8 more LLM calls in its own
+            # subprocess -- more than the whole rest of the pipeline -- and its
+            # usage never comes back to the meter. Free users would be paying
+            # for it out of a budget it cannot be counted against, so they skip
+            # it; own-key and Pro users still get scored.
+            if pdf_path and not on_platform_key(db, user_id):
                 _r = agent_resume.router
                 ats = await asyncio.to_thread(
                     score_resume_pdf, pdf_path, llm,
@@ -3218,6 +3847,219 @@ def search_interactions(q: str, n: int = 10, days: int = 90, current_user: User 
 
 
 # ── Serve React frontend (production) ─────────────────────────────────────────
+# ── Admin: user monitoring ────────────────────────────────────────────────────
+# Everything about one account in one place. Counts come from one grouped query
+# per table rather than a query per user, so the list does not degrade as the
+# user table grows.
+
+# Tables counted per user on the list view: (table, label).
+_USER_COUNT_TABLES = [
+    ("jobs", "jobs"),
+    ("resume_versions", "resumes"),
+    ("cover_letter_versions", "cover_letters"),
+    ("evaluation_reports", "evaluations"),
+    ("story_bank", "stories"),
+    ("research_reports", "research"),
+    ("interview_prep_reports", "interview_preps"),
+    ("linkedin_outreach_reports", "outreach"),
+    ("chat_interactions", "chats"),
+    ("application_events", "events"),
+    ("master_resume_components", "documents"),
+]
+
+
+def _counts_by_user(db: Session, table: str) -> dict:
+    rows = db.execute(text(
+        f"SELECT user_id, COUNT(*) FROM {table} WHERE user_id IS NOT NULL GROUP BY user_id"
+    )).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def _latest_by_user(db: Session, table: str, column: str = "created_at") -> dict:
+    rows = db.execute(text(
+        f"SELECT user_id, MAX({column}) FROM {table} WHERE user_id IS NOT NULL GROUP BY user_id"
+    )).fetchall()
+    return {r[0]: r[1] for r in rows if r[1]}
+
+
+def _own_providers(db: Session, user_id: int) -> List[str]:
+    """Which LLM providers this user configured for themselves. Names only --
+    an admin screen must never surface another person's key material."""
+    rows = db.query(Settings).filter(Settings.user_id == user_id).all()
+    return sorted({
+        _USER_KEY_MAP[r.key] for r in rows
+        if r.key in _USER_KEY_MAP and r.value and "•" not in r.value
+        and _USER_KEY_MAP[r.key] not in _NON_PROVIDER_SLOTS
+    })
+
+
+def _user_row(u: User, counts: dict, latest: dict, providers: List[str],
+              onboarding: dict, limits: dict) -> dict:
+    used_in = u.free_input_tokens_used or 0
+    used_out = u.free_output_tokens_used or 0
+    pct = 0
+    if not billing.is_pro(u) and limits["input"] and limits["output"]:
+        pct = max(round(used_in / limits["input"] * 100), round(used_out / limits["output"] * 100))
+    return {
+        "id": u.id,
+        "email": u.email,
+        "name": u.name,
+        "avatar_url": u.avatar_url,
+        "signup_method": u.oauth_provider or "password",
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "plan": "pro" if billing.is_pro(u) else "free",
+        "plan_status": u.plan_status,
+        "current_period_end": u.current_period_end.isoformat() if u.current_period_end else None,
+        "has_subscription": bool(u.stripe_subscription_id),
+        "input_tokens": used_in,
+        "output_tokens": used_out,
+        "quota_pct": min(pct, 100),
+        "quota_exhausted": not billing.has_token_quota(u),
+        "own_providers": providers,
+        "on_platform_key": not providers,
+        "is_admin": is_admin(u),
+        "onboarding_done": onboarding.get("done", False),
+        "profile_facts": onboarding.get("facts", 0),
+        "last_active": latest.get(u.id),
+        "counts": counts,
+    }
+
+
+@app.get("/api/admin/users")
+def admin_users(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """Every account with the activity that matters, in one payload."""
+    users = db.query(User).order_by(User.id.asc()).all()
+
+    counts = {label: _counts_by_user(db, table) for table, label in _USER_COUNT_TABLES}
+    # "Last active" is the newest thing they caused anywhere, not their signup.
+    latest = {}
+    for table in ("jobs", "resume_versions", "chat_interactions", "application_events"):
+        for uid, ts in _latest_by_user(db, table).items():
+            if not latest.get(uid) or str(ts) > str(latest[uid]):
+                latest[uid] = ts
+
+    profile_rows = {
+        r.user_id: r.value for r in
+        db.query(Settings).filter(Settings.key == ONBOARDING_PROFILE_KEY).all()
+    }
+    done_rows = {
+        r.user_id: r.value for r in
+        db.query(Settings).filter(Settings.key == ONBOARDING_DONE_KEY).all()
+    }
+    limits = {"input": billing.FREE_INPUT_TOKENS, "output": billing.FREE_OUTPUT_TOKENS}
+
+    rows = []
+    for u in users:
+        try:
+            facts = len(json.loads(profile_rows.get(u.id) or "{}").get("facts", []))
+        except (ValueError, TypeError):
+            facts = 0
+        rows.append(_user_row(
+            u,
+            {label: counts[label].get(u.id, 0) for _, label in _USER_COUNT_TABLES},
+            latest,
+            _own_providers(db, u.id),
+            {"done": done_rows.get(u.id) == "1", "facts": facts},
+            limits,
+        ))
+
+    active = [r for r in rows if r["last_active"]]
+    return {
+        "users": rows,
+        "limits": limits,
+        "totals": {
+            "accounts": len(rows),
+            "active": len(active),
+            "pro": sum(1 for r in rows if r["plan"] == "pro"),
+            "on_platform_key": sum(1 for r in rows if r["on_platform_key"]),
+            "exhausted": sum(1 for r in rows if r["quota_exhausted"]),
+            "input_tokens": sum(r["input_tokens"] for r in rows),
+            "output_tokens": sum(r["output_tokens"] for r in rows),
+            **{label: sum(r["counts"][label] for r in rows) for _, label in _USER_COUNT_TABLES},
+        },
+    }
+
+
+@app.get("/api/admin/users/{user_id}")
+def admin_user_detail(user_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """One account in full: what they uploaded, what they told us, what they
+    generated, and what failed."""
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    counts = {label: _counts_by_user(db, table).get(user_id, 0) for table, label in _USER_COUNT_TABLES}
+    latest = {}
+    for table in ("jobs", "resume_versions", "chat_interactions", "application_events"):
+        ts = _latest_by_user(db, table).get(user_id)
+        if ts and (not latest.get(user_id) or str(ts) > str(latest[user_id])):
+            latest[user_id] = ts
+
+    try:
+        facts = json.loads(
+            (db.query(Settings).filter(Settings.key == ONBOARDING_PROFILE_KEY,
+                                       Settings.user_id == user_id).first() or Settings()).value or "{}"
+        ).get("facts", [])
+    except (ValueError, TypeError):
+        facts = []
+    done_row = db.query(Settings).filter(
+        Settings.key == ONBOARDING_DONE_KEY, Settings.user_id == user_id).first()
+
+    row = _user_row(
+        u, counts, latest, _own_providers(db, user_id),
+        {"done": bool(done_row and done_row.value == "1"), "facts": len(facts)},
+        {"input": billing.FREE_INPUT_TOKENS, "output": billing.FREE_OUTPUT_TOKENS},
+    )
+
+    jobs = db.query(Job).filter(Job.user_id == user_id).order_by(Job.created_at.desc()).limit(25).all()
+    resumes = db.query(ResumeVersion).filter(ResumeVersion.user_id == user_id)\
+        .order_by(ResumeVersion.created_at.desc()).limit(25).all()
+    tasks = db.query(LLMTaskStatus).filter(LLMTaskStatus.user_id == user_id)\
+        .order_by(LLMTaskStatus.updated_at.desc()).limit(25).all()
+    components = db.query(MasterResumeComponent).filter(
+        MasterResumeComponent.user_id == user_id).order_by(MasterResumeComponent.order.asc()).all()
+    events = db.query(ApplicationEvent).filter(ApplicationEvent.user_id == user_id)\
+        .order_by(ApplicationEvent.created_at.desc()).limit(30).all()
+
+    status_mix = {}
+    for j in db.query(Job).filter(Job.user_id == user_id).all():
+        status_mix[j.status or "unknown"] = status_mix.get(j.status or "unknown", 0) + 1
+
+    return {
+        **row,
+        "job_status_mix": status_mix,
+        # Profile facts are the user's own words about themselves, so they are
+        # shown as-is; nothing here exposes credentials.
+        "facts": facts,
+        "documents": [{
+            "id": c.id, "name": c.name, "type": c.type,
+            "chars": len(c.content_text or ""), "active": bool(c.is_active),
+            "filename": c.original_filename,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        } for c in components],
+        "jobs": [{
+            "id": j.id, "company": j.company, "title": j.title, "status": j.status,
+            "match_score": j.match_score,
+            "created_at": j.created_at.isoformat() if j.created_at else None,
+        } for j in jobs],
+        "resumes": [{
+            "id": r.id, "job_id": r.job_id, "version": r.version, "llm_used": r.llm_used,
+            "chars": len(r.content_md or ""),
+            "ats_total": (r.ats_score or {}).get("total") if isinstance(r.ats_score, dict) else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        } for r in resumes],
+        "tasks": [{
+            "id": t.id, "job_id": t.job_id, "task_type": t.task_type, "status": t.status,
+            "error": t.error_message,
+            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        } for t in tasks],
+        "events": [{
+            "id": e.id, "job_id": e.job_id, "type": e.event_type, "title": e.title,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        } for e in events],
+    }
+
+
 _static_dir = Path(__file__).parent / "static"
 if _static_dir.exists():
     app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="frontend")

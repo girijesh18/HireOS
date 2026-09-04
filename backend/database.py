@@ -273,7 +273,14 @@ class User(Base):
     current_period_end = Column(DateTime, nullable=True)
     # Lifetime counter — free generations never reset. Incremented only after a
     # resume is actually written to the DB, so a failed LLM call costs nothing.
+    # ponytail: superseded by the token counters below, kept because dropping a
+    # SQLite column means rebuilding the whole table for no gain.
     free_resumes_used = Column(Integer, default=0, nullable=False)
+    # Lifetime token counters for work run on the platform's key. Input and output
+    # are tracked apart because they are priced an order of magnitude apart — one
+    # combined number would hide where the money actually goes.
+    free_input_tokens_used = Column(Integer, default=0, nullable=False)
+    free_output_tokens_used = Column(Integer, default=0, nullable=False)
 
 
 class StripeEvent(Base):
@@ -425,6 +432,23 @@ def migrate_billing():
         )
 
 
+def migrate_token_quota():
+    """Add the per-user token counters to an existing users table. Idempotent.
+
+    Accounts that predate metering start at zero rather than inheriting their
+    resume count — nobody is charged retroactively for generations they already
+    ran on their own key.
+    """
+    with engine.begin() as conn:
+        if not _table_exists(conn, "users"):
+            return
+        for col in ("free_input_tokens_used", "free_output_tokens_used"):
+            if not _column_exists(conn, "users", col):
+                conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {col} INTEGER DEFAULT 0")
+            # Same reason as migrate_billing: ALTER ... DEFAULT leaves existing rows NULL.
+            conn.exec_driver_sql(f"UPDATE users SET {col} = 0 WHERE {col} IS NULL")
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     migrate_multitenant()
@@ -432,6 +456,7 @@ def init_db():
     migrate_version_names()
     migrate_ats_score()
     migrate_billing()
+    migrate_token_quota()
 
 
 def get_db():

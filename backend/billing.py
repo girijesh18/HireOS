@@ -25,7 +25,16 @@ from database import User
 STRIPE_API = "https://api.stripe.com/v1"
 
 # Free tier: 30 resume generations, lifetime, never resets.
+# ponytail: no longer gates anything — has_token_quota() replaced it. Kept only
+# because plan_snapshot still reports the historical counter.
 FREE_RESUME_LIMIT = int(os.getenv("FREE_RESUME_LIMIT", "30"))
+
+# Free tier, real units: tokens spent on the platform's own API key, lifetime.
+# Sized at roughly 20 tailored resumes end to end (analyse + tailor + critique,
+# measured against real prompts), with ~20% headroom for onboarding and retries.
+# Input and output are separate budgets because output costs ~8x more per token.
+FREE_INPUT_TOKENS = int(os.getenv("FREE_INPUT_TOKENS", "400000"))
+FREE_OUTPUT_TOKENS = int(os.getenv("FREE_OUTPUT_TOKENS", "150000"))
 
 # Escape hatch for the operator's own accounts, so running the product you own
 # doesn't burn a trial allowance. Comma-separated emails, matched lowercase.
@@ -120,6 +129,43 @@ def consume_resume_credit(db: Session, user_id: int) -> None:
     db.commit()
 
 
+def tokens_remaining(user: User) -> Optional[dict]:
+    """Platform-key tokens left on the free tier, or None when unlimited."""
+    if is_pro(user):
+        return None
+    return {
+        "input": max(0, FREE_INPUT_TOKENS - (user.free_input_tokens_used or 0)),
+        "output": max(0, FREE_OUTPUT_TOKENS - (user.free_output_tokens_used or 0)),
+    }
+
+
+def has_token_quota(user: User) -> bool:
+    """False once either budget is spent. Either one alone is enough to stop
+    work — an account out of output tokens cannot finish a resume however much
+    input allowance is left."""
+    if is_pro(user):
+        return True
+    return ((user.free_input_tokens_used or 0) < FREE_INPUT_TOKENS
+            and (user.free_output_tokens_used or 0) < FREE_OUTPUT_TOKENS)
+
+
+def consume_tokens(db: Session, user_id: int, in_tokens: int, out_tokens: int) -> None:
+    """Charge real provider usage against the free allowance.
+
+    Called from the LLM router's usage hook, so it runs on background threads
+    with its own session — never the request's. Pro users are not counted; a
+    user on their own key never reaches here at all.
+    """
+    if in_tokens <= 0 and out_tokens <= 0:
+        return
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or is_pro(user):
+        return
+    user.free_input_tokens_used = (user.free_input_tokens_used or 0) + max(0, in_tokens)
+    user.free_output_tokens_used = (user.free_output_tokens_used or 0) + max(0, out_tokens)
+    db.commit()
+
+
 def plan_snapshot(user: User) -> dict:
     """What the billing UI needs, in one object."""
     return {
@@ -128,6 +174,12 @@ def plan_snapshot(user: User) -> dict:
         "free_limit": FREE_RESUME_LIMIT,
         "free_used": min(user.free_resumes_used or 0, FREE_RESUME_LIMIT),
         "resumes_remaining": resumes_remaining(user),
+        "token_limits": {"input": FREE_INPUT_TOKENS, "output": FREE_OUTPUT_TOKENS},
+        "tokens_used": {
+            "input": user.free_input_tokens_used or 0,
+            "output": user.free_output_tokens_used or 0,
+        },
+        "tokens_remaining": tokens_remaining(user),
         "current_period_end": (
             user.current_period_end.isoformat() if user.current_period_end else None
         ),

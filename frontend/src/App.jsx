@@ -9,6 +9,8 @@ import JobDetail from './views/JobDetail'
 import Settings from './views/Settings'
 import StoryBank from './views/StoryBank'
 import Insights from './views/Insights'
+import Onboarding from './views/Onboarding'
+import Admin from './views/Admin'
 import { usePreferredLlm, setPreferredLlm, getLlmOptions, getPreferredLlm } from './model'
 
 // ── Theme (dark default, persisted) ───────────────────────────────────────────
@@ -239,9 +241,13 @@ const NAV = [
   { id: 'settings', label: 'Settings', icon: <SettingsIcon /> },
 ]
 
+// Admin is appended only for admins. Hiding it is cosmetic -- require_admin on
+// the backend routes is the real control.
+const ADMIN_NAV = { id: 'admin', label: 'Admin', icon: <SettingsIcon /> }
+
 // 'landing' is routable but deliberately absent from NAV: it's the public
 // marketing page, reachable at #/landing whether or not you're signed in.
-const TOP_VIEWS = ['dashboard', 'jobs', 'insights', 'stories', 'settings', 'landing']
+const TOP_VIEWS = ['dashboard', 'jobs', 'insights', 'stories', 'settings', 'landing', 'onboarding', 'admin']
 
 // URL-hash routing so the current view survives a page refresh and works with browser back/forward.
 function parseHash() {
@@ -274,6 +280,12 @@ const SSO_ERROR = (() => {
 
 export default function App() {
   const [user, setUser] = useState(null)
+  const [isAdmin, setIsAdmin] = useState(false)
+  // True when this user has no key of their own, so the model picker would be
+  // offering a choice the backend overrides.
+  const [onPlatformKey, setOnPlatformKey] = useState(false)
+  // null until /api/onboarding/status answers. { done, has_components } after.
+  const [onboarding, setOnboarding] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
   const [view, setView] = useState(() => parseHash().view)
   const [selectedJobId, setSelectedJobId] = useState(() => parseHash().jobId)
@@ -286,12 +298,37 @@ export default function App() {
   // trip skips the landing page and reports the error straight away.
   const [authPane, setAuthPane] = useState(SSO_ERROR ? 'login' : null)
 
+  const applyMe = (data) => {
+    setUser(data.email)
+    setIsAdmin(!!data.is_admin)
+    setOnPlatformKey(!!data.on_platform_key)
+    return data
+  }
+
   useEffect(() => {
     const token = localStorage.getItem('hireos_token')
     if (!token) { setAuthChecked(true); return }
-    api.me().then(data => { setUser(data.email); setAuthChecked(true) })
+    api.me().then(applyMe).then(() => setAuthChecked(true))
        .catch(() => { clearToken(); setAuthChecked(true) })
   }, [])
+
+  // A returning user who never finished onboarding gets sent there once. Not a
+  // gate -- they can leave, and the banner below is what keeps asking.
+  useEffect(() => {
+    if (!user) return
+    api.onboardingStatus()
+      .then(s => {
+        setOnboarding(s)
+        // Redirect from wherever they are, not just from the dashboard: after a
+        // refresh the hash still holds the last screen, and a brand-new account
+        // has nothing to show on it. 'landing' is the public marketing page and
+        // 'onboarding' is already the destination, so both stay put.
+        if (!s.done && !s.has_components) {
+          setView(v => (v === 'landing' || v === 'onboarding' ? v : 'onboarding'))
+        }
+      })
+      .catch(() => setOnboarding({ done: true, has_components: true }))
+  }, [user])
 
   // Keep the URL hash in sync with the current view (so refresh restores it).
   // Skip if the base route already matches — JobDetail owns a sub-segment (#/job/<id>/<tab>)
@@ -313,7 +350,14 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
-  const logout = () => { clearToken(); setUser(null) }
+  const logout = () => {
+    clearToken(); setUser(null); setIsAdmin(false); setOnPlatformKey(false); setOnboarding(null)
+  }
+
+  const finishOnboarding = () => {
+    setOnboarding({ done: true, has_components: true })
+    setView('dashboard')
+  }
 
   // #/landing renders the marketing page for everyone. Without this it's
   // unreachable the moment you have a session, so it can't be previewed or
@@ -333,7 +377,11 @@ export default function App() {
     if (!authPane) return <Landing onGetStarted={() => setAuthPane('signup')} onSignIn={() => setAuthPane('login')} />
     return (
       <Auth
-        onAuth={email => setUser(email)}
+        onAuth={(email, mode) => {
+          setUser(email)
+          api.me().then(applyMe).catch(() => {})
+          if (mode === 'signup') setView('onboarding')
+        }}
         ssoError={authError}
         initialMode={authPane}
         onBack={() => { setAuthError(''); setAuthPane(null) }}
@@ -348,7 +396,10 @@ export default function App() {
     if (result?.job_id) openJob(result.job_id)
   }
 
-  const currentNav = NAV.find(n => n.id === view || (view === 'job-detail' && n.id === 'jobs'))
+  const nav = isAdmin ? [...NAV, ADMIN_NAV] : NAV
+  const currentNav = nav.find(n => n.id === view || (view === 'job-detail' && n.id === 'jobs'))
+    || (view === 'onboarding' ? { label: 'Welcome to HireOS' } : null)
+  const needsProfile = onboarding && !onboarding.done && !onboarding.has_components
 
   return (
     <div id="app-shell">
@@ -365,7 +416,7 @@ export default function App() {
           </span>
         </div>
         <div className="nav-section-label">Navigation</div>
-        {NAV.map(n => (
+        {nav.map(n => (
           <button key={n.id} className={`nav-item ${(view === n.id || (view === 'job-detail' && n.id === 'jobs')) ? 'active' : ''}`}
             onClick={() => { setView(n.id); setSelectedJobId(null); setSidebarOpen(false) }}>
             {n.icon}
@@ -391,7 +442,7 @@ export default function App() {
             {view === 'job-detail' && (
               <button className="btn btn-outline btn-sm" onClick={goBack}>Back</button>
             )}
-            <ModelSelector />
+            {!onPlatformKey && <ModelSelector />}
             <button className="btn btn-outline btn-sm" onClick={() => setShowTrackModal(true)}>
               <PlusIcon /> Track Job
             </button>
@@ -402,6 +453,14 @@ export default function App() {
           </div>
         </header>
         <div className="content scrollbar-thin">
+          {needsProfile && view !== 'onboarding' && (
+            <div className="alert alert-info" style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+              <span>Your resumes will be generic until we know something about you.</span>
+              <button className="btn btn-primary btn-sm" onClick={() => setView('onboarding')}>Set up my profile</button>
+            </div>
+          )}
+          {view === 'onboarding' && <Onboarding onFinish={finishOnboarding} />}
+          {view === 'admin' && isAdmin && <Admin />}
           {view === 'dashboard' && <Dashboard onOpenJob={openJob} key={refreshKey} />}
           {view === 'jobs' && <JobList onOpenJob={openJob} key={refreshKey} />}
           {view === 'insights' && <Insights />}

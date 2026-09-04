@@ -12,6 +12,16 @@ venv/
 
 # DB & output (runtime data)
 backend/swarm.db
+# Scratch DBs the standalone test scripts create next to themselves.
+backend/test_*.db
+backend/tmp_*.db
+# Snapshots taken before a migration -- these hold real user rows and, because
+# provider keys live in the settings table, real credentials.
+backend/swarm.db.bak-*
+# .env backups carry live API keys just like the .env they copy.
+.env.bak-*
+backend/.env.bak-*
+*.env.bak-*
 backend/output/
 output/
 

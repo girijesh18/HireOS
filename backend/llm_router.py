@@ -50,15 +50,38 @@ class LLMRouter:
         "anthropic": "_call_claude",
         "nvidia": "_call_nvidia",
         "minimax": "_call_nvidia",
+        "openai": "_call_openai",
+        "gpt": "_call_openai",
     }
 
-    def __init__(self, keys: Optional[Dict[str, str]] = None, allow_env: bool = True):
+    def __init__(self, keys: Optional[Dict[str, str]] = None, allow_env: bool = True,
+                 on_usage=None):
         # Per-user (BYOK) keys. keys dict uses provider names: gemini, groq, openrouter,
         # together, anthropic, ollama_url, github_token, github_username.
         # allow_env=False enforces strict per-user isolation (no shared server key leakage)
         # for multi-tenant requests; allow_env=True is for server-level / health contexts.
         self._keys = {k: v for k, v in (keys or {}).items() if v}
         self._allow_env = allow_env
+        # Called with (input_tokens, output_tokens) after every completed call.
+        # Set only for routers running on the platform's key -- a user on their
+        # own key is not metered, so there is nothing to charge.
+        self.on_usage = on_usage
+        self._last_usage = None
+
+    def _note_usage(self, in_tokens, out_tokens) -> None:
+        """Stash the provider's own token counts for _complete_one to report."""
+        try:
+            self._last_usage = (int(in_tokens or 0), int(out_tokens or 0))
+        except (TypeError, ValueError):
+            self._last_usage = None
+
+    def _openai_result(self, resp, provider: str) -> str:
+        """Text + usage from an OpenAI-shaped response (groq/openrouter/together/nvidia/openai)."""
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            self._note_usage(getattr(usage, "prompt_tokens", 0),
+                             getattr(usage, "completion_tokens", 0))
+        return _openai_text(resp, provider)
 
     def _key(self, name: str, env: str, default: str = "") -> str:
         if self._keys.get(name):
@@ -105,12 +128,16 @@ class LLMRouter:
     def nvidia_key(self):
         return self._key("nvidia", "NVIDIA_API_KEY")
 
+    @property
+    def openai_key(self):
+        return self._key("openai", "OPENAI_API_KEY")
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     # Quality-ish preference order for graceful fallback. Only providers the user
     # has keys for are tried. Ollama is excluded — it's local and usually offline,
     # so auto-falling to it just adds a slow, confusing failure.
-    FALLBACK_ORDER = ["gemini", "claude", "nvidia", "openrouter", "together", "groq"]
+    FALLBACK_ORDER = ["gemini", "claude", "openai", "nvidia", "openrouter", "together", "groq"]
 
     def _fallback_chain(self, llm: str) -> List[str]:
         """The requested model first, then the user's other providers so a
@@ -186,9 +213,25 @@ class LLMRouter:
         method = getattr(self, method_name)
         logger.info(f"[LLMRouter] → {llm}")
         t0 = time.monotonic()
+        self._last_usage = None
         result = await method(prompt, system=system, model=model, max_tokens=max_tokens, temperature=temperature)
         elapsed = round(time.monotonic() - t0, 2)
-        logger.info(f"[LLMRouter] ← {llm} ({elapsed}s, {len(result)} chars)")
+
+        # Single metering point for every agent in the app. Truncation and
+        # JSON-schema retries come back through here too, which is right --
+        # they cost real money.
+        in_tok, out_tok = self._last_usage or (
+            # ponytail: ~4 chars per token. Only reached when a provider returns
+            # no usage block; it undercounts a little, so it never blocks wrongly.
+            (len(prompt) + len(system or "")) // 4,
+            len(result or "") // 4,
+        )
+        if self.on_usage:
+            try:
+                self.on_usage(in_tok, out_tok)
+            except Exception as e:   # metering must never break a generation
+                logger.warning(f"[LLMRouter] usage hook failed: {e}")
+        logger.info(f"[LLMRouter] ← {llm} ({elapsed}s, {len(result)} chars, {in_tok} in / {out_tok} out tokens)")
         return result
 
     async def compare(
@@ -339,6 +382,11 @@ class LLMRouter:
                 f"Gemini ({model_name}) hit max_tokens ({max_tokens}) before finishing its answer."
             )
 
+        meta = getattr(response, "usage_metadata", None)
+        if meta is not None:
+            self._note_usage(getattr(meta, "prompt_token_count", 0),
+                             getattr(meta, "candidates_token_count", 0))
+
         # Handle blocked/truncated responses gracefully
         try:
             return response.text
@@ -358,7 +406,7 @@ class LLMRouter:
         from groq import AsyncGroq
         client = AsyncGroq(api_key=self.groq_key)
 
-        model_name = "llama-3.3-70b-versatile"
+        model_name = model if model and model != "groq" else "llama-3.3-70b-versatile"
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -368,7 +416,7 @@ class LLMRouter:
             model=model_name, messages=messages,
             max_tokens=max_tokens, temperature=temperature
         )
-        return _openai_text(resp, "groq")
+        return self._openai_result(resp, "groq")
 
     # ── OpenRouter ────────────────────────────────────────────────────────────
 
@@ -378,7 +426,7 @@ class LLMRouter:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=self.openrouter_key, base_url="https://openrouter.ai/api/v1", timeout=90.0, max_retries=1)
 
-        model_name = "meta-llama/llama-3.3-70b-instruct:free"
+        model_name = model if model and model != "openrouter" else "meta-llama/llama-3.3-70b-instruct:free"
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -388,7 +436,7 @@ class LLMRouter:
             model=model_name, messages=messages,
             max_tokens=max_tokens, temperature=temperature
         )
-        return _openai_text(resp, "openrouter")
+        return self._openai_result(resp, "openrouter")
 
     # ── Together AI ───────────────────────────────────────────────────────────
 
@@ -398,7 +446,7 @@ class LLMRouter:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=self.together_key, base_url="https://api.together.xyz/v1", timeout=90.0, max_retries=1)
 
-        model_name = "meta-llama/Llama-3-70b-chat-hf"
+        model_name = model if model and model != "together" else "meta-llama/Llama-3-70b-chat-hf"
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -408,7 +456,7 @@ class LLMRouter:
             model=model_name, messages=messages,
             max_tokens=max_tokens, temperature=temperature
         )
-        return _openai_text(resp, "together")
+        return self._openai_result(resp, "together")
 
     # ── Claude (Anthropic) ───────────────────────────────────────────────────
 
@@ -418,8 +466,13 @@ class LLMRouter:
         from anthropic import AsyncAnthropic
         client = AsyncAnthropic(api_key=self.anthropic_key)
 
-        m = model.lower()
-        if "opus" in m:
+        # An exact id (from the admin model catalogue, e.g. "claude-opus-5") is
+        # used verbatim -- the family match below is only for the bare aliases,
+        # and rewriting a real id to a hardcoded one is how those go stale.
+        m = (model or "").lower()
+        if m.startswith("claude-") and m not in ("claude-opus", "claude-sonnet", "claude-haiku"):
+            model_name = model
+        elif "opus" in m:
             model_name = "claude-opus-4-7"
         elif "haiku" in m:
             model_name = "claude-haiku-4-5-20251001"
@@ -437,7 +490,30 @@ class LLMRouter:
         resp = await client.messages.create(**kwargs)
         if getattr(resp, "stop_reason", None) == "max_tokens":
             raise OutputTruncated(f"Claude ({model_name}) hit max_tokens ({max_tokens}) before finishing.")
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            self._note_usage(getattr(usage, "input_tokens", 0), getattr(usage, "output_tokens", 0))
         return resp.content[0].text
+
+    # ── OpenAI ────────────────────────────────────────────────────────────────
+
+    async def _call_openai(self, prompt: str, system=None, model="openai", max_tokens=4096, temperature=0.7, **_) -> str:
+        if not self.openai_key:
+            raise RuntimeError("OPENAI_API_KEY not configured. Go to Settings -> LLM Providers and paste your OpenAI API key.")
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=self.openai_key, timeout=90.0, max_retries=1)
+
+        model_name = model if model and model not in ("openai", "gpt") else "gpt-4o-mini"
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        resp = await client.chat.completions.create(
+            model=model_name, messages=messages,
+            max_tokens=max_tokens, temperature=temperature
+        )
+        return self._openai_result(resp, "openai")
 
     # ── Ollama (local) ────────────────────────────────────────────────────────
 
@@ -453,7 +529,9 @@ class LLMRouter:
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(f"{base}/api/generate", json=payload)
             resp.raise_for_status()
-            return resp.json()["response"]
+            data = resp.json()
+            self._note_usage(data.get("prompt_eval_count", 0), data.get("eval_count", 0))
+            return data["response"]
 
     # ── NVIDIA / Minimax ───────────────────────────────────────────────────────
 
@@ -461,15 +539,18 @@ class LLMRouter:
         if not self.nvidia_key:
             raise RuntimeError("NVIDIA_API_KEY not configured. Go to Settings -> LLM Providers and paste your NVIDIA API key.")
         from openai import AsyncOpenAI
-        # ponytail: hard 60s cap + no retries so a slow/hung MiniMax response fails
-        # fast instead of blocking the request for the SDK-default 10 minutes.
-        # This is usually the *fallback* leg, reached after the primary already
-        # burned a minute -- 90s x 2 attempts turned a dead call into a 5-minute
-        # spinner. Raise the cap if a legitimate long generation starts timing out.
+        # ponytail: short cap + no retries so a slow/hung response fails fast
+        # instead of blocking the request for the SDK-default 10 minutes. The 60s
+        # default is tuned for the *fallback* leg, reached after the primary
+        # already burned a minute. When NVIDIA is the platform's primary provider
+        # the big calls (document analysis) legitimately run longer than that, so
+        # the cap is tunable -- raise NVIDIA_TIMEOUT_SECONDS rather than editing
+        # this, and keep it well under any upstream request timeout.
+        timeout_s = float(os.getenv("NVIDIA_TIMEOUT_SECONDS", "60"))
         client = AsyncOpenAI(
             api_key=self.nvidia_key,
             base_url="https://integrate.api.nvidia.com/v1",
-            timeout=60.0, max_retries=0,
+            timeout=timeout_s, max_retries=0,
         )
 
         model_name = model if "/" in model else "minimaxai/minimax-m3"
@@ -482,7 +563,7 @@ class LLMRouter:
             model=model_name, messages=messages,
             max_tokens=max_tokens, temperature=temperature
         )
-        return _openai_text(resp, "nvidia")
+        return self._openai_result(resp, "nvidia")
 
     def available_providers(self) -> List[str]:
         """Return list of providers that have credentials configured."""
@@ -491,6 +572,8 @@ class LLMRouter:
             providers.append("gemini")
         if self.anthropic_key:
             providers.append("claude")
+        if self.openai_key:
+            providers.append("openai")
         if self.groq_key:
             providers.append("groq")
         if self.openrouter_key:

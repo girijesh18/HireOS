@@ -64,6 +64,31 @@ Strategic gap analysis to determine if a job is worth applying for.
 
 ---
 
+## 🚪 Onboarding & Access
+
+### 1. Guided First-Run Onboarding
+New accounts land on a two-step setup instead of an empty dashboard.
+* **Step 1 — Upload:** drag-and-drop for resumes and any other relevant files (PDF, **DOCX**, Markdown, HTML, TXT). Copy tells the user that more information produces a better resume.
+* **Step 2 — Conversational Interview:** an LLM reads what was uploaded and writes 5–8 fill-in-the-blank questions covering only what the files did *not* say. Answered one at a time in a chat UI, with a prefix so the user types a phrase rather than a sentence.
+* **Reused Everywhere:** answers are saved as a `Career Context` master-resume component, so every downstream agent — tailoring, critique, cover letters, chat — picks them up automatically.
+* **Skippable:** both steps can be skipped; a dashboard banner keeps asking until a profile exists.
+
+### 2. Free Tier on the Platform's Key
+Users can generate without supplying an API key of their own.
+* **Token Metering:** input and output tokens are counted separately from each provider's own usage numbers, hooked at a single point in the LLM router so every agent is covered.
+* **Budget:** ~20 tailored resumes end to end (400k input / 150k output by default, `FREE_INPUT_TOKENS` / `FREE_OUTPUT_TOKENS`).
+* **Model Lock:** free generations run on the admin-selected model regardless of what the client requests.
+* **Bring Your Own Key:** a user with their own provider key is never metered and never restricted.
+
+### 3. Admin Panel
+* **Live Model Catalogues:** provider model lists are fetched from each vendor's official API (Anthropic `/v1/models`, OpenAI `/v1/models`, Gemini `ListModels`, OpenRouter `/api/v1/models` with prices) rather than a hardcoded table, cached for an hour.
+* **Connectors:** Gemini, Anthropic, OpenAI and OpenRouter, each with a masked key field and a live reachability check. OpenAI is a new first-class provider in the router.
+* **Model Selection:** pick the free tier's provider and model; the id is validated against the live catalogue and the provider must have a working key before it can be activated.
+* **Usage Dashboard:** per-account token spend against the budget, sorted by cost.
+* **Access:** `ADMIN_EMAILS` env allowlist, enforced per route.
+
+---
+
 ## ⚙️ Minor Features & Utilities
 
 ### 1. Global Assistant
@@ -73,7 +98,10 @@ Strategic gap analysis to determine if a job is worth applying for.
 * **Kanban State Alignment:** Categorical tracking of stages manually (Found, Applied, Screening, Interview 1, Offer).
 * **Job Detail View:** A unified central dashboard consolidating all fetched intelligence, generated documents, and timeline events for a single application.
 
-### 3. Settings Configuration
+### 3. Rotating File Logs
+`loguru` writes to `logs/hireos_<date>.log` with 10 MB rotation and 7-day retention (`LOG_DIR`, `LOG_LEVEL`). Variable diagnosis is off so API keys never reach a traceback.
+
+### 4. Settings Configuration
 * **Master Profile:** Ability to load a master resume into the system settings that serves as the baseline ground truth for all downstream AI tasks.
 * **LLM API Configuration:** Manage your keys natively for Gemini, Groq, Together, and OpenRouter.
 

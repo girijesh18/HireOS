@@ -236,4 +236,21 @@ export const api = {
   },
   updateResumeComponent: (id, data) => req('PATCH', `/settings/resume-components/${id}`, data),
   deleteResumeComponent: (id) => req('DELETE', `/settings/resume-components/${id}`),
+
+  // Onboarding
+  onboardingStatus: () => req('GET', '/onboarding/status'),
+  onboardingQuestions: () => req('POST', '/onboarding/questions'),
+  analyzeOnboardingDocs: () => req('POST', '/onboarding/analyze'),
+  saveOnboardingAnswers: (facts) => req('POST', '/onboarding/answers', { facts }),
+  skipOnboarding: () => req('POST', '/onboarding/skip'),
+
+  // Admin
+  adminProviders: () => req('GET', '/admin/providers'),
+  adminModels: (provider, refresh = false) =>
+    req('GET', `/admin/models?provider=${encodeURIComponent(provider)}&refresh=${refresh}`),
+  adminSetPlatformModel: (provider, model) => req('PUT', '/admin/platform-model', { provider, model }),
+  adminSetKey: (provider, key) => req('PUT', '/admin/keys', { provider, key }),
+  adminUsage: () => req('GET', '/admin/usage'),
+  adminUsers: () => req('GET', '/admin/users'),
+  adminUserDetail: (id) => req('GET', `/admin/users/${id}`),
 }

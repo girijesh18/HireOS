@@ -35,7 +35,7 @@ export default function Auth({ onAuth, ssoError, initialMode = 'login', onBack }
     try {
       const res = mode === 'login' ? await api.login(email, password) : await api.signup(email, password)
       setToken(res.token)
-      onAuth(res.email)
+      onAuth(res.email, mode)
     } catch (err) { setError(err.message) }
     setLoading(false)
   }
