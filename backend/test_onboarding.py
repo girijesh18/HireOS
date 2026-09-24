@@ -363,6 +363,83 @@ def test_gemini_parser_drops_models_that_cannot_generate():
     assert [m["id"] for m in models] == ["gemini-2.5-flash"], models
 
 
+def test_model_catalogue_uses_the_users_own_key_then_the_platforms():
+    """The picker must list what the user's own key can reach; only a user
+    without one falls back to the platform's. A masked display value is not a
+    key -- treating it as one lists the wrong catalogue."""
+    db = fresh_db()
+    u = make_user(db, "catalogue@x.com")
+    seen = []
+    original = connectors.list_models
+
+    def fake(provider, key, refresh=False):
+        seen.append(key)
+        return [{"id": "some/model", "label": "Some Model", "extra": "free"}], None
+
+    connectors.list_models = fake
+    try:
+        main.set_platform_setting(db, "platform_key_openrouter", "platform-key")
+        out = main.get_provider_models(provider="openrouter", refresh=False, db=db, current_user=u)
+        assert out["models"][0]["extra"] == "free", "pricing must reach the picker"
+
+        db.add(Settings(key="openrouter_api_key", value="sk-or-mine", user_id=u.id))
+        db.commit()
+        main.get_provider_models(provider="openrouter", refresh=False, db=db, current_user=u)
+
+        db.query(Settings).filter(Settings.user_id == u.id).update({"value": "sk-or\u2022\u2022\u2022\u2022"})
+        db.commit()
+        main.get_provider_models(provider="openrouter", refresh=False, db=db, current_user=u)
+    finally:
+        connectors.list_models = original
+
+    assert seen == ["platform-key", "sk-or-mine", "platform-key"], seen
+
+    try:
+        main.get_provider_models(provider="nope", refresh=False, db=db, current_user=u)
+        assert False, "an unknown provider must be rejected, not fetched"
+    except HTTPException as e:
+        assert e.status_code == 400
+    db.close()
+
+
+def test_openrouter_defaults_come_from_the_live_catalogue():
+    """A hardcoded free id rots: the previous default 404'd for every user on
+    "OpenRouter (Free)" long after OpenRouter retired it."""
+    import llm_router
+
+    catalogue = [
+        {"id": "cohere/north-mini-code:free", "label": "x", "extra": "free"},
+        {"id": "qwen/qwen3.8-27b:free", "label": "x", "extra": "free"},
+        {"id": "meta-llama/llama-4-70b:free", "label": "x", "extra": "free"},
+        {"id": "openai/gpt-5", "label": "x", "extra": "$1.00 in / $2.00 out per M"},
+    ]
+    original = connectors.list_models
+    try:
+        paid = llm_router._OPENROUTER_PAID_FALLBACK
+
+        connectors.list_models = lambda p, k, refresh=False: (catalogue, None)
+        # Preferred family first, then the rest, and a paid id last -- the free
+        # pool 429s often enough that one candidate is not a plan.
+        assert llm_router._openrouter_defaults("k") == [
+            "meta-llama/llama-4-70b:free", "qwen/qwen3.8-27b:free",
+            "cohere/north-mini-code:free", paid,
+        ]
+        assert "openai/gpt-5" not in llm_router._openrouter_defaults("k"), "paid model is not free"
+
+        # No free model, or the catalogue call itself failing, must still leave a
+        # servable id behind rather than a dead one.
+        connectors.list_models = lambda p, k, refresh=False: ([], "openrouter: HTTP 500")
+        assert llm_router._openrouter_defaults("k") == [paid]
+
+        def boom(*a, **k):
+            raise RuntimeError("network down")
+
+        connectors.list_models = boom
+        assert llm_router._openrouter_defaults("k") == [paid]
+    finally:
+        connectors.list_models = original
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

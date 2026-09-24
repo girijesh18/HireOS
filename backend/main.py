@@ -3105,6 +3105,28 @@ def get_providers(db: Session = Depends(get_db), current_user: User = Depends(ge
     return {"available": router.available_providers()}
 
 
+@app.get("/api/llm/models")
+def get_provider_models(
+    provider: str = Query(...),
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Live model catalogue for one provider, so the model picker offers real
+    ids (with OpenRouter's prices) instead of a hand-typed guess. Read with the
+    user's own key, falling back to the platform's -- OpenRouter publishes its
+    catalogue to anyone, so it lists even with no key at all."""
+    if provider not in connectors.PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+    row = db.query(Settings).filter(
+        Settings.user_id == current_user.id,
+        Settings.key == f"{provider}_api_key",
+    ).first()
+    key = row.value if row and row.value and "\u2022" not in row.value else platform_key_for(db, provider)
+    models, error = connectors.list_models(provider, key or "", refresh=refresh)
+    return {"provider": provider, "models": models, "error": error}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CAREER-OPS ENHANCED ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════

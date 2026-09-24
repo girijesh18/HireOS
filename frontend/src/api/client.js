@@ -124,6 +124,7 @@ export const api = {
 
   // LLM Providers
   getProviders: () => req('GET', '/llm/providers'),
+  getProviderModels: (provider, refresh = false) => req('GET', `/llm/models?provider=${provider}&refresh=${refresh}`),
 
   // Agent: Track a job from a URL (AI auto-extracts)
   trackUrl: (url, llm = 'gemini') => req('POST', '/agent/track-url', { url, llm }),

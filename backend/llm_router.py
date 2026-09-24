@@ -37,6 +37,34 @@ def _openai_text(resp, provider: str) -> str:
     return choice.message.content
 
 
+# Preferred families for the bare "openrouter" choice, best first. Which free
+# models OpenRouter serves changes constantly, so the ids are resolved from its
+# live catalogue rather than hardcoded -- this default sat on
+# meta-llama/llama-3.3-70b-instruct:free long after that id stopped existing,
+# so every "OpenRouter (Free)" generation 404'd.
+_OPENROUTER_PREFERRED = ("llama", "qwen", "deepseek", "gemma", "mistral")
+
+# Served, but paid -- a working model beats a free 404.
+_OPENROUTER_PAID_FALLBACK = "meta-llama/llama-3.3-70b-instruct"
+
+
+def _openrouter_defaults(key: str, limit: int = 3) -> List[str]:
+    """Free models OpenRouter actually serves right now, best first, with a paid
+    id last. Several, not one: the free tier is a shared pool that answers 429
+    on any given model most of the day, so a single pick is a coin flip."""
+    ranked = []
+    try:
+        import connectors
+        free = [m["id"] for m in connectors.list_models("openrouter", key or "")[0]
+                if m.get("extra") == "free"]
+        for family in _OPENROUTER_PREFERRED:
+            ranked += [mid for mid in free if family in mid and mid not in ranked]
+        ranked += [mid for mid in free if mid not in ranked]
+    except Exception as e:
+        logger.warning(f"[LLMRouter] openrouter catalogue lookup failed: {e}")
+    return ranked[:limit] + [_OPENROUTER_PAID_FALLBACK]
+
+
 class LLMRouter:
     """Route prompts to any configured LLM provider."""
 
@@ -426,17 +454,27 @@ class LLMRouter:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=self.openrouter_key, base_url="https://openrouter.ai/api/v1", timeout=90.0, max_retries=1)
 
-        model_name = model if model and model != "openrouter" else "meta-llama/llama-3.3-70b-instruct:free"
+        candidates = ([model] if model and model != "openrouter"
+                      else _openrouter_defaults(self.openrouter_key))
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        resp = await client.chat.completions.create(
-            model=model_name, messages=messages,
-            max_tokens=max_tokens, temperature=temperature
-        )
-        return self._openai_result(resp, "openrouter")
+        last_error = None
+        for model_name in candidates:
+            try:
+                resp = await client.chat.completions.create(
+                    model=model_name, messages=messages,
+                    max_tokens=max_tokens, temperature=temperature
+                )
+                return self._openai_result(resp, "openrouter")
+            except OutputTruncated:
+                raise            # a bigger budget is the fix, not another model
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[OpenRouter] {model_name} failed: {e}")
+        raise last_error
 
     # ── Together AI ───────────────────────────────────────────────────────────
 

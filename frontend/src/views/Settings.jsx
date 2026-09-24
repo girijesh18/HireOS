@@ -11,6 +11,10 @@ const LLM_PROVIDERS = [
   { key:'nvidia_api_key', label:'NVIDIA API Key', provider:'NVIDIA (MiniMax-M3)', placeholder:'nvapi-...' },
   { key:'ollama_base_url', label:'Ollama Base URL', provider:'Local Ollama', placeholder:'http://localhost:11434' },
 ]
+// Catalogue entry -> picker label. `extra` is the provider's own note: an
+// OpenRouter price ("free", "$0.20 in / $0.60 out per M") or a context window.
+const modelLabel = (m) => (m.extra ? `${m.label} · ${m.extra}` : m.label)
+
 const GITHUB = [
   { key:'github_token', label:'GitHub Token', placeholder:'ghp_...' },
   { key:'github_username', label:'GitHub Username', placeholder:'your-username' },
@@ -60,9 +64,13 @@ export default function Settings() {
   const [newTextContent, setNewTextContent] = useState('')
   const [isAddingText, setIsAddingText] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
-  const [nvModels, setNvModels] = useState([])   // custom NVIDIA models: {id, label}
+  const [nvModels, setNvModels] = useState([])   // custom models: {id, label, provider}
   const [nvId, setNvId] = useState('')
   const [nvLabel, setNvLabel] = useState('')
+  const [nvProvider, setNvProvider] = useState('nvidia')
+  const [catalog, setCatalog] = useState([])      // live model list for nvProvider
+  const [catalogErr, setCatalogErr] = useState('')
+  const [catalogBusy, setCatalogBusy] = useState(false)
   const [mcpToken, setMcpToken] = useState(null)      // full token, only right after creation
   const [mcpExists, setMcpExists] = useState(false)
   const [mcpBusy, setMcpBusy] = useState(false)
@@ -190,6 +198,17 @@ export default function Settings() {
     }
   }
 
+  // Live catalogue for the selected provider. The backend caches it for an
+  // hour, so switching providers back and forth costs nothing.
+  const loadCatalog = (provider, refresh = false) => {
+    setCatalogBusy(true); setCatalogErr('')
+    api.getProviderModels(provider, refresh)
+      .then(r => { setCatalog(r.models || []); setCatalogErr(r.error || '') })
+      .catch(e => { setCatalog([]); setCatalogErr(e.message) })
+      .finally(() => setCatalogBusy(false))
+  }
+  useEffect(() => { loadCatalog(nvProvider) }, [nvProvider])
+
   const syncNvModels = (list) => {
     const json = JSON.stringify(list)
     setNvModels(list)
@@ -201,11 +220,14 @@ export default function Settings() {
   }
   const addNvModel = () => {
     const id = nvId.trim()
-    if (!id || nvModels.some(m => m.id === id)) { setNvId(''); return }
-    syncNvModels([...nvModels, { id, label: nvLabel.trim() || id }])
+    if (!id || nvModels.some(m => m.id === id && (m.provider || 'nvidia') === nvProvider)) { setNvId(''); return }
+    const hit = catalog.find(m => m.id === id)
+    const label = nvLabel.trim() || (hit ? modelLabel(hit) : id)
+    syncNvModels([...nvModels, { id, label, provider: nvProvider }])
     setNvId(''); setNvLabel('')
   }
-  const removeNvModel = (id) => syncNvModels(nvModels.filter(m => m.id !== id))
+  const removeNvModel = (id, provider) =>
+    syncNvModels(nvModels.filter(m => !(m.id === id && (m.provider || 'nvidia') === provider)))
 
   const Field = ({ f }) => (
     <div className="form-group" key={f.key}>
@@ -493,22 +515,23 @@ export default function Settings() {
 
               <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem' }}>
                 <div>
-                  <h3 style={{ fontSize:'1rem' }}>Custom NVIDIA Models</h3>
+                  <h3 style={{ fontSize:'1rem' }}>Custom Models</h3>
                   <p style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginTop:4 }}>
-                    Add any model id from <strong>build.nvidia.com</strong> (e.g. <code>meta/llama-3.1-405b-instruct</code>).
-                    Uses your NVIDIA API key above. They appear in the model dropdowns; click <strong>Save Settings</strong> to persist.
+                    Add any model id from <strong>build.nvidia.com</strong> (e.g. <code>meta/llama-3.1-405b-instruct</code>)
+                    or <strong>openrouter.ai/models</strong> (e.g. <code>meta-llama/llama-3.3-70b-instruct:free</code>).
+                    Uses the matching API key above. They appear in the model dropdowns; click <strong>Save Settings</strong> to persist.
                   </p>
                 </div>
 
                 {nvModels.length > 0 && (
                   <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
                     {nvModels.map(m => (
-                      <div key={m.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'0.5rem 0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)' }}>
+                      <div key={`${m.provider || 'nvidia'}:${m.id}`} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'0.5rem 0.75rem', background:'var(--surface-2)', borderRadius:'var(--radius-sm)' }}>
                         <div>
                           <div style={{ fontWeight:600, fontSize:'0.85rem' }}>{m.label}</div>
-                          <div style={{ fontSize:'0.72rem', color:'var(--fg-muted)' }}>{m.id}</div>
+                          <div style={{ fontSize:'0.72rem', color:'var(--fg-muted)' }}>{(m.provider || 'nvidia')}:{m.id}</div>
                         </div>
-                        <button className="btn btn-ghost btn-sm" onClick={() => removeNvModel(m.id)}>Remove</button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => removeNvModel(m.id, m.provider || 'nvidia')}>Remove</button>
                       </div>
                     ))}
                   </div>
@@ -516,15 +539,38 @@ export default function Settings() {
 
                 <div className="form-grid">
                   <div className="form-group">
+                    <label className="form-label">Provider</label>
+                    <select value={nvProvider} onChange={e => setNvProvider(e.target.value)}>
+                      <option value="nvidia">NVIDIA</option>
+                      <option value="openrouter">OpenRouter</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
                     <label className="form-label">Model ID</label>
-                    <input value={nvId} onChange={e => setNvId(e.target.value)} placeholder="meta/llama-3.1-405b-instruct" />
+                    {/* ponytail: native <datalist> — the browser does the search over
+                        OpenRouter's 300+ models, and a hand-typed id still works. */}
+                    <input list="model-catalog" value={nvId} onChange={e => setNvId(e.target.value)}
+                      placeholder={nvProvider === 'openrouter' ? 'meta-llama/llama-3.3-70b-instruct:free' : 'meta/llama-3.1-405b-instruct'} />
+                    <datalist id="model-catalog">
+                      {catalog.map(m => <option key={m.id} value={m.id} label={modelLabel(m)} />)}
+                    </datalist>
                   </div>
                   <div className="form-group">
                     <label className="form-label">Display Name (optional)</label>
                     <input value={nvLabel} onChange={e => setNvLabel(e.target.value)} placeholder="Llama 3.1 405B" />
                   </div>
                 </div>
-                <div><button className="btn btn-outline btn-sm" onClick={addNvModel}>+ Add Model</button></div>
+                <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', flexWrap:'wrap' }}>
+                  <button className="btn btn-outline btn-sm" onClick={addNvModel}>+ Add Model</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => loadCatalog(nvProvider, true)} disabled={catalogBusy}>
+                    {catalogBusy ? 'Loading…' : 'Refresh list'}
+                  </button>
+                  <span style={{ fontSize:'0.75rem', color: catalogErr ? 'var(--danger)' : 'var(--fg-muted)' }}>
+                    {catalogErr
+                      ? catalogErr
+                      : catalogBusy ? '' : `${catalog.length} live models — type to search, prices included`}
+                  </span>
+                </div>
               </div>
             </div>
           )}
