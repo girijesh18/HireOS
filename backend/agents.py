@@ -161,6 +161,17 @@ def _guard_truncation(edited: str, original: str) -> str:
     return edited
 
 
+def _loads(s: str):
+    """json.loads that tolerates raw newlines inside strings.
+
+    Models write a job_description as markdown and leave the line breaks
+    literal, which strict JSON forbids. Rejecting that sent a perfectly good
+    answer into the truncation-repair path below, which "succeeded" by
+    returning the first field and dropping the description entirely.
+    """
+    return json.loads(s, strict=False)
+
+
 def _parse_json(text: str) -> Dict:
     """Extract JSON from LLM output, handling markdown fences and malformed output."""
     # Strip markdown code fences
@@ -168,7 +179,7 @@ def _parse_json(text: str) -> Dict:
 
     # Try direct parse first
     try:
-        return json.loads(text)
+        return _loads(text)
     except json.JSONDecodeError:
         pass
 
@@ -180,7 +191,7 @@ def _parse_json(text: str) -> Dict:
         if last_brace > first_brace:
             candidate = text[first_brace:last_brace + 1]
             try:
-                return json.loads(candidate)
+                return _loads(candidate)
             except json.JSONDecodeError:
                 pass
 
@@ -213,7 +224,7 @@ def _parse_json(text: str) -> Dict:
     repaired += '}' * max(0, open_braces)
 
     try:
-        return json.loads(repaired)
+        return _loads(repaired)
     except json.JSONDecodeError:
         pass
 
@@ -227,7 +238,7 @@ def _parse_json(text: str) -> Dict:
         last_try += ']' * max(0, open_brackets)
         last_try += '}' * max(0, open_braces)
         try:
-            return json.loads(last_try)
+            return _loads(last_try)
         except json.JSONDecodeError:
             pass
 
@@ -244,7 +255,7 @@ def _parse_json(text: str) -> Dict:
         last_try += ']' * max(0, open_k)
         last_try += '}' * max(0, open_b)
         try:
-            return json.loads(last_try)
+            return _loads(last_try)
         except json.JSONDecodeError:
             continue
 
