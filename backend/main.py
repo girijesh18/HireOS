@@ -236,7 +236,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_AUTH_EXEMPT = {"/api/health"}
+_AUTH_EXEMPT = {"/api/health", "/api/build"}
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -4083,5 +4083,36 @@ def admin_user_detail(user_id: int, db: Session = Depends(get_db), _: User = Dep
 
 
 _static_dir = Path(__file__).parent / "static"
+
+
+@app.get("/api/build")
+def get_build():
+    """Which frontend bundle this server is actually serving.
+
+    Asset filenames are content-hashed, so this is the one honest answer to
+    "is my change deployed?" -- compare it against the script tag the browser
+    loaded. A stale index.html pins a browser to a bundle that no longer
+    exists here, and nothing in the UI says so.
+    """
+    assets = _static_dir / "assets"
+    return {"bundle": sorted(f.name for f in assets.glob("index-*.js"))} if assets.exists() else {"bundle": []}
+
+
+class _SPAStatic(StaticFiles):
+    """Serve index.html uncached.
+
+    Every other file carries a content hash in its name, so it can be cached
+    forever. index.html cannot -- its name never changes -- and a cached copy
+    keeps pointing browsers (and Cloudflare, for its whole TTL) at the bundle
+    from the previous deploy.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if str(getattr(response, "media_type", "")).startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
+
 if _static_dir.exists():
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="frontend")
+    app.mount("/", _SPAStatic(directory=str(_static_dir), html=True), name="frontend")
