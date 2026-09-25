@@ -15,6 +15,13 @@ const LLM_PROVIDERS = [
 // OpenRouter price ("free", "$0.20 in / $0.60 out per M") or a context window.
 const modelLabel = (m) => (m.extra ? `${m.label} · ${m.extra}` : m.label)
 
+// Free first, then cheapest per input token. Providers that publish no price
+// (NVIDIA, Gemini) all sort equal and fall back to their own order.
+const sortModels = (models) => [...models].sort((a, b) => {
+  const cost = (m) => (m.extra === 'free' ? -1 : (m.price_in ?? Number.MAX_SAFE_INTEGER))
+  return cost(a) - cost(b) || (a.label || a.id).localeCompare(b.label || b.id)
+})
+
 const GITHUB = [
   { key:'github_token', label:'GitHub Token', placeholder:'ghp_...' },
   { key:'github_username', label:'GitHub Username', placeholder:'your-username' },
@@ -66,7 +73,6 @@ export default function Settings() {
   const [isUploading, setIsUploading] = useState(false)
   const [nvModels, setNvModels] = useState([])   // custom models: {id, label, provider}
   const [nvId, setNvId] = useState('')
-  const [nvLabel, setNvLabel] = useState('')
   const [nvProvider, setNvProvider] = useState('nvidia')
   const [catalog, setCatalog] = useState([])      // live model list for nvProvider
   const [catalogErr, setCatalogErr] = useState('')
@@ -203,7 +209,7 @@ export default function Settings() {
   const loadCatalog = (provider, refresh = false) => {
     setCatalogBusy(true); setCatalogErr('')
     api.getProviderModels(provider, refresh)
-      .then(r => { setCatalog(r.models || []); setCatalogErr(r.error || '') })
+      .then(r => { setCatalog(sortModels(r.models || [])); setCatalogErr(r.error || '') })
       .catch(e => { setCatalog([]); setCatalogErr(e.message) })
       .finally(() => setCatalogBusy(false))
   }
@@ -218,14 +224,17 @@ export default function Settings() {
     // (hydration reads this key back from the server on mount).
     api.saveSettings([{ key: 'custom_nvidia_models', value: json }]).catch(() => {})
   }
-  const addNvModel = () => {
-    const id = nvId.trim()
-    if (!id || nvModels.some(m => m.id === id && (m.provider || 'nvidia') === nvProvider)) { setNvId(''); return }
-    const hit = catalog.find(m => m.id === id)
-    const label = nvLabel.trim() || (hit ? modelLabel(hit) : id)
-    syncNvModels([...nvModels, { id, label, provider: nvProvider }])
-    setNvId(''); setNvLabel('')
+  const addModel = (id, label) => {
+    if (!id || nvModels.some(m => m.id === id && (m.provider || 'nvidia') === nvProvider)) return
+    syncNvModels([...nvModels, { id, label: label || id, provider: nvProvider }])
   }
+
+  // Search over both the display name and the id: people paste ids as often as
+  // they type "llama". Capped so a 460-model list stays responsive.
+  const q = nvId.trim().toLowerCase()
+  const visibleCatalog = (q
+    ? catalog.filter(m => m.id.toLowerCase().includes(q) || (m.label || '').toLowerCase().includes(q))
+    : catalog).slice(0, 200)
   const removeNvModel = (id, provider) =>
     syncNvModels(nvModels.filter(m => !(m.id === id && (m.provider || 'nvidia') === provider)))
 
@@ -546,29 +555,56 @@ export default function Settings() {
                     </select>
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Model ID</label>
-                    {/* ponytail: native <datalist> — the browser does the search over
-                        OpenRouter's 300+ models, and a hand-typed id still works. */}
-                    <input list="model-catalog" value={nvId} onChange={e => setNvId(e.target.value)}
-                      placeholder={nvProvider === 'openrouter' ? 'meta-llama/llama-3.3-70b-instruct:free' : 'meta/llama-3.1-405b-instruct'} />
-                    <datalist id="model-catalog">
-                      {catalog.map(m => <option key={m.id} value={m.id} label={modelLabel(m)} />)}
-                    </datalist>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Display Name (optional)</label>
-                    <input value={nvLabel} onChange={e => setNvLabel(e.target.value)} placeholder="Llama 3.1 405B" />
+                    <label className="form-label">Search {catalogBusy ? '' : `(${visibleCatalog.length} of ${catalog.length})`}</label>
+                    <input value={nvId} onChange={e => setNvId(e.target.value)}
+                      placeholder={nvProvider === 'openrouter' ? 'llama, qwen, free…' : 'llama, nemotron…'} />
                   </div>
                 </div>
+
+                {catalogErr && <div style={{ fontSize:'0.8rem', color:'var(--danger)' }}>{catalogErr}</div>}
+
+                {/* The list is the picker: every model the key can reach, with the
+                    provider's own price, one click to add. A <datalist> hid all of
+                    this behind an autocomplete nobody could see. */}
+                <div style={{ maxHeight:280, overflowY:'auto', border:'1px solid var(--border)', borderRadius:'var(--radius-sm)' }}>
+                  {catalogBusy && <div style={{ padding:'0.75rem', fontSize:'0.8rem', color:'var(--fg-muted)' }}>Loading models…</div>}
+                  {!catalogBusy && visibleCatalog.length === 0 && (
+                    <div style={{ padding:'0.75rem', fontSize:'0.8rem', color:'var(--fg-muted)' }}>
+                      No model matches “{nvId}”.
+                    </div>
+                  )}
+                  {visibleCatalog.map(m => {
+                    const added = nvModels.some(x => x.id === m.id && (x.provider || 'nvidia') === nvProvider)
+                    return (
+                      <div key={m.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'0.75rem', padding:'0.5rem 0.75rem', borderBottom:'1px solid var(--border)' }}>
+                        <div style={{ minWidth:0 }}>
+                          <div style={{ fontSize:'0.85rem', fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{m.label}</div>
+                          <div style={{ fontSize:'0.72rem', color:'var(--fg-muted)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{m.id}</div>
+                        </div>
+                        <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', flexShrink:0 }}>
+                          <span style={{ fontSize:'0.72rem', color: m.extra === 'free' ? 'var(--success, #3fb950)' : 'var(--fg-muted)', whiteSpace:'nowrap' }}>
+                            {m.extra || '—'}
+                          </span>
+                          <button className="btn btn-outline btn-sm" disabled={added} onClick={() => addModel(m.id, modelLabel(m))}>
+                            {added ? 'Added' : 'Add'}
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
                 <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', flexWrap:'wrap' }}>
-                  <button className="btn btn-outline btn-sm" onClick={addNvModel}>+ Add Model</button>
                   <button className="btn btn-ghost btn-sm" onClick={() => loadCatalog(nvProvider, true)} disabled={catalogBusy}>
                     {catalogBusy ? 'Loading…' : 'Refresh list'}
                   </button>
-                  <span style={{ fontSize:'0.75rem', color: catalogErr ? 'var(--danger)' : 'var(--fg-muted)' }}>
-                    {catalogErr
-                      ? catalogErr
-                      : catalogBusy ? '' : `${catalog.length} live models — type to search, prices included`}
+                  {nvId.trim() && !catalog.some(m => m.id === nvId.trim()) && (
+                    <button className="btn btn-outline btn-sm" onClick={() => addModel(nvId.trim(), nvId.trim())}>
+                      + Add “{nvId.trim()}” as a custom id
+                    </button>
+                  )}
+                  <span style={{ fontSize:'0.75rem', color:'var(--fg-muted)' }}>
+                    Free models first, then cheapest. Click <strong>Save Changes</strong> to persist.
                   </span>
                 </div>
               </div>

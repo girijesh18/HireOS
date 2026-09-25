@@ -173,7 +173,9 @@ def _fetch_openrouter(key: str):
             extra = f"${pin:.2f}/M in"
         else:
             extra = None
-        out.append({"id": mid, "label": m.get("name") or mid, "extra": extra})
+        # Numbers alongside the display string so a picker can sort by price.
+        out.append({"id": mid, "label": m.get("name") or mid, "extra": extra,
+                    "price_in": pin, "price_out": pout})
     return sorted(out, key=lambda m: m["id"])
 
 
