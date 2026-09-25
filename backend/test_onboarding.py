@@ -440,6 +440,34 @@ def test_openrouter_defaults_come_from_the_live_catalogue():
         connectors.list_models = original
 
 
+def test_router_models_are_not_priced_as_free():
+    """OpenRouter quotes -1 for models whose price depends on where the request
+    is routed. Multiplied out that is -$1,000,000/M, which sorted the routers to
+    the top of the picker as the cheapest thing on offer."""
+    payload = {"data": [
+        {"id": "openrouter/auto", "name": "Auto Router",
+         "pricing": {"prompt": "-1", "completion": "-1"}},
+        {"id": "x/cheap", "name": "Cheap", "pricing": {"prompt": "0", "completion": "0"}},
+    ]}
+
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self): return payload
+
+    original = connectors.httpx.get
+    connectors.httpx.get = lambda *a, **k: FakeResp()
+    try:
+        models, error = connectors.list_models("openrouter", "key", refresh=True)
+    finally:
+        connectors.httpx.get = original
+
+    assert error is None
+    by_id = {m["id"]: m for m in models}
+    assert by_id["openrouter/auto"]["price_in"] is None, by_id["openrouter/auto"]
+    assert by_id["openrouter/auto"]["extra"] is None, "unknown price must not render as a number"
+    assert by_id["x/cheap"]["extra"] == "free", "a real zero price is still free"
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

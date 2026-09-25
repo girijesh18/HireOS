@@ -141,11 +141,17 @@ def _fetch_openai(key: str):
 
 
 def _price_per_million(raw) -> Optional[float]:
-    """OpenRouter quotes dollars per single token, so the useful number is 1e6x."""
+    """OpenRouter quotes dollars per single token, so the useful number is 1e6x.
+
+    Router models (openrouter/auto and friends) quote -1: the price depends on
+    whichever model the router picks. That is unknown, not cheap -- reported as
+    a price it sorted to the top of the picker as "$-1000000.00 per M".
+    """
     try:
-        return float(raw) * 1_000_000
+        price = float(raw) * 1_000_000
     except (TypeError, ValueError):
         return None
+    return price if price >= 0 else None
 
 
 def _fetch_openrouter(key: str):
