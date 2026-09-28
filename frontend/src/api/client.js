@@ -181,8 +181,8 @@ export const api = {
   exportCSV: () => downloadBlob(`${BASE}/export/csv`, 'job_applications.csv'),
 
   // File Download (token-authenticated blob download)
-  downloadFile: (jobId, filename) =>
-    downloadBlob(`${BASE}/download/${jobId}/${filename}`, filename),
+  downloadFile: (jobId, filename, saveAs) =>
+    downloadBlob(`${BASE}/download/${jobId}/${filename}`, saveAs || filename),
 
   // ── Career-Ops Enhanced Agent Endpoints ──────────────────────────────────
 

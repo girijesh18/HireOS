@@ -248,9 +248,8 @@ def _resume_md_to_html(md_text: str, style: dict = None) -> str:
     color: #000;
   }}
   .rdate {{
-    font-size: {fsize_sm};
-    color: #333;
-    font-style: italic;
+    font-size: {fsize};
+    color: #111;
     white-space: nowrap;
     margin-left: 8px;
     flex-shrink: 0;
@@ -264,7 +263,6 @@ def _resume_md_to_html(md_text: str, style: dict = None) -> str:
   }}
   .rsubrole {{
     font-weight: 700;
-    font-style: italic;
     font-size: {fsize};
     color: #222;
   }}
@@ -280,9 +278,17 @@ def _resume_md_to_html(md_text: str, style: dict = None) -> str:
     margin-bottom: 2px;
     font-size: {fsize_li};
   }}
+  /* Links stay clickable in the PDF but inherit surrounding colour — default
+     UA blue-underline looks wrong on a resume. */
+  a {{ color: inherit; text-decoration: none; }}
   strong {{ font-weight: 700; }}
   em {{ font-style: italic; }}
   hr {{ border: none; border-top: 0.75px solid #ccc; margin: 6px 0; }}
+  /* Keep a heading with the content it introduces — a company or section header
+     stranded alone at the foot of a page reads as a formatting error. */
+  .rsection, .rcompany-row, .rsubrole-row {{ break-after: avoid; page-break-after: avoid; }}
+  .rcompany-row, .rsubrole-row, li {{ break-inside: avoid; page-break-inside: avoid; }}
+  p, li {{ orphans: 2; widows: 2; }}
   @page {{ margin: {m_top}cm {m_right}cm {m_bottom}cm {m_left}cm; size: letter; }}
 </style>
 </head>
@@ -306,7 +312,9 @@ def _md_to_html(md_text: str) -> str:
     color: #111;
     max-width: 760px;
     margin: 0 auto;
-    padding: 2cm;
+    /* @page already supplies the print margin — padding here stacked on top of it
+       and pushed a one-page letter onto two. */
+    padding: 0;
   }}
   h1 {{ font-size: 18pt; margin-bottom: 6px; }}
   h2 {{ font-size: 13pt; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-top: 18px; }}
@@ -317,7 +325,8 @@ def _md_to_html(md_text: str) -> str:
   hr {{ border: none; border-top: 1px solid #ddd; margin: 14px 0; }}
   strong {{ font-weight: 700; }}
   em {{ font-style: italic; }}
-  @page {{ margin: 1.5cm; }}
+  a {{ color: inherit; text-decoration: none; }}
+  @page {{ margin: 2cm; }}
 </style>
 </head>
 <body>{body}</body>

@@ -10,6 +10,15 @@ const JOB_TABS = ['dashboard', 'intelligence', 'documents']
 // Persist the active tab in the URL hash (#/job/<id>/<tab-slug>) so refresh keeps the tab.
 const tabToSlug = (t) => t.replace(/ /g, '-')
 const slugToTab = (s) => s.replace(/-/g, ' ')
+// "Girijesh_Singh_OpenText_Senior AI Developer.pdf" — candidate name from the resume's "# Name" line,
+// job title minus any parenthetical qualifier.
+function resumeFileName(r, job, ext) {
+  const name = (r.content_md || '').match(/^#\s+(.+)$/m)?.[1]?.trim().replace(/\s+/g, '_')
+  const title = (job.title || '').replace(/\s*\(.*?\)\s*/g, ' ').trim()
+  const base = [name, job.company, title].filter(Boolean).join('_').replace(/[\/\\:*?"<>|]/g, '-')
+  return base ? `${base}.${ext}` : `resume_v${r.version}.${ext}`
+}
+
 function tabFromHash() {
   const parts = window.location.hash.replace(/^#\/?/, '').split('/')
   if (parts[0] === 'job' && parts[2]) {
@@ -1153,8 +1162,8 @@ export default function JobDetail({ jobId }) {
                     )}
                     {r.content_md && <button className="btn btn-primary btn-sm" onClick={() => setEditingResume(r)}>Edit</button>}
                     {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => runAts(r)} disabled={atsLoading[r.id]}>{atsLoading[r.id] ? <><Spinner small /> ATS…</> : (r.ats_score ? 'Re-run ATS' : 'Run ATS')}</button>}
-                    {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.pdf`)}>PDF</button>}
-                    {r.docx_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.docx`)}>DOCX</button>}
+                    {r.pdf_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.pdf`, resumeFileName(r, job, 'pdf'))}>PDF</button>}
+                    {r.docx_path && <button className="btn btn-outline btn-sm" onClick={() => api.downloadFile(job.id, `resume_v${r.version}.docx`, resumeFileName(r, job, 'docx'))}>DOCX</button>}
                   </div>
                 </div>
               ))}

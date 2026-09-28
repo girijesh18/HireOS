@@ -38,7 +38,12 @@ export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, on
   }, []);
 
   // Mirror doc_generator._resume_md_to_html defaults.
-  const fontFamily = pdfStyle.fontFamily || 'Cambria, Georgia, serif';
+  // Same fallback chain as backend doc_generator, so preview and PDF pick the same face
+  const fontFamily = [
+    ...(pdfStyle.fontFamily || 'Cambria, Georgia').split(',').map(f => f.trim())
+      .filter(f => f && !['serif', 'sans-serif', 'monospace'].includes(f.toLowerCase())),
+    '"Liberation Serif"', '"DejaVu Serif"', 'serif',
+  ].join(', ');
   const fs = parseFloat(pdfStyle.fontSize || '10.5');          // base pt
   const sectionColor = pdfStyle.sectionColor || '#2E74B5';
   const pt = n => `${n}pt`;
@@ -161,8 +166,8 @@ export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, on
           }}>
             <ReactMarkdown
               components={{
-                h1: ({node, ...props}) => <h1 style={{ textAlign: 'center', fontSize: pt(fs + 10), margin: '0 0 4px 0', fontWeight: 700, color: '#000' }} {...props} />,
-                h2: ({node, ...props}) => <h2 style={{ fontSize: pt(fs), fontWeight: 700, color: sectionColor, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1.5px solid ${sectionColor}`, paddingBottom: 2, margin: '12px 0 5px 0' }} {...props} />,
+                h1: ({node, ...props}) => <h1 style={{ fontFamily: 'inherit', letterSpacing: 'normal', textAlign: 'center', fontSize: pt(fs + 10), margin: '0 0 4px 0', fontWeight: 700, color: '#000' }} {...props} />,
+                h2: ({node, ...props}) => <h2 style={{ fontFamily: 'inherit', fontSize: pt(fs), fontWeight: 700, color: sectionColor, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1.5px solid ${sectionColor}`, paddingBottom: 2, margin: '12px 0 5px 0' }} {...props} />,
                 h3: ({node, ...props}) => {
                   const txt = props.children?.toString() || '';
                   if (txt.includes('||')) {
@@ -170,13 +175,25 @@ export default function ResumeEditor({ jobId, resumeId, initialMarkdown, llm, on
                     return (
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: '7px', marginBottom: '1px' }}>
                         <span style={{ fontSize: pt(fs), color: '#000', fontWeight: 700 }}>{left.trim()}</span>
-                        <span style={{ fontSize: pt(fs - 1), color: '#333', fontStyle: 'italic' }}>{right.trim()}</span>
+                        <span style={{ fontSize: pt(fs), color: '#111' }}>{right.trim()}</span>
                       </div>
                     );
                   }
-                  return <h3 style={{ fontSize: pt(fs), marginTop: '7px', marginBottom: '1px', color: '#000', fontWeight: 700 }} {...props} />;
+                  return <h3 style={{ fontFamily: 'inherit', letterSpacing: 'normal', fontSize: pt(fs), marginTop: '7px', marginBottom: '1px', color: '#000', fontWeight: 700 }} {...props} />;
                 },
                 p: ({node, ...props}) => {
+                  // Sub-role row: "**Title** || date" — mirrors the PDF's rsubrole-row
+                  const kids = React.Children.toArray(props.children);
+                  const tail = kids[kids.length - 1];
+                  if (kids.length > 1 && typeof tail === 'string' && tail.includes('||')) {
+                    const [before, date] = tail.split('||');
+                    return (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: '2px', marginBottom: '1px' }}>
+                        <span style={{ fontSize: pt(fs), color: '#222', fontWeight: 700 }}>{kids.slice(0, -1)}{before}</span>
+                        <span style={{ fontSize: pt(fs), color: '#111' }}>{date.trim()}</span>
+                      </div>
+                    );
+                  }
                   const txt = props.children?.toString() || '';
                   if (txt.includes(' | ')) {
                     return <p style={{ textAlign: 'center', fontSize: pt(fs - 1), margin: '0 0 10px 0', color: '#444' }} {...props} />;
