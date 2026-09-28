@@ -33,6 +33,7 @@ from database import (
     LLMTaskStatus, ResearchReport, LinkedInOutreachReport, InterviewPrepReport,
 )
 import billing
+from async_bus import AsyncBusMiddleware
 from schemas import (
     JobCreate, JobUpdate, JobOut,
     EventCreate, EventOut,
@@ -228,6 +229,8 @@ def require_resume_quota(user: User):
 
 app = FastAPI(title="HireOS API", version="2.0.0")
 
+# Innermost of the two so CORS headers also land on its 202s and poll replies.
+app.add_middleware(AsyncBusMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

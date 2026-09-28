@@ -9,11 +9,21 @@ async function req(method, path, body, isFormData = false) {
   const token = getToken()
   const headers = isFormData ? {} : { 'Content-Type': 'application/json' }
   if (token) headers['Authorization'] = `Bearer ${token}`
-  const res = await fetch(`${BASE}${path}`, {
+  // Requests still running after ~20s come back as 202 + X-Async-Id, and we
+  // poll for the real response -- keeps long LLM calls clear of Cloudflare's
+  // 100s timeout (524). See backend/async_bus.py.
+  headers['X-Async'] = '1'
+  let res = await fetch(`${BASE}${path}`, {
     method,
     headers,
     body: isFormData ? body : (body !== undefined ? JSON.stringify(body) : undefined),
   })
+  while (res.status === 202 && res.headers.get('X-Async-Id')) {
+    await new Promise(r => setTimeout(r, 2000))
+    res = await fetch(`${BASE}/async/${res.headers.get('X-Async-Id')}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
     // Attach the status so callers can branch on it -- 402 means "out of free
