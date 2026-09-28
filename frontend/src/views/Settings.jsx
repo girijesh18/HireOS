@@ -407,8 +407,20 @@ export default function Settings() {
                     placeholder={`Example:\n- Section order: Summary → Experience → Technical Expertise → Education → Leadership\n- Bullet points start with strong action verbs\n- Keep to 1 page maximum\n- Dates format: Month YYYY – Month YYYY\n- Quantify every achievement with real metrics`}
                     style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.82rem' }}
                   />
+                  <label className="form-label" style={{ marginTop: '1rem' }}>Never-use words</label>
+                  <input
+                    value={values.resume_banned_words || ''}
+                    onChange={e => setValues(v => ({ ...v, resume_banned_words: e.target.value }))}
+                    placeholder="guarantee, catastrophic, crisis"
+                    style={{ width: '100%' }}
+                  />
+                  <p style={{ fontSize: '0.78rem', color: 'var(--fg-muted)', marginTop: '0.35rem' }}>
+                    Comma-separated. Checked in code on every generated bullet and summary — a match is rewritten or dropped, never shipped.
+                  </p>
                 </div>
               </div>
+
+              <ResumeProfilePanel />
 
               {/* PDF Layout */}
               <div className="panel" style={{ padding: '1.5rem' }}>
@@ -677,6 +689,56 @@ export default function Settings() {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+
+// The parsed master resume. Generation takes every company, title, date and
+// section from here and only lets the model pick and reword bullets -- so a
+// wrong fact is fixed once, here, not in every generated resume.
+function ResumeProfilePanel() {
+  const [text, setText] = useState('')
+  const [status, setStatus] = useState('')
+  const [open, setOpen] = useState(false)
+
+  const load = (p) => { setText(JSON.stringify(p, null, 2)); setStatus('') }
+  useEffect(() => {
+    if (open) api.getResumeProfile().then(load).catch(e => setStatus(e.message))
+  }, [open])
+
+  const save = async () => {
+    try { load(await api.saveResumeProfile(JSON.parse(text))); setStatus('Saved') }
+    catch (e) { setStatus(e.message) }
+  }
+  const reset = async () => {
+    try { load(await api.resetResumeProfile()); setStatus('Re-read from your files') }
+    catch (e) { setStatus(e.message) }
+  }
+
+  return (
+    <div className="panel" style={{ padding: '1.5rem' }}>
+      <div className="flex justify-between" style={{ alignItems: 'center' }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: '0.25rem' }}>Resume Facts</div>
+          <p style={{ fontSize: '0.82rem', color: 'var(--fg-muted)' }}>
+            What HireOS read from your resume: companies, titles, dates, bullets, sections. Every generated
+            resume copies these exactly. Fix anything wrong here once.
+          </p>
+        </div>
+        <button className="btn btn-outline btn-sm" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Review'}</button>
+      </div>
+      {open && (
+        <>
+          <textarea rows={18} value={text} onChange={e => setText(e.target.value)}
+            style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.78rem', marginTop: '1rem' }} />
+          <div className="flex justify-end gap-sm" style={{ marginTop: '0.75rem', alignItems: 'center' }}>
+            {status && <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)', marginRight: 'auto' }}>{status}</span>}
+            <button className="btn btn-outline btn-sm" onClick={reset}>Re-read from files</button>
+            <button className="btn btn-primary btn-sm" onClick={save}>Save facts</button>
+          </div>
+        </>
+      )}
     </div>
   )
 }

@@ -121,6 +121,10 @@ export const api = {
   // Settings
   getSettings: () => req('GET', '/settings'),
   saveSettings: (settings) => req('POST', '/settings', { settings }),
+  // Parsed master resume that every generation builds on (facts + layout)
+  getResumeProfile: () => req('GET', '/settings/resume-profile'),
+  saveResumeProfile: (profile) => req('PUT', '/settings/resume-profile', profile),
+  resetResumeProfile: () => req('DELETE', '/settings/resume-profile'),
 
   // MCP access token (shown once at creation — only its id is stored)
   // Billing

@@ -34,6 +34,7 @@ from database import (
 )
 import billing
 from async_bus import AsyncBusMiddleware
+import resume_profile
 from schemas import (
     JobCreate, JobUpdate, JobOut,
     EventCreate, EventOut,
@@ -999,18 +1000,18 @@ def excluded_component_names(db: Session, user_id: int) -> List[str]:
     return [c.name for c in active if c.id not in used]
 
 
+def _component_markdown(c) -> str:
+    raw = c.content_text or ""
+    is_html = bool(re.search(r'<(?:h[1-6]|div|ul|li|p)\b', raw, re.IGNORECASE))
+    return _html_resume_to_markdown(raw) if is_html else raw
+
+
 def get_master_resume(db: Session, user_id: int) -> str:
     """Load a user's master resume — joins resume-content components as structured markdown."""
     components = _resume_components(db, user_id)
 
     if components:
-        parts = []
-        for c in components:
-            raw = c.content_text or ""
-            is_html = bool(re.search(r'<(?:h[1-6]|div|ul|li|p)\b', raw, re.IGNORECASE))
-            text = _html_resume_to_markdown(raw) if is_html else raw
-            parts.append(text)
-        result = "\n\n".join(parts)
+        result = "\n\n".join(_component_markdown(c) for c in components)
         logger.info(f"[MasterResume] {len(components)} resume component(s), {len(result)} chars")
         return result
 
@@ -1025,9 +1026,78 @@ def get_raw_resume_content(db: Session, user_id: int) -> str:
     """Return raw (un-processed) resume-component content for contact info extraction."""
     components = _resume_components(db, user_id)
     if components:
+        # extract_contact_info reads the name off the first lines, so the actual
+        # resume must lead -- a whitepaper first put its title in the header.
+        main, _ = resume_profile.pick_sources([_component_markdown(c) for c in components])
+        if main:
+            components = [components[main]] + components[:main] + components[main + 1:]
         return "\n".join(c.content_text or "" for c in components)
     row = db.query(Settings).filter(Settings.key == "master_resume", Settings.user_id == user_id).first()
     return row.value if row and row.value else ""
+
+
+RESUME_PROFILE_KEY = "resume_profile"
+
+
+def load_resume_profile(db: Session, user_id: int) -> Optional[resume_profile.Profile]:
+    """The user's parsed resume. Reuses the saved one (which may carry the user's
+    corrections) while the source components are unchanged; re-parses otherwise.
+    None when no component has a readable experience section."""
+    texts = [_component_markdown(c) for c in _resume_components(db, user_id)]
+    if not texts:
+        return None
+    current = resume_profile.source_hash(texts)
+    row = db.query(Settings).filter(Settings.key == RESUME_PROFILE_KEY, Settings.user_id == user_id).first()
+    if row and row.value:
+        try:
+            saved = resume_profile.Profile.model_validate_json(row.value)
+            if saved.source_hash == current:
+                return saved
+        except Exception as e:
+            logger.warning(f"[ResumeProfile] saved profile unreadable, re-parsing: {e}")
+    profile = resume_profile.build_profile(texts)
+    if profile is None:
+        return None
+    if row:
+        row.value = profile.model_dump_json()
+    else:
+        db.add(Settings(key=RESUME_PROFILE_KEY, value=profile.model_dump_json(), user_id=user_id))
+    db.commit()
+    return profile
+
+
+@app.get("/api/settings/resume-profile")
+def get_resume_profile(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """The parsed master resume every generation builds on -- facts, order, layout."""
+    profile = load_resume_profile(db, current_user.id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No resume with an experience section found in your components.")
+    return profile.model_dump()
+
+
+@app.put("/api/settings/resume-profile")
+def put_resume_profile(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Save user corrections. Kept until the resume components change."""
+    texts = [_component_markdown(c) for c in _resume_components(db, current_user.id)]
+    try:
+        profile = resume_profile.Profile.model_validate({**payload, "source_hash": resume_profile.source_hash(texts)})
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid profile: {e}")
+    row = db.query(Settings).filter(Settings.key == RESUME_PROFILE_KEY, Settings.user_id == current_user.id).first()
+    if row:
+        row.value = profile.model_dump_json()
+    else:
+        db.add(Settings(key=RESUME_PROFILE_KEY, value=profile.model_dump_json(), user_id=current_user.id))
+    db.commit()
+    return profile.model_dump()
+
+
+@app.delete("/api/settings/resume-profile")
+def reset_resume_profile(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Drop corrections and re-parse from the components."""
+    db.query(Settings).filter(Settings.key == RESUME_PROFILE_KEY, Settings.user_id == current_user.id).delete()
+    db.commit()
+    return get_resume_profile(db, current_user)
 
 
 @app.on_event("startup")
@@ -1388,7 +1458,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     rows = db.query(Settings).filter(Settings.user_id == current_user.id).all()
     # Skip internal caches (e.g. the insights narrative blob) — not user settings.
-    result = {r.key: r.value for r in rows if r.key != _INSIGHTS_CACHE_KEY}
+    result = {r.key: r.value for r in rows if r.key not in (_INSIGHTS_CACHE_KEY, RESUME_PROFILE_KEY)}
     # Mask secrets in response
     for k in result:
         if any(s in k for s in ["key", "token", "secret", "password"]):
@@ -2394,13 +2464,8 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
                        + ", ".join(excluded),
                        source="agent", user_id=user_id)
 
-        # ── Step 3: Optional GitHub context (per-user keys) ──
+        # ── Step 3: Resume agent (its router carries the user's keys) ──
         agent_resume = get_agent("resume", db, user_id)
-        gh_token = agent_resume.router.github_token
-        gh_user  = agent_resume.router.github_username
-        github_ctx = ""
-        if gh_token and gh_user:
-            github_ctx = await agent_resume.fetch_github_context(gh_user, gh_token)
 
         # ── Step 4: Load user style guide and PDF style ──
         style_row = db.query(Settings).filter(Settings.key == "resume_style_guide", Settings.user_id == user_id).first()
@@ -2414,28 +2479,45 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
             except Exception:
                 pass
 
-        # ── Step 5: Single focused tailor call ──
-        resume_md = await agent_resume.tailor(
-            job_description=job.job_description or "",
-            master_resume=master_resume,
-            contact_facts=contact_facts,
-            company=job.company,
-            title=job.title,
-            gaps=job.gaps or [],
-            action_items=job.action_items or [],
-            github_context=github_ctx,
-            feedback=feedback,
-            design_rules=design_rules,
-            llm=llm,
-        )
+        banned_row = db.query(Settings).filter(Settings.key == "resume_banned_words", Settings.user_id == user_id).first()
+        banned = [w.strip() for w in re.split(r'[,\n]', banned_row.value or "")] if banned_row else []
 
-        # ── Step 6: Enforce header correctness post-LLM ──
-        resume_md = agent_resume.enforce_header(resume_md, contact_facts)
-
-        # ── Step 7: Style-guide enforcement pass (only if user provided rules) ──
-        if design_rules.strip():
-            resume_md = await agent_resume.validate_design(resume_md, design_rules, llm=llm)
+        # ── Step 5: Tailor. Structured path: facts and layout from the parsed
+        # profile, the LLM only picks/rewords -- consistent on any model. The
+        # free-form path is the fallback for resumes the parser can't read.
+        profile = load_resume_profile(db, user_id)
+        if profile is not None:
+            resume_md = await resume_profile.tailor(
+                agent_resume.router, profile, job.job_description or "",
+                company=job.company, title=job.title, feedback=feedback,
+                style_notes=design_rules, banned=banned, llm=llm,
+            )
+        else:
+            logger.warning(f"[Resume] no parseable resume profile for user {user_id}; free-form generation")
+            gh_token = agent_resume.router.github_token
+            gh_user  = agent_resume.router.github_username
+            github_ctx = ""
+            if gh_token and gh_user:
+                github_ctx = await agent_resume.fetch_github_context(gh_user, gh_token)
+            resume_md = await agent_resume.tailor(
+                job_description=job.job_description or "",
+                master_resume=master_resume,
+                contact_facts=contact_facts,
+                company=job.company,
+                title=job.title,
+                gaps=job.gaps or [],
+                action_items=job.action_items or [],
+                github_context=github_ctx,
+                feedback=feedback,
+                design_rules=design_rules,
+                llm=llm,
+            )
+            # Step 6: enforce header correctness post-LLM
             resume_md = agent_resume.enforce_header(resume_md, contact_facts)
+            # Step 7: style-guide enforcement pass (only if user provided rules)
+            if design_rules.strip():
+                resume_md = await agent_resume.validate_design(resume_md, design_rules, llm=llm)
+                resume_md = agent_resume.enforce_header(resume_md, contact_facts)
 
         # ── Step 8: Save ──
         version = db.query(func.count(ResumeVersion.id)).filter(ResumeVersion.job_id == job_id).scalar() + 1

@@ -37,6 +37,19 @@ def _openai_text(resp, provider: str) -> str:
     return choice.message.content
 
 
+def _json_object(text: str) -> Any:
+    """Parse the JSON object in a model reply. Open models wrap it in fences,
+    preambles or trailing notes; take the outermost {...}."""
+    text = (text or "").strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            raise
+        return json.loads(text[start:end + 1])
+
+
 # Preferred families for the bare "openrouter" choice, best first. Which free
 # models OpenRouter serves changes constantly, so the ids are resolved from its
 # live catalogue rather than hardcoded -- this default sat on
@@ -110,6 +123,24 @@ class LLMRouter:
             self._note_usage(getattr(usage, "prompt_tokens", 0),
                              getattr(usage, "completion_tokens", 0))
         return _openai_text(resp, provider)
+
+    async def _chat(self, client, provider: str, json_schema: Optional[dict], **kwargs) -> str:
+        """OpenAI-shaped chat call. With a schema, ask the server to constrain decoding
+        to it (response_format json_schema -- OpenAI, OpenRouter, Groq, Together and
+        NVIDIA NIM all accept it). A server/model that rejects the parameter gets
+        the plain call; structured_complete's prompt + validation covers it."""
+        if json_schema:
+            from openai import BadRequestError, UnprocessableEntityError
+            try:
+                resp = await client.chat.completions.create(
+                    response_format={"type": "json_schema",
+                                     "json_schema": {"name": "output", "schema": json_schema}},
+                    **kwargs)
+                return self._openai_result(resp, provider)
+            except (BadRequestError, UnprocessableEntityError) as e:
+                logger.info(f"[{provider}] native JSON schema not accepted ({e}); prompt-only JSON")
+        resp = await client.chat.completions.create(**kwargs)
+        return self._openai_result(resp, provider)
 
     def _key(self, name: str, env: str, default: str = "") -> str:
         if self._keys.get(name):
@@ -186,6 +217,7 @@ class LLMRouter:
         max_tokens: int = 4096,
         temperature: float = 0.7,
         fallback: bool = True,
+        json_schema: Optional[dict] = None,
     ) -> str:
         """Call an LLM and return the text. On failure, gracefully fall back to
         the next best available provider (unless fallback=False).
@@ -196,25 +228,25 @@ class LLMRouter:
         nominal limit can be consumed before a single output token is written.
         """
         try:
-            return await self._complete_chain(prompt, llm, system, max_tokens, temperature, fallback)
+            return await self._complete_chain(prompt, llm, system, max_tokens, temperature, fallback, json_schema)
         except OutputTruncated as e:
             bumped = min(max(max_tokens * 2, self.MIN_RETRY_TOKENS), self.MAX_RETRY_TOKENS)
             if bumped <= max_tokens:
                 raise
             logger.warning(f"[LLMRouter] {e} → retrying at max_tokens={bumped}")
-            return await self._complete_chain(prompt, llm, system, bumped, temperature, fallback)
+            return await self._complete_chain(prompt, llm, system, bumped, temperature, fallback, json_schema)
 
     # Retry budget for a truncated answer. The floor matters more than the
     # doubling: a 300- or 2000-token call has no headroom for thinking tokens.
     MIN_RETRY_TOKENS = 8000
     MAX_RETRY_TOKENS = 32000
 
-    async def _complete_chain(self, prompt, llm, system, max_tokens, temperature, fallback) -> str:
+    async def _complete_chain(self, prompt, llm, system, max_tokens, temperature, fallback, json_schema=None) -> str:
         chain = self._fallback_chain(llm) if fallback else [llm]
         primary_err = None
         for i, model in enumerate(chain):
             try:
-                return await self._complete_one(prompt, model, system, max_tokens, temperature)
+                return await self._complete_one(prompt, model, system, max_tokens, temperature, json_schema)
             except OutputTruncated:
                 raise      # a bigger budget is the fix, not a different provider
             except Exception as e:
@@ -224,7 +256,7 @@ class LLMRouter:
                 logger.warning(f"[LLMRouter] {model} failed: {e}" + (f" → falling back to {nxt}" if nxt else " (no more fallbacks)"))
         raise primary_err
 
-    async def _complete_one(self, prompt, llm, system, max_tokens, temperature) -> str:
+    async def _complete_one(self, prompt, llm, system, max_tokens, temperature, json_schema=None) -> str:
         """Single dispatch, no fallback."""
         # "provider:model-id" selects a specific model, e.g.
         # "nvidia:meta/llama-3.1-405b-instruct" from build.nvidia.com.
@@ -242,7 +274,8 @@ class LLMRouter:
         logger.info(f"[LLMRouter] → {llm}")
         t0 = time.monotonic()
         self._last_usage = None
-        result = await method(prompt, system=system, model=model, max_tokens=max_tokens, temperature=temperature)
+        result = await method(prompt, system=system, model=model, max_tokens=max_tokens, temperature=temperature,
+                              **({"json_schema": json_schema} if json_schema else {}))
         elapsed = round(time.monotonic() - t0, 2)
 
         # Single metering point for every agent in the app. Truncation and
@@ -312,19 +345,10 @@ class LLMRouter:
         current_prompt = prompt + schema_prompt
         
         for attempt in range(max_retries + 1):
-            text = await self.complete(current_prompt, llm=llm, system=system, temperature=temperature)
-            
-            text = text.strip()
-            for fence in ("```json", "```", "```md"):
-                if text.startswith(fence):
-                    text = text[len(fence):]
-                    if text.endswith("```"):
-                        text = text[:-3]
-                    text = text.strip()
-                    break
-            
+            text = await self.complete(current_prompt, llm=llm, system=system, temperature=temperature,
+                                       json_schema=schema_json)
             try:
-                parsed_dict = json.loads(text)
+                parsed_dict = _json_object(text)
                 return response_model(**parsed_dict)
             except Exception as e:
                 if attempt == max_retries:
@@ -336,7 +360,7 @@ class LLMRouter:
 
     # ── Gemini ────────────────────────────────────────────────────────────────
 
-    async def _call_gemini(self, prompt: str, system=None, model="gemini", max_tokens=4096, temperature=0.7, **_) -> str:
+    async def _call_gemini(self, prompt: str, system=None, model="gemini", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
         if not self.gemini_key:
             raise RuntimeError("GEMINI_API_KEY not configured. Go to Settings -> LLM Providers and paste your Gemini API key.")
         import google.generativeai as genai
@@ -367,7 +391,12 @@ class LLMRouter:
             model_name = "gemini-2.5-flash"
 
         logger.info(f"[Gemini] Using model: {model_name}")
-        config = genai.types.GenerationConfig(max_output_tokens=max_tokens, temperature=temperature)
+        config = genai.types.GenerationConfig(
+            max_output_tokens=max_tokens, temperature=temperature,
+            # JSON mode: the decoder can only emit valid JSON. The schema itself is
+            # checked by pydantic -- Gemini's response_schema rejects $defs/refs.
+            **({"response_mime_type": "application/json"} if json_schema else {}),
+        )
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
 
         loop = asyncio.get_event_loop()
@@ -428,7 +457,7 @@ class LLMRouter:
 
     # ── Groq ──────────────────────────────────────────────────────────────────
 
-    async def _call_groq(self, prompt: str, system=None, model="groq", max_tokens=4096, temperature=0.7, **_) -> str:
+    async def _call_groq(self, prompt: str, system=None, model="groq", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
         if not self.groq_key:
             raise RuntimeError("GROQ_API_KEY not configured.")
         from groq import AsyncGroq
@@ -440,15 +469,12 @@ class LLMRouter:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        resp = await client.chat.completions.create(
-            model=model_name, messages=messages,
-            max_tokens=max_tokens, temperature=temperature
-        )
-        return self._openai_result(resp, "groq")
+        return await self._chat(client, "groq", json_schema, model=model_name, messages=messages,
+                                max_tokens=max_tokens, temperature=temperature)
 
     # ── OpenRouter ────────────────────────────────────────────────────────────
 
-    async def _call_openrouter(self, prompt: str, system=None, model="openrouter", max_tokens=4096, temperature=0.7, **_) -> str:
+    async def _call_openrouter(self, prompt: str, system=None, model="openrouter", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
         if not self.openrouter_key:
             raise RuntimeError("OPENROUTER_API_KEY not configured.")
         from openai import AsyncOpenAI
@@ -462,23 +488,28 @@ class LLMRouter:
         messages.append({"role": "user", "content": prompt})
 
         last_error = None
-        for model_name in candidates:
-            try:
-                resp = await client.chat.completions.create(
-                    model=model_name, messages=messages,
-                    max_tokens=max_tokens, temperature=temperature
-                )
-                return self._openai_result(resp, "openrouter")
-            except OutputTruncated:
-                raise            # a bigger budget is the fix, not another model
-            except Exception as e:
-                last_error = e
-                logger.warning(f"[OpenRouter] {model_name} failed: {e}")
+        # Free models are rate-limited upstream in short bursts (429). When every
+        # candidate is throttled, wait and go round again instead of failing.
+        for wait in (0, 8, 20):
+            if wait:
+                logger.info(f"[OpenRouter] all candidates rate-limited; retrying in {wait}s")
+                await asyncio.sleep(wait)
+            for model_name in candidates:
+                try:
+                    return await self._chat(client, "openrouter", json_schema, model=model_name, messages=messages,
+                                            max_tokens=max_tokens, temperature=temperature)
+                except OutputTruncated:
+                    raise            # a bigger budget is the fix, not another model
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"[OpenRouter] {model_name} failed: {e}")
+            if getattr(last_error, "status_code", None) != 429:
+                break
         raise last_error
 
     # ── Together AI ───────────────────────────────────────────────────────────
 
-    async def _call_together(self, prompt: str, system=None, model="together", max_tokens=4096, temperature=0.7, **_) -> str:
+    async def _call_together(self, prompt: str, system=None, model="together", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
         if not self.together_key:
             raise RuntimeError("TOGETHER_API_KEY not configured.")
         from openai import AsyncOpenAI
@@ -490,11 +521,8 @@ class LLMRouter:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        resp = await client.chat.completions.create(
-            model=model_name, messages=messages,
-            max_tokens=max_tokens, temperature=temperature
-        )
-        return self._openai_result(resp, "together")
+        return await self._chat(client, "together", json_schema, model=model_name, messages=messages,
+                                max_tokens=max_tokens, temperature=temperature)
 
     # ── Claude (Anthropic) ───────────────────────────────────────────────────
 
@@ -535,7 +563,7 @@ class LLMRouter:
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
 
-    async def _call_openai(self, prompt: str, system=None, model="openai", max_tokens=4096, temperature=0.7, **_) -> str:
+    async def _call_openai(self, prompt: str, system=None, model="openai", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
         if not self.openai_key:
             raise RuntimeError("OPENAI_API_KEY not configured. Go to Settings -> LLM Providers and paste your OpenAI API key.")
         from openai import AsyncOpenAI
@@ -547,11 +575,8 @@ class LLMRouter:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        resp = await client.chat.completions.create(
-            model=model_name, messages=messages,
-            max_tokens=max_tokens, temperature=temperature
-        )
-        return self._openai_result(resp, "openai")
+        return await self._chat(client, "openai", json_schema, model=model_name, messages=messages,
+                                max_tokens=max_tokens, temperature=temperature)
 
     # ── Ollama (local) ────────────────────────────────────────────────────────
 
@@ -573,7 +598,7 @@ class LLMRouter:
 
     # ── NVIDIA / Minimax ───────────────────────────────────────────────────────
 
-    async def _call_nvidia(self, prompt: str, system=None, model="minimaxai/minimax-m3", max_tokens=4096, temperature=0.7, **_) -> str:
+    async def _call_nvidia(self, prompt: str, system=None, model="minimaxai/minimax-m3", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
         if not self.nvidia_key:
             raise RuntimeError("NVIDIA_API_KEY not configured. Go to Settings -> LLM Providers and paste your NVIDIA API key.")
         from openai import AsyncOpenAI
@@ -597,11 +622,8 @@ class LLMRouter:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        resp = await client.chat.completions.create(
-            model=model_name, messages=messages,
-            max_tokens=max_tokens, temperature=temperature
-        )
-        return self._openai_result(resp, "nvidia")
+        return await self._chat(client, "nvidia", json_schema, model=model_name, messages=messages,
+                                max_tokens=max_tokens, temperature=temperature)
 
     def available_providers(self) -> List[str]:
         """Return list of providers that have credentials configured."""
