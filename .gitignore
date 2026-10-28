@@ -15,6 +15,7 @@ backend/swarm.db
 # Scratch DBs the standalone test scripts create next to themselves.
 backend/test_*.db
 backend/tmp_*.db
+backend/test_*_output/
 # Snapshots taken before a migration -- these hold real user rows and, because
 # provider keys live in the settings table, real credentials.
 backend/swarm.db.bak-*
@@ -53,3 +54,12 @@ backend/hiring_agent/resume_evaluations.csv
 # Local deployment docs
 DEPLOYMENT_INFO.md
 .gstack/
+
+# Local-only: edit backups, wiped-DB snapshot, personal resume/JD scratch, research output
+*.bak-*
+backend/swarm.db.wiped-*
+scratch/
+reports/
+research_notes/
+meta/master_resume.md
+HireOS_User_Guide.pdf

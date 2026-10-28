@@ -1,0 +1,34 @@
+# HireOS apply worker (backend/worker/): Chromium on a virtual screen, one job at a time.
+# No public ports. The screen is reached only over Tailscale (tailnet only), the worker reaches
+# HireOS over its HTTPS API with a token.
+#
+# First deploy (from the repo root):
+#   fly apps create hireos-worker
+#   fly volumes create worker_data --region yyz --size 3 -a hireos-worker
+#   fly secrets set -a hireos-worker HIREOS_TOKEN=<token from the hosted HireOS> \
+#       TS_AUTHKEY=<Tailscale auth key> ATS_ACCOUNT_JSON="$(base64 -w0 < ats-account.json)"
+#   fly deploy -c fly.worker.toml
+# Exactly one machine: one browser profile, and two workers would race for the same jobs.
+app = "hireos-worker"
+primary_region = "yyz"   # Toronto: a Canadian IP for Canadian job sites
+
+[build]
+  dockerfile = "backend/worker/Dockerfile"
+
+[env]
+  HIREOS_URL = "https://hireos.fly.dev"
+  HIREOS_VAULT = "/secrets/ats-account.json"
+  TS_HOSTNAME = "hireos-worker"
+
+[[files]]
+  guest_path = "/secrets/ats-account.json"
+  secret_name = "ATS_ACCOUNT_JSON"   # base64 of the Workday vault file
+
+[[mounts]]
+  source = "worker_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 2

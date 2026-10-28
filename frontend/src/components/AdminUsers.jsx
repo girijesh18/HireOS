@@ -18,7 +18,7 @@ function ago(ts) {
 function Stat({ label, value, tone }) {
   return (
     <div className="panel" style={{ padding: '0.85rem 1rem', flex: '1 1 130px', minWidth: 120 }}>
-      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: tone || 'var(--fg)' }}>{value}</div>
+      <div style={{ fontFamily: 'var(--font-serif)', fontSize: '1.5rem', fontWeight: 400, color: tone || 'var(--fg)' }}>{value}</div>
       <div style={{ fontSize: '0.72rem', color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
     </div>
   )
@@ -27,7 +27,7 @@ function Stat({ label, value, tone }) {
 function Bar({ pct, exhausted }) {
   return (
     <div title={`${pct}% of the free budget`} style={{
-      height: 6, width: 74, borderRadius: 9999, background: 'var(--surface-2)',
+      height: 6, width: 74, background: 'var(--surface-2)',
       overflow: 'hidden', border: '1px solid var(--surface-border)', display: 'inline-block',
       verticalAlign: 'middle',
     }}>

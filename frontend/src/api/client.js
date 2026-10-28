@@ -132,6 +132,22 @@ export const api = {
   startCheckout: () => req('POST', '/billing/checkout'),
   openBillingPortal: () => req('POST', '/billing/portal'),
 
+  // Auto-apply queue (consumed by the OpenClaw apply agent)
+  getApplyConfig: () => req('GET', '/apply/config'),
+  saveApplyConfig: (cfg) => req('PUT', '/apply/config', cfg),
+  getApplyStatus: () => req('GET', '/apply/status'),
+  getHandoff: () => req('GET', '/apply/handoff'),
+  approveJob: (id) => req('POST', `/jobs/${id}/approve`),
+  getApplicationProfile: () => req('GET', '/apply/profile'),
+  // Scheduled discovery: where to look (discovery_targets) and a manual run
+  getDiscoveryTargets: () => req('GET', '/discovery/targets'),
+  saveDiscoveryTargets: (targets) => req('PUT', '/discovery/targets', { targets }),
+  runDiscovery: () => req('POST', '/discovery/run'),
+  getFlags: () => req('GET', '/flags'),
+  dismissFlag: (id) => req('POST', '/flags/dismiss', { id }),
+  getActivity: ({ days = 7, source = '' } = {}) => req('GET', `/activity?days=${days}${source ? `&source=${source}` : ''}`),
+  saveApplicationProfile: (p) => req('PUT', '/apply/profile', p),
+
   getMcpToken: () => req('GET', '/settings/mcp-token'),
   createMcpToken: () => req('POST', '/settings/mcp-token'),
   revokeMcpToken: () => req('DELETE', '/settings/mcp-token'),
@@ -142,6 +158,9 @@ export const api = {
 
   // Agent: Track a job from a URL (AI auto-extracts)
   trackUrl: (url, llm = 'gemini') => req('POST', '/agent/track-url', { url, llm }),
+
+  // Agent: Import LinkedIn search results via the public guest API
+  linkedinSearch: (body) => req('POST', '/agent/linkedin-search', body),
 
   // Agent: Track from pasted JD text (works for LinkedIn and login-walled sites)
   trackJdText: (text, llm = 'gemini') => req('POST', '/agent/track-jd', { text, llm }),

@@ -1,6 +1,8 @@
 .git
 .github
 backend/.venv
+backend/venv/
+backend/*.db
 backend/__pycache__
 backend/*.pyc
 backend/swarm.db
@@ -13,3 +15,5 @@ playwright-bot/
 *.md
 .env
 .env.*
+**/.env
+**/.env.*

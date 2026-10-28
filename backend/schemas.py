@@ -22,6 +22,8 @@ class JobCreate(BaseModel):
 
 class JobUpdate(BaseModel):
     status: Optional[str] = None
+    url: Optional[str] = None  # e.g. a LinkedIn job re-pointed at the company's own ATS posting
+    platform: Optional[str] = None
     match_score: Optional[float] = None
     strengths: Optional[List[str]] = None
     gaps: Optional[List[str]] = None

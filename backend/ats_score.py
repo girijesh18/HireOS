@@ -44,7 +44,8 @@ def _provider_env(model, gemini_key, nvidia_key):
     if m.startswith("nvidia") or m.startswith("minimax"):
         if not nvidia_key:
             return gemini_fallback()
-        model_id = model.split(":", 1)[1] if ":" in model else "minimaxai/minimax-m3"
+        from llm_router import nvidia_model
+        model_id = model.split(":", 1)[1] if ":" in model else nvidia_model()
         return {"LLM_PROVIDER": "openai", "DEFAULT_MODEL": model_id,
                 "OPENAI_API_KEY": nvidia_key, "OPENAI_BASE_URL": _NVIDIA_BASE}
 

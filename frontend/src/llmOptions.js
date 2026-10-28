@@ -19,6 +19,7 @@ export const BASE_LLM_OPTIONS = [
   { value:'nvidia', label:'NVIDIA (MiniMax-M3)' },
   { value:'claude', label:'Claude Sonnet (Anthropic)' },
   { value:'ollama', label:'Ollama (Local)' },
+  { value:'local', label:'Local LLM (llama.cpp · OpenAI-compatible)' },
 ]
 
 export function getCustomNvidiaModels() {

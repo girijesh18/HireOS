@@ -166,3 +166,22 @@ if __name__ == "__main__":
             fn()
             print("  PASS ", name)
     print("all passed")
+
+
+def test_fallback_summary_gets_title_opener():
+    from resume_profile import with_opener
+    assert with_opener("Data scientist, 8 years, x", "Lead data scientist") == "Lead data scientist, 8 years, x"
+    assert with_opener("Lead data scientist with", "Lead data scientist") == "Lead data scientist with"
+    assert with_opener("Machine learning engineer", "Lead data scientist") == "Machine learning engineer"
+
+
+def test_excluded_points_are_removed_in_code():
+    md = ("## LEADERSHIP & SOFT SKILLS\n"
+          "- **Mentorship:** Directed 14-person teams.\n"
+          "- **Strategic Navigation:** Voluntarily relocated internationally for higher education (2020).\n"
+          "- **Strategic navigation:** Relocated internationally for graduate study (2021).\n")
+    out, removed = rp.drop_excluded(md, ["Strategic navigation"])
+    assert len(removed) == 2 and "Mentorship" in out and "relocated" not in out.lower()
+    assert rp.drop_excluded(md, []) == (md, [])
+    # a heading that happens to contain the phrase is not a bullet and stays
+    assert "## Strategic navigation" in rp.drop_excluded("## Strategic navigation\n", ["strategic navigation"])[0]

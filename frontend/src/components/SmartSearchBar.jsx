@@ -3,13 +3,13 @@ import { api } from '../api/client'
 
 // Category colors and icons
 const CATEGORY_META = {
-  roles:      { color: 'var(--primary)',  bg: 'var(--primary-subtle)',  icon: '💼' },
-  tech:       { color: 'var(--info)',     bg: 'var(--info-subtle)',     icon: '⚙️' },
-  seniority:  { color: 'var(--purple)',   bg: 'var(--purple-subtle)',   icon: '🏅' },
-  companies:  { color: 'var(--warning)',  bg: 'var(--warning-subtle)',  icon: '🏢' },
-  work_style: { color: 'var(--success)',  bg: 'var(--success-subtle)',  icon: '🌐' },
-  salary:     { color: 'var(--success)',  bg: 'var(--success-subtle)',  icon: '💰' },
-  your_jobs:  { color: 'var(--fg)',       bg: 'var(--surface-2)',       icon: '📁' },
+  roles:      { color: 'var(--primary)',  bg: 'var(--primary-subtle)' },
+  tech:       { color: 'var(--info)',     bg: 'var(--info-subtle)' },
+  seniority:  { color: 'var(--purple)',   bg: 'var(--purple-subtle)' },
+  companies:  { color: 'var(--warning)',  bg: 'var(--warning-subtle)' },
+  work_style: { color: 'var(--success)',  bg: 'var(--success-subtle)' },
+  salary:     { color: 'var(--success)',  bg: 'var(--success-subtle)' },
+  your_jobs:  { color: 'var(--fg)',       bg: 'var(--surface-2)' },
 }
 
 function debounce(fn, ms) {
@@ -178,7 +178,7 @@ export default function SmartSearchBar({ onSearch, onClear, placeholder = 'Searc
           </button>
         )}
 
-        <button className="btn btn-primary btn-sm" style={{ flexShrink:0, borderRadius:'8px' }}
+        <button className="btn btn-primary btn-sm" style={{ flexShrink:0, }}
           onClick={() => {
             if (query.trim()) applyKeyword(query.trim())
             else if (activeTags.length) onSearch(activeTags.join(' '))
@@ -208,8 +208,8 @@ export default function SmartSearchBar({ onSearch, onClear, placeholder = 'Searc
                 onMouseDown={() => applyKeyword(item.keyword)}
                 onMouseEnter={() => setActiveIdx(idx)}
               >
-                <span className="search-suggestion-icon" style={{ background: meta.bg, color: meta.color }}>
-                  {meta.icon}
+                <span className="search-suggestion-icon" aria-hidden="true" style={{ border: '1px solid currentColor', color: meta.color, fontWeight: 600 }}>
+                  {(item.category || 'tech')[0].toUpperCase()}
                 </span>
                 <span className="search-suggestion-text">
                   {highlightMatch(item.keyword, query)}
@@ -248,7 +248,7 @@ function highlightMatch(text, query) {
   const parts = text.split(regex)
   return parts.map((part, i) =>
     regex.test(part)
-      ? <mark key={i} style={{ background: 'var(--primary-subtle)', color: 'var(--primary)', borderRadius:3, padding:'0 2px' }}>{part}</mark>
+      ? <mark key={i} style={{ background: 'var(--primary-subtle)', color: 'var(--primary)', padding:'0 2px' }}>{part}</mark>
       : part
   )
 }

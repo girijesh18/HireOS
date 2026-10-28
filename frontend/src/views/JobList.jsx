@@ -2,8 +2,12 @@ import React, { useEffect, useState, useCallback } from 'react'
 import { api } from '../api/client'
 import SmartSearchBar from '../components/SmartSearchBar'
 
-const STATUSES = ['found','analyzing','pending','approved','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
-const BADGE_EMOJI = { found:'🔍', analyzing:'🤖', pending:'⏳', approved:'✅', applied:'📤', screening:'📞', interview_1:'🎤', interview_2:'🎤', offer:'🎉', rejected:'❌', withdrawn:'↩️' }
+const STATUSES = ['found','analyzing','pending','approved','applying','waiting_human','needs_human','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
+const StarIcon = ({ filled }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z" />
+  </svg>
+)
 
 export default function JobList({ onOpenJob }) {
   const [jobs, setJobs] = useState([])
@@ -83,7 +87,7 @@ export default function JobList({ onOpenJob }) {
           </span>
           <select style={{ width:160 }} value={filter.status} onChange={e => handleFilterChange('status', e.target.value)}>
             <option value="">All Statuses</option>
-            {STATUSES.map(s => <option key={s} value={s}>{BADGE_EMOJI[s]} {s.replace('_',' ')}</option>)}
+            {STATUSES.map(s => <option key={s} value={s}>{s.replace('_',' ')}</option>)}
           </select>
           <select style={{ width:140 }} value={filter.platform} onChange={e => handleFilterChange('platform', e.target.value)}>
             <option value="">All Platforms</option>
@@ -161,13 +165,13 @@ export default function JobList({ onOpenJob }) {
               <div>
                 <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                   <span style={{ fontWeight:600, fontSize:'0.875rem' }}>{job.title}</span>
-                  {job.remote && <span style={{ fontSize:'0.65rem', color:'var(--info)', background:'var(--info-subtle)', padding:'1px 5px', borderRadius:4 }}>Remote</span>}
+                  {job.remote && <span style={{ fontSize:'0.65rem', color:'var(--info)', background:'var(--info-subtle)', padding:'1px 5px', }}>Remote</span>}
                 </div>
                 <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)', marginTop:1 }}>{job.company}</div>
               </div>
               {/* Status */}
               <span className={`badge badge-${job.status}`} style={{ fontSize:'0.72rem' }}>
-                {BADGE_EMOJI[job.status]} {job.status?.replace('_',' ')}
+                {job.status?.replace('_',' ')}
               </span>
               {/* Match Score */}
               <span style={{
@@ -187,10 +191,11 @@ export default function JobList({ onOpenJob }) {
               {/* Star */}
               <button
                 onClick={e => toggleStar(e, job)}
-                style={{ background:'none', border:'none', cursor:'pointer', fontSize:'1rem', padding:2, borderRadius:4, opacity: job.starred ? 1 : 0.3, transition:'opacity 0.15s' }}
+                style={{ background:'none', border:'none', cursor:'pointer', minWidth:44, minHeight:44, display:'inline-flex', alignItems:'center', justifyContent:'center', color: job.starred ? 'var(--fg)' : 'var(--fg-muted)' }}
+                aria-label={job.starred ? 'Unstar' : 'Star'}
                 title={job.starred ? 'Unstar' : 'Star'}
               >
-                {job.starred ? '⭐' : '☆'}
+                <StarIcon filled={job.starred} />
               </button>
             </div>
           ))

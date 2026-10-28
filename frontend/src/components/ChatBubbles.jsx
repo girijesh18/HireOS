@@ -10,7 +10,7 @@ export function Bubble({ role, children }) {
       alignSelf: isUser ? 'flex-end' : 'flex-start',
       backgroundColor: isUser ? 'var(--primary)' : 'var(--surface-2)',
       color: isUser ? 'var(--primary-fg)' : 'var(--fg)',
-      padding: '0.75rem 1rem', borderRadius: '1rem', maxWidth: '90%',
+      padding: '0.75rem 1rem', maxWidth: '90%',
       fontSize: '0.875rem', whiteSpace: 'pre-wrap',
     }}>
       {children}

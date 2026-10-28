@@ -11,6 +11,13 @@ primary_region = "iad"
   # Exact URLs allowed to receive an auth token after SSO, for clients that
   # aren't the web app. Exact match only — see _allowed_return_to.
   OAUTH_RETURN_ALLOWLIST = "https://hireos-mcp.fly.dev/oauth/sso-return"
+  # The one instance that runs the background loops (discovery, Gmail scan, alerts, chat bots'
+  # pushes). Exactly one machine: two would double every alert and fight over the bot tokens.
+  SCHEDULER = "on"
+  GMAIL_USER_ID = "1"
+  # No local model here: background work and email reading use this one (with the user's key)
+  DEFAULT_LLM = "openrouter:qwen/qwen3.8-27b"
+  MAIL_LLM = "openrouter:qwen/qwen3.8-27b"
 
 [[mounts]]
   source = "hireos_data"
@@ -31,6 +38,6 @@ primary_region = "iad"
     path = "/api/health"
 
 [[vm]]
-  memory = "1gb"
+  memory = "2gb"   # API + scheduler + Telegram/Discord bots + discovery in one machine
   cpu_kind = "shared"
   cpus = 1

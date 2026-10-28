@@ -13,24 +13,24 @@ const ACTION_COLORS = {
 }
 
 const ACTION_LABELS = {
-  chat:           '💬 Chat',
-  resume:         '📄 Resume',
-  cover_letter:   '✉️ Cover Letter',
-  evaluation:     '🔬 Evaluation',
-  gap_analysis:   '📊 Gap Analysis',
-  research:       '🔍 Research',
-  linkedin:       '🔗 LinkedIn',
-  interview_prep: '🎤 Interview Prep',
+  chat:           'Chat',
+  resume:         'Resume',
+  cover_letter:   'Cover Letter',
+  evaluation:     'Evaluation',
+  gap_analysis:   'Gap Analysis',
+  research:       'Research',
+  linkedin:       'LinkedIn',
+  interview_prep: 'Interview Prep',
 }
 
 function MomentumBar({ score }) {
   const color = score >= 7 ? 'var(--success)' : score >= 4 ? 'var(--warning)' : 'var(--danger)'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-      <div style={{ flex: 1, height: 8, background: 'var(--surface-2)', borderRadius: 4, overflow: 'hidden' }}>
-        <div style={{ width: `${score * 10}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.6s ease' }} />
+      <div style={{ flex: 1, height: 8, background: 'var(--surface-2)', overflow: 'hidden' }}>
+        <div style={{ width: `${score * 10}%`, height: '100%', background: color, transition: 'width 0.6s ease' }} />
       </div>
-      <span style={{ color, fontWeight: 700, fontSize: '1.1rem', minWidth: 32 }}>{score}/10</span>
+      <span style={{ color, fontFamily: 'var(--font-serif)', fontSize: '1.15rem', minWidth: 32 }}>{score}/10</span>
     </div>
   )
 }
@@ -45,7 +45,7 @@ function ActivityBar({ by_day }) {
         <div key={i} title={`${d.date}: ${d.count}`} style={{
           flex: 1, background: d.count > 0 ? 'var(--primary)' : 'var(--surface-2)',
           height: `${Math.max((d.count / max) * 100, d.count > 0 ? 8 : 4)}%`,
-          borderRadius: 3, minHeight: 4, cursor: 'default', opacity: 0.85,
+          minHeight: 4, cursor: 'default', opacity: 0.85,
           transition: 'height 0.3s'
         }} />
       ))}

@@ -208,7 +208,7 @@ def _resume_md_to_html(md_text: str, style: dict = None) -> str:
     font-size: {fsize};
     line-height: 1.45;
     color: #111;
-    padding: {m_top}cm {m_right}cm {m_bottom}cm {m_left}cm;
+    /* No body padding: @page below already applies the margin; both = double margin. */
   }}
   .rname {{
     font-size: calc({fsize} + 10pt);
@@ -333,6 +333,28 @@ def _md_to_html(md_text: str) -> str:
 </html>"""
 
 
+MAX_RESUME_PAGES = 2
+
+
+def _fit_pages(content_md: str, pdf_style: dict = None):
+    """Rendered resume of at most MAX_RESUME_PAGES: steps the font and margins down until it fits.
+    ponytail: floor is 9pt / 0.9cm — past that it returns the smallest render and logs it."""
+    from weasyprint import HTML
+    s = dict(pdf_style or {})
+    font = float(s.get('fontSize') or 10.5)
+    defaults = {'marginTop': 1.4, 'marginBottom': 1.4, 'marginLeft': 1.2, 'marginRight': 1.2}
+    margins = {k: float(s.get(k) or d) for k, d in defaults.items()}
+    while True:
+        s.update(fontSize=f"{font:g}", **{k: f"{v:g}" for k, v in margins.items()})
+        doc = HTML(string=_resume_md_to_html(content_md, style=s)).render()
+        if len(doc.pages) <= MAX_RESUME_PAGES or font <= 9:
+            if len(doc.pages) > MAX_RESUME_PAGES:
+                logger.warning(f"[Docs] resume still {len(doc.pages)} pages at minimum size — shorten the content")
+            return doc
+        font = max(9, font - 0.25)
+        margins = {k: max(min(v, 0.9), v - 0.1) for k, v in margins.items()}  # never widens tight margins
+
+
 def save_resume(job_id: int, version: int, content_md: str, pdf_style: dict = None) -> dict:
     """Save resume as .md, .pdf, and .docx. Returns dict of paths."""
     d = _job_dir(job_id)
@@ -348,7 +370,7 @@ def save_resume(job_id: int, version: int, content_md: str, pdf_style: dict = No
     try:
         from weasyprint import HTML
         pdf_path = d / f"resume{suffix}.pdf"
-        HTML(string=_resume_md_to_html(content_md, style=pdf_style)).write_pdf(str(pdf_path))
+        _fit_pages(content_md, pdf_style).write_pdf(str(pdf_path))
         paths["pdf"] = str(pdf_path)
         logger.info(f"[Docs] PDF saved: {pdf_path}")
     except Exception as e:
@@ -433,14 +455,13 @@ def _md_to_docx(doc, md_text: str):
     for line in lines:
         line_stripped = line.rstrip()
 
-        if line_stripped.startswith("### "):
-            p = doc.add_heading(line_stripped[4:], level=3)
-        elif line_stripped.startswith("## "):
-            p = doc.add_heading(line_stripped[3:], level=2)
-        elif line_stripped.startswith("# "):
-            p = doc.add_heading(line_stripped[2:], level=1)
+        if line_stripped.startswith(("### ", "## ", "# ")):
+            level = len(line_stripped.split(" ", 1)[0])
+            p = doc.add_heading("", level=level)
+            _add_inline_formatting(p, line_stripped[level + 1:])
         elif line_stripped.startswith("- ") or line_stripped.startswith("* "):
-            p = doc.add_paragraph(line_stripped[2:], style="List Bullet")
+            p = doc.add_paragraph(style="List Bullet")
+            _add_inline_formatting(p, line_stripped[2:])
         elif line_stripped.startswith("---") or line_stripped.startswith("___"):
             # Horizontal rule
             p = doc.add_paragraph()
@@ -461,6 +482,15 @@ def _md_to_docx(doc, md_text: str):
 def _add_inline_formatting(para, text: str):
     """Parse **bold** and *italic* inline markdown into docx runs."""
     import re
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    from docx.shared import Inches
+    text = re.sub(r"\[([^\]]+)\]\([^)\s]+\)", r"\1", text)  # [text](url) → text
+    if "||" in text:  # "Company || Sep 2022 – Present" → company, then the date right-aligned
+        text, _, right = text.partition("||")
+        para.paragraph_format.tab_stops.add_tab_stop(Inches(6.8), WD_TAB_ALIGNMENT.RIGHT)  # page width minus margins
+        _add_inline_formatting(para, text.rstrip())
+        para.add_run("\t" + _strip_emphasis(right))
+        return
     parts = re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*)", text)
     for part in parts:
         if part.startswith("**") and part.endswith("**"):

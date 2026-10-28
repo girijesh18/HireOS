@@ -19,6 +19,7 @@ import httpx
 from loguru import logger
 from database import Job, EvaluationReport, StoryBankEntry, FollowUpLog
 from scraper import StealthScraper
+import linkedin_guest
 
 from llm_router import LLMRouter
 
@@ -62,7 +63,13 @@ Available actions:
 - generate_resume: { "action": "generate_resume", "job_id": 123, "llm": "gemini" }
 - generate_cover_letter: { "action": "generate_cover_letter", "job_id": 123, "llm": "gemini" }
 - compare_llms: { "action": "compare_llms", "job_id": 123, "task": "resume" }
-- list_jobs: { "action": "list_jobs", "filter": "pending" }
+- list_jobs: { "action": "list_jobs", "params": {"status": "pending", "since_hours": 24, "sort": "score", "limit": 20} }
+  every param optional. status: found|pending|approved|applying|waiting_human|needs_human|applied|interview|rejected.
+  since_hours: "today" = 24, "this week" = 168. sort: "score" for best/top matches, else "recent". limit: "top 20" = 20 (max 25).
+- approve_jobs: { "action": "approve_jobs", "params": {"job_ids": [154, 155]} }  only job numbers the user named.
+- run_discovery: { "action": "run_discovery" }  look for new jobs now.
+- status_summary: { "action": "status_summary", "params": {"since_hours": 168} }  "what's going on", progress,
+  how many applied / found / interviews in a period (since_hours optional, default 24).
 - get_stats: { "action": "get_stats" }
 - general_reply: { "action": "general_reply", "text": "..." }
 
@@ -312,7 +319,15 @@ Return JSON with these exact fields:
 
     async def analyze_url(self, url: str, llm: str = "gemini", captcha_key: str = None, proxy_url: str = None) -> Dict:
         """Fetch a job posting URL and extract structured data using CrewAI and Native Tools."""
-        url = self._normalize_linkedin_url(url)
+        # LinkedIn: public guest API returns the JD directly — no login wall, no crew needed.
+        li_id = linkedin_guest.job_id_from_url(url)
+        if li_id:
+            job = await linkedin_guest.fetch_job(li_id)
+            data = await self.analyze_text(linkedin_guest.as_jd_text(job), llm=llm)
+            data["url"] = linkedin_guest.canonical_url(li_id)
+            data["platform"] = "linkedin"
+            return data
+
         logger.info(f"[JobDiscovery] Analyzing {url} with CrewAI")
 
         import asyncio

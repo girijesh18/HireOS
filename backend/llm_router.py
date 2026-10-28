@@ -78,6 +78,10 @@ def _openrouter_defaults(key: str, limit: int = 3) -> List[str]:
     return ranked[:limit] + [_OPENROUTER_PAID_FALLBACK]
 
 
+def nvidia_model() -> str:
+    return os.getenv("NVIDIA_MODEL") or "minimaxai/minimax-m3.1-flash"
+
+
 class LLMRouter:
     """Route prompts to any configured LLM provider."""
 
@@ -87,6 +91,7 @@ class LLMRouter:
         "openrouter": "_call_openrouter",
         "together": "_call_together",
         "ollama": "_call_ollama",
+        "local": "_call_local",
         "claude": "_call_claude",
         "anthropic": "_call_claude",
         "nvidia": "_call_nvidia",
@@ -98,7 +103,7 @@ class LLMRouter:
     def __init__(self, keys: Optional[Dict[str, str]] = None, allow_env: bool = True,
                  on_usage=None):
         # Per-user (BYOK) keys. keys dict uses provider names: gemini, groq, openrouter,
-        # together, anthropic, ollama_url, github_token, github_username.
+        # together, anthropic, ollama_url, local_url, github_token, github_username.
         # allow_env=False enforces strict per-user isolation (no shared server key leakage)
         # for multi-tenant requests; allow_env=True is for server-level / health contexts.
         self._keys = {k: v for k, v in (keys or {}).items() if v}
@@ -176,6 +181,12 @@ class LLMRouter:
         return self._key("ollama_url", "OLLAMA_BASE_URL", "http://localhost:11434")
 
     @property
+    def local_url(self):
+        """OpenAI-compatible local server, e.g. llama.cpp's llama-server at
+        http://localhost:8080/v1. Unset means the provider is not offered."""
+        return self._key("local_url", "LOCAL_LLM_URL")
+
+    @property
     def github_token(self):
         return self._key("github_token", "GITHUB_TOKEN")
 
@@ -196,7 +207,7 @@ class LLMRouter:
     # Quality-ish preference order for graceful fallback. Only providers the user
     # has keys for are tried. Ollama is excluded — it's local and usually offline,
     # so auto-falling to it just adds a slow, confusing failure.
-    FALLBACK_ORDER = ["gemini", "claude", "openai", "nvidia", "openrouter", "together", "groq"]
+    FALLBACK_ORDER = ["gemini", "claude", "openai", "nvidia", "openrouter", "together", "groq", "local"]
 
     def _fallback_chain(self, llm: str) -> List[str]:
         """The requested model first, then the user's other providers so a
@@ -596,9 +607,34 @@ class LLMRouter:
             self._note_usage(data.get("prompt_eval_count", 0), data.get("eval_count", 0))
             return data["response"]
 
-    # ── NVIDIA / Minimax ───────────────────────────────────────────────────────
+    # ── Local OpenAI-compatible server (llama.cpp, vLLM, LM Studio) ─────────────
 
-    async def _call_nvidia(self, prompt: str, system=None, model="minimaxai/minimax-m3", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
+    async def _call_local(self, prompt: str, system=None, model="local", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
+        if not self.local_url:
+            raise RuntimeError("Local LLM URL not configured. Set it in Settings -> LLM Providers (e.g. http://localhost:8080/v1).")
+        from openai import AsyncOpenAI
+        # Local servers need no key but the client insists on one. Long timeout:
+        # a local model reading a full JD + master resume can take minutes.
+        client = AsyncOpenAI(api_key="local", base_url=self.local_url.rstrip("/"), timeout=900.0, max_retries=0)
+        # llama-server serves whatever model it loaded and ignores the name;
+        # "local:<id>" still passes an explicit id through for multi-model servers.
+        model_name = model if model and model != "local" else "local"
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        # Thinking off: HireOS asks for extraction and drafting, and a reasoning
+        # model (Qwen3.x) otherwise spends the whole max_tokens budget thinking.
+        # Servers without chat templates ignore the field.
+        return await self._chat(client, "local", json_schema, model=model_name, messages=messages,
+                                max_tokens=max_tokens, temperature=temperature,
+                                extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+
+    # ── NVIDIA / Minimax ───────────────────────────────────────────────────────
+    # NVIDIA retires models without notice (minimax-m3 went 410 in Oct 2026): NVIDIA_MODEL overrides
+    # the default, so the next retirement is a `fly secrets set`, not a code change.
+
+    async def _call_nvidia(self, prompt: str, system=None, model="", max_tokens=4096, temperature=0.7, json_schema=None, **_) -> str:
         if not self.nvidia_key:
             raise RuntimeError("NVIDIA_API_KEY not configured. Go to Settings -> LLM Providers and paste your NVIDIA API key.")
         from openai import AsyncOpenAI
@@ -616,7 +652,7 @@ class LLMRouter:
             timeout=timeout_s, max_retries=0,
         )
 
-        model_name = model if "/" in model else "minimaxai/minimax-m3"
+        model_name = model if "/" in model else nvidia_model()
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -648,13 +684,18 @@ class LLMRouter:
         # ollama_url setting) to get it back for local runs.
         if self._key("ollama_url", "OLLAMA_BASE_URL"):
             providers.append("ollama")
+        if self.local_url:
+            providers.append("local")
         return providers
 
     def default_llm(self) -> str:
         """First configured provider — used when no model is explicitly selected.
         Honors 'use the one model the user has' instead of hardcoding gemini."""
         avail = self.available_providers()
-        for p in ("gemini", "claude", "groq", "openrouter", "together", "nvidia"):
+        pref = os.getenv("DEFAULT_LLM", "")   # e.g. "openrouter:qwen/qwen3.8-27b" on a hosted instance
+        if pref and pref.split(":", 1)[0] in avail:
+            return pref
+        for p in ("gemini", "claude", "groq", "openrouter", "together", "nvidia", "local"):
             if p in avail:
                 return p
         return "ollama"

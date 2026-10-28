@@ -169,7 +169,7 @@ export default function BillingPanel() {
                   </span>
                 </div>
                 <div style={{
-                  height: 8, borderRadius: 9999, background: 'var(--surface-2)',
+                  height: 8, background: 'var(--surface-2)',
                   overflow: 'hidden', border: '1px solid var(--surface-border)',
                 }}>
                   <div style={{

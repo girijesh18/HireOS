@@ -28,13 +28,7 @@ function tabFromHash() {
   return 'dashboard'
 }
 
-const STATUSES = ['found','analyzing','pending','approved','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
-const BADGE_EMOJI = { found:'🔍', analyzing:'🤖', pending:'⏳', approved:'✅', applied:'📤', screening:'📞', interview_1:'🎤', interview_2:'🎤', offer:'🎉', rejected:'❌', withdrawn:'↩️' }
-const EVENT_ICONS = {
-  status_change:'🔄', note:'📝', recruiter_contact:'📞', interview_scheduled:'📅',
-  interview_completed:'✅', offer_received:'🎉', follow_up_sent:'📧',
-  agent_action:'🤖', document_generated:'📄', application_submitted:'📤'
-}
+const STATUSES = ['found','analyzing','pending','approved','applying','waiting_human','needs_human','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
 
 function Spinner({ small }) {
   return (
@@ -80,7 +74,7 @@ function InlineNameEdit({ initialValue, defaultLabel, onSave }) {
         onChange={e => setVal(e.target.value)}
         onBlur={() => { setEditing(false); if(val !== initialValue) onSave(val); }}
         onKeyDown={e => { if(e.key === 'Enter') e.target.blur(); }}
-        style={{ fontSize:'0.875rem', padding:'2px 6px', border:'1px solid var(--primary)', borderRadius:'4px', background:'var(--bg)', color:'var(--fg)' }}
+        style={{ fontSize:'0.875rem', padding:'2px 6px', border:'1px solid var(--primary)', background:'var(--bg)', color:'var(--fg)' }}
       />
     )
   }
@@ -318,6 +312,17 @@ export default function JobDetail({ jobId }) {
     setAddingEvent(false)
   }
 
+  // Goes through /approve so a retried job also gets a fresh set of agent attempts.
+  const approve = async () => {
+    try {
+      const r = await api.approveJob(job.id)
+      setJob(j => ({ ...j, status: r.status }))
+      setEvents(e => [{ id: Date.now(), event_type:'status_change', title:'Approved for applying', source:'user', created_at: new Date().toISOString() }, ...e])
+    } catch (e) {
+      showToast(e.message, 'error')
+    }
+  }
+
   const changeStatus = async (status) => {
     const old = job.status
     setJob(j => ({ ...j, status }))
@@ -494,7 +499,7 @@ export default function JobDetail({ jobId }) {
         <div className="flex justify-between items-center" style={{ flexWrap:'wrap', gap:'1rem' }}>
           <div>
             <div className="flex items-center gap-sm" style={{ marginBottom:'0.4rem' }}>
-              {job.starred && <span>⭐</span>}
+              {job.starred && <span aria-label="Starred" style={{ display:'inline-flex' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z" /></svg></span>}
               <span className={`badge badge-${job.status}`}>{job.status?.replace('_',' ')}</span>
               {job.priority === 'high' && <span className="badge" style={{ background:'var(--danger-subtle)', color:'var(--danger)' }}>High Priority</span>}
               {job.remote && <span className="badge" style={{ background:'var(--info-subtle)', color:'var(--info)' }}>Remote</span>}
@@ -509,14 +514,14 @@ export default function JobDetail({ jobId }) {
           </div>
           <div className="stack-mobile" style={{ display:'flex', flexDirection:'column', gap:'0.75rem', alignItems:'flex-end' }}>
             <select value={job.status} onChange={e => changeStatus(e.target.value)} style={{ width:190, fontWeight:600 }}>
-              {STATUSES.map(s => <option key={s} value={s}>{BADGE_EMOJI[s]} {s.replace('_',' ')}</option>)}
+              {STATUSES.map(s => <option key={s} value={s}>{s.replace('_',' ')}</option>)}
             </select>
             <div className="flex gap-sm">
-              <span title="Model — change it from the selector in the top bar" style={{ fontSize:'0.75rem', color:'var(--fg-muted)', border:'1px solid var(--surface-border)', padding:'4px 10px', borderRadius:'999px', alignSelf:'center', whiteSpace:'nowrap' }}>
+              <span title="Model — change it from the selector in the top bar" style={{ fontSize:'0.75rem', color:'var(--fg-muted)', border:'1px solid var(--surface-border)', padding:'4px 10px', alignSelf:'center', whiteSpace:'nowrap' }}>
                 {selectedLlm}
               </span>
               {job.url && <a href={job.url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">View Job</a>}
-              <button className="btn btn-primary btn-sm" onClick={() => changeStatus('approved')}>Approve & Apply</button>
+              <button className="btn btn-primary btn-sm" onClick={approve} disabled={['applied','applying'].includes(job.status)}>Approve & Apply</button>
               <button className="btn btn-primary btn-sm" onClick={runAutoPilot}>Auto-Pilot</button>
             </div>
           </div>
@@ -650,7 +655,7 @@ export default function JobDetail({ jobId }) {
               <div className="panel" style={{ padding:'1.5rem', background:'var(--surface-2)' }}>
                 <div className="flex items-center gap-md" style={{ flexWrap:'wrap' }}>
                   <div style={{ textAlign:'center' }}>
-                    <div style={{ fontSize:'2.5rem', fontWeight:800, color: evalReport.global_score >= 85 ? 'var(--success)' : evalReport.global_score >= 70 ? 'var(--warning)' : 'var(--danger)' }}>
+                    <div style={{ fontFamily:'var(--font-serif)', fontSize:'2.5rem', fontWeight:400, color: evalReport.global_score >= 85 ? 'var(--success)' : evalReport.global_score >= 70 ? 'var(--warning)' : 'var(--danger)' }}>
                       {evalReport.global_score}/100
                     </div>
                     <div style={{ fontSize:'0.75rem', color:'var(--fg-muted)' }}>Global Score</div>
@@ -937,7 +942,7 @@ export default function JobDetail({ jobId }) {
                   </div>
                   {data.search_query && (
                     <div style={{ marginTop:8, fontSize:'0.78rem', color:'var(--fg-subtle)' }}>
-                      LinkedIn search: <code style={{ background:'var(--surface-2)', padding:'2px 6px', borderRadius:4 }}>{data.search_query}</code>
+                      LinkedIn search: <code style={{ background:'var(--surface-2)', padding:'2px 6px', }}>{data.search_query}</code>
                     </div>
                   )}
                 </div>
@@ -999,15 +1004,15 @@ export default function JobDetail({ jobId }) {
                 <div style={{ textAlign:'center' }}>
                   <div style={{ position:'relative', width:100, height:100 }}>
                     <svg width="100" height="100" viewBox="0 0 100 100" style={{ transform:'rotate(-90deg)' }}>
-                      <circle cx="50" cy="50" r="40" stroke="rgba(255,255,255,0.07)" strokeWidth="10" fill="none" />
+                      <circle cx="50" cy="50" r="40" style={{ stroke:'var(--surface-2)' }} strokeWidth="10" fill="none" />
                       <circle cx="50" cy="50" r="40"
-                        stroke={job.match_score>=80?'#10b981':job.match_score>=60?'#f59e0b':'#ef4444'}
+                        style={{ stroke: job.match_score>=80?'var(--success)':job.match_score>=60?'var(--warning)':'var(--danger)' }}
                         strokeWidth="10" fill="none"
                         strokeDasharray={`${(job.match_score/100)*(2*Math.PI*40)} ${2*Math.PI*40}`}
-                        strokeLinecap="round" />
+                        strokeLinecap="butt" />
                     </svg>
                     <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
-                      <span style={{ fontSize:'1.5rem', fontWeight:800, color: job.match_score>=80?'var(--success)':job.match_score>=60?'var(--warning)':'var(--danger)' }}>{job.match_score}%</span>
+                      <span style={{ fontFamily:'var(--font-serif)', fontSize:'1.6rem', fontWeight:400, color: job.match_score>=80?'var(--success)':job.match_score>=60?'var(--warning)':'var(--danger)' }}>{job.match_score}%</span>
                     </div>
                   </div>
                   <p style={{ fontSize:'0.75rem', color:'var(--fg-muted)', marginTop:4 }}>Match Score</p>
@@ -1156,7 +1161,7 @@ export default function JobDetail({ jobId }) {
                   </div>
                   <div className="flex gap-sm" style={{ alignItems:'center' }}>
                     {r.llm_used && (
-                      <span title="Model used to generate this resume" style={{ fontSize:'0.7rem', color:'var(--fg-muted)', background:'var(--surface-hover)', border:'1px solid var(--surface-border)', padding:'2px 8px', borderRadius:'999px', whiteSpace:'nowrap' }}>
+                      <span title="Model used to generate this resume" style={{ fontSize:'0.7rem', color:'var(--fg-muted)', background:'var(--surface-hover)', border:'1px solid var(--surface-border)', padding:'2px 8px', whiteSpace:'nowrap' }}>
                         {r.llm_used}
                       </span>
                     )}
@@ -1216,7 +1221,7 @@ export default function JobDetail({ jobId }) {
                   <label className="form-label">Event Type</label>
                   <select value={newEvent.event_type} onChange={e => setNewEvent(n=>({...n,event_type:e.target.value}))}>
                     {['note','recruiter_contact','interview_scheduled','interview_completed','offer_received','follow_up_sent'].map(t => (
-                      <option key={t} value={t}>{EVENT_ICONS[t]} {t.replace(/_/g,' ')}</option>
+                      <option key={t} value={t}>{t.replace(/_/g,' ')}</option>
                     ))}
                   </select>
                 </div>
@@ -1237,13 +1242,13 @@ export default function JobDetail({ jobId }) {
               {events.map(ev => (
                 <div key={ev.id} className="timeline-item">
                   <div className={`timeline-dot ${ev.source}`}>
-                    <span style={{ fontSize:'0.75rem' }}>{EVENT_ICONS[ev.event_type] ?? '•'}</span>
+                    <span aria-hidden="true" style={{ width:6, height:6, background:'var(--fg-muted)' }} />
                   </div>
                   <div className="timeline-body">
                     <div className="timeline-title">{ev.title}</div>
                     {ev.description && <div className="timeline-desc">{ev.description}</div>}
                     <div className="timeline-time">
-                      {new Date(ev.created_at).toLocaleString()} • {ev.source === 'agent' ? '🤖 by Agent' : '👤 by You'}
+                      {new Date(ev.created_at).toLocaleString()} • {ev.source === 'agent' ? 'by Agent' : 'by You'}
                     </div>
                   </div>
                 </div>

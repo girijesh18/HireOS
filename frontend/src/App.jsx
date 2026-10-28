@@ -9,20 +9,22 @@ import JobDetail from './views/JobDetail'
 import Settings from './views/Settings'
 import StoryBank from './views/StoryBank'
 import Insights from './views/Insights'
+import Activity from './views/Activity'
 import Onboarding from './views/Onboarding'
 import Admin from './views/Admin'
 import { usePreferredLlm, setPreferredLlm, getLlmOptions, getPreferredLlm } from './model'
 
-// ── Theme (dark default, persisted) ───────────────────────────────────────────
-const THEME_KEY = 'hireos_theme'
+// ── Theme (cream default, persisted; 'dark' = navy mode) ───────────────────────────────────────────
+// v2: the Navy & Cream redesign starts everyone on cream, whatever the old dark/light choice was.
+const THEME_KEY = 'hireos_theme_v2'
 function applyTheme(t) {
   document.documentElement.dataset.theme = t
   localStorage.setItem(THEME_KEY, t)
 }
-applyTheme(localStorage.getItem(THEME_KEY) || 'dark') // before first paint
+applyTheme(localStorage.getItem(THEME_KEY) || 'light') // before first paint
 
 function ThemeToggle() {
-  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'dark')
+  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light')
   const toggle = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
     applyTheme(next)
@@ -30,7 +32,8 @@ function ThemeToggle() {
   }
   return (
     <button className="btn btn-ghost btn-icon" onClick={toggle}
-      title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+      title={theme === 'dark' ? 'Switch to cream mode' : 'Switch to navy mode'}
+      aria-label={theme === 'dark' ? 'Switch to cream mode' : 'Switch to navy mode'}>
       {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
     </button>
   )
@@ -80,8 +83,10 @@ const MenuIcon = () => <Icon d="M3 12h18M3 6h18M3 18h18" size={20} />
 
 // ── Track Job Modal ───────────────────────────────────────────────────────────
 function TrackJobModal({ onClose, onAdded }) {
-  const [mode, setMode] = useState('url') // 'url' | 'paste' | 'manual'
+  const [mode, setMode] = useState('url') // 'url' | 'linkedin' | 'paste' | 'manual'
   const [url, setUrl] = useState('')
+  const [li, setLi] = useState({ keywords:'', location:'Toronto, Ontario, Canada', posted_within:'week', limit:5 })
+  const [liResult, setLiResult] = useState(null)
   const [jdText, setJdText] = useState('')
   const [form, setForm] = useState({ company:'', title:'', url:'', platform:'', location:'', remote:false, salary_min:'', salary_max:'', priority:'medium' })
   const [loading, setLoading] = useState(false)
@@ -93,6 +98,17 @@ function TrackJobModal({ onClose, onAdded }) {
     try {
       const result = await api.trackUrl(url.trim(), getPreferredLlm())
       onAdded(result); onClose()
+    } catch(e) { setError(e.message) }
+    setLoading(false)
+  }
+
+  const submitLinkedin = async () => {
+    if (!li.keywords.trim()) return
+    setLoading(true); setError(''); setLiResult(null)
+    try {
+      const result = await api.linkedinSearch({ ...li, keywords: li.keywords.trim(), llm: getPreferredLlm() })
+      setLiResult(result)
+      if (result.added.length) onAdded({})
     } catch(e) { setError(e.message) }
     setLoading(false)
   }
@@ -134,6 +150,9 @@ function TrackJobModal({ onClose, onAdded }) {
           <button className={`btn btn-sm ${mode==='url'?'btn-primary':'btn-outline'}`} onClick={() => { setMode('url'); setError('') }}>
             <LinkIcon /> From URL
           </button>
+          <button className={`btn btn-sm ${mode==='linkedin'?'btn-primary':'btn-outline'}`} onClick={() => { setMode('linkedin'); setError('') }}>
+            <PlusIcon /> LinkedIn Search
+          </button>
           <button className={`btn btn-sm ${mode==='paste'?'btn-primary':'btn-outline'}`} onClick={() => { setMode('paste'); setError('') }}>
             <ClipboardIcon /> Paste JD
           </button>
@@ -154,14 +173,54 @@ function TrackJobModal({ onClose, onAdded }) {
             <p style={{ fontSize:'0.78rem', color:'var(--fg-subtle)' }}>
               AI fetches and auto-extracts company, title, salary, location, and JD.
             </p>
-            <div className="alert alert-warning">
-              <span><strong>LinkedIn</strong> links require login — use the <strong>Paste JD</strong> tab instead.</span>
-            </div>
+            <p style={{ fontSize:'0.78rem', color:'var(--fg-subtle)' }}>
+              <strong>LinkedIn</strong> links work too, including links from job-alert emails — no LinkedIn login needed.
+            </p>
             {error && <p className="alert alert-danger">{error}</p>}
             <div className="flex gap-sm" style={{ justifyContent:'flex-end' }}>
               <button className="btn btn-outline btn-sm" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" onClick={submitUrl} disabled={loading || !url.trim()}>
                 {loading ? 'Extracting...' : 'Track This Job'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* LinkedIn search mode — public guest API, no LinkedIn login */}
+        {mode === 'linkedin' && (
+          <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+            <div className="form-grid">
+              <div className="form-group"><label className="form-label">Keywords *</label>
+                <input value={li.keywords} onChange={e => setLi(f=>({...f,keywords:e.target.value}))} placeholder="machine learning scientist"
+                  onKeyDown={e => e.key === 'Enter' && submitLinkedin()} /></div>
+              <div className="form-group"><label className="form-label">Location</label>
+                <input value={li.location} onChange={e => setLi(f=>({...f,location:e.target.value}))} placeholder="Toronto, Ontario, Canada" /></div>
+              <div className="form-group"><label className="form-label">Posted within</label>
+                <select value={li.posted_within} onChange={e => setLi(f=>({...f,posted_within:e.target.value}))}>
+                  <option value="day">Past 24 hours</option><option value="week">Past week</option>
+                  <option value="month">Past month</option><option value="any">Any time</option>
+                </select></div>
+              <div className="form-group"><label className="form-label">Max new jobs (1–10)</label>
+                <input type="number" min={1} max={10} value={li.limit} onChange={e => setLi(f=>({...f,limit:e.target.value}))} /></div>
+            </div>
+            <p style={{ fontSize:'0.78rem', color:'var(--fg-subtle)' }}>
+              Each new job uses one AI extraction. Jobs you already track are skipped.
+            </p>
+            {liResult && (
+              <div className="alert alert-success" style={{ display:'block' }}>
+                Added {liResult.added.length} of {liResult.found} found
+                {liResult.duplicates ? ` · ${liResult.duplicates} already tracked` : ''}
+                {liResult.failed.length ? ` · ${liResult.failed.length} failed` : ''}
+                <ul style={{ margin:'0.5rem 0 0 1rem' }}>
+                  {liResult.added.map(j => <li key={j.id}>{j.title} — {j.company}</li>)}
+                </ul>
+              </div>
+            )}
+            {error && <p className="alert alert-danger">{error}</p>}
+            <div className="flex gap-sm" style={{ justifyContent:'flex-end' }}>
+              <button className="btn btn-outline btn-sm" onClick={onClose}>{liResult ? 'Done' : 'Cancel'}</button>
+              <button className="btn btn-primary" onClick={submitLinkedin} disabled={loading || !li.keywords.trim()}>
+                {loading ? 'Searching & extracting...' : 'Search & Import'}
               </button>
             </div>
           </div>
@@ -236,6 +295,7 @@ function TrackJobModal({ onClose, onAdded }) {
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: <HomeIcon /> },
   { id: 'jobs', label: 'All Applications', icon: <ListIcon /> },
+  { id: 'activity', label: 'Activity & Flags', icon: <PulseIcon /> },
   { id: 'insights', label: 'Insights', icon: <PulseIcon /> },
   { id: 'stories', label: 'Story Bank', icon: <BookIcon /> },
   { id: 'settings', label: 'Settings', icon: <SettingsIcon /> },
@@ -247,7 +307,7 @@ const ADMIN_NAV = { id: 'admin', label: 'Admin', icon: <SettingsIcon /> }
 
 // 'landing' is routable but deliberately absent from NAV: it's the public
 // marketing page, reachable at #/landing whether or not you're signed in.
-const TOP_VIEWS = ['dashboard', 'jobs', 'insights', 'stories', 'settings', 'landing', 'onboarding', 'admin']
+const TOP_VIEWS = ['dashboard', 'jobs', 'activity', 'insights', 'stories', 'settings', 'landing', 'onboarding', 'admin']
 
 // URL-hash routing so the current view survives a page refresh and works with browser back/forward.
 function parseHash() {
@@ -428,6 +488,12 @@ export default function App() {
             onClick={() => { setShowTrackModal(true); setSidebarOpen(false) }}>
             <PlusIcon /> Track New Job
           </button>
+          {/* Phones: the top bar keeps only the model picker; these live here instead. */}
+          <div className="show-mobile" style={{ flexWrap:'wrap', gap:'0.5rem', marginTop:'0.5rem', alignItems:'center' }}>
+            <button className="btn btn-outline btn-sm" style={{ flex:'1 1 100%' }} onClick={api.exportCSV}>Export CSV</button>
+            <ThemeToggle />
+            <button className="btn btn-outline btn-sm" style={{ flex:1 }} onClick={logout}>Logout</button>
+          </div>
         </div>
       </aside>
 
@@ -443,13 +509,13 @@ export default function App() {
               <button className="btn btn-outline btn-sm" onClick={goBack}>Back</button>
             )}
             {!onPlatformKey && <ModelSelector />}
-            <button className="btn btn-outline btn-sm" onClick={() => setShowTrackModal(true)}>
+            <button className="btn btn-outline btn-sm hide-mobile" onClick={() => setShowTrackModal(true)}>
               <PlusIcon /> Track Job
             </button>
-            <button className="btn btn-outline btn-sm" onClick={api.exportCSV}>Export CSV</button>
-            <ThemeToggle />
+            <button className="btn btn-outline btn-sm hide-mobile" onClick={api.exportCSV}>Export CSV</button>
+            <span className="hide-mobile"><ThemeToggle /></span>
             <span className="topbar-user">{user}</span>
-            <button className="btn btn-outline btn-sm" onClick={logout}>Logout</button>
+            <button className="btn btn-outline btn-sm hide-mobile" onClick={logout}>Logout</button>
           </div>
         </header>
         <div className="content scrollbar-thin">
@@ -463,6 +529,7 @@ export default function App() {
           {view === 'admin' && isAdmin && <Admin />}
           {view === 'dashboard' && <Dashboard onOpenJob={openJob} key={refreshKey} />}
           {view === 'jobs' && <JobList onOpenJob={openJob} key={refreshKey} />}
+          {view === 'activity' && <Activity onOpenJob={openJob} key={refreshKey} />}
           {view === 'insights' && <Insights />}
           {view === 'stories' && <StoryBank />}
           {view === 'job-detail' && selectedJobId && <JobDetail key={selectedJobId} jobId={selectedJobId} />}

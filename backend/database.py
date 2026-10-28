@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, Text, DateTime, JSON, Boolean, ForeignKey
+from sqlalchemy import event, create_engine, Column, Integer, String, Float, Text, DateTime, JSON, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -9,6 +9,14 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./swarm.db")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+@event.listens_for(Base.metadata, "before_drop")
+def _never_drop_live(target, connection, **kw):
+    """drop_all on the live DB wiped every table on 2026-10-24 (a test bound to it).
+    Tables are only ever dropped in throwaway test databases."""
+    if (connection.engine.url.database or "").endswith("swarm.db"):
+        raise RuntimeError("refusing to drop tables in the live swarm.db")
 
 
 class Job(Base):
@@ -48,6 +56,24 @@ class Job(Base):
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ApplicationFormEntry(Base):
+    """What an application form was filled with, field by field, per apply attempt.
+    source: "answers" (what HireOS proposed for a question) or "browser" (what the
+    apply agent actually typed/selected, captured by the apply-coach plugin)."""
+    __tablename__ = "application_form_entries"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    job_id = Column(Integer, ForeignKey("jobs.id"), index=True, nullable=False)
+    attempt = Column(Integer, default=1)
+    label = Column(Text, nullable=False)
+    value = Column(Text)
+    kind = Column(String)        # typed | selected | checked | clicked | proposed
+    source = Column(String)      # browser | answers
+    drafted = Column(Boolean, default=False)   # model-written, not from a stored fact
+    page_url = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class ApplicationEvent(Base):

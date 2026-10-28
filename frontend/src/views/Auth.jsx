@@ -64,7 +64,7 @@ export default function Auth({ onAuth, ssoError, initialMode = 'login', onBack }
 
         <div style={{ marginBottom: '1.5rem' }}>
           <h2 style={{
-            fontSize: '1.4rem', fontWeight: 700,
+            fontSize: '1.4rem', 
             fontFamily: 'var(--font-display)',
             color: 'var(--fg)', marginBottom: '0.35rem',
           }}>

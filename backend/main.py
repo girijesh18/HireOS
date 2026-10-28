@@ -8,11 +8,12 @@ from fastapi.responses import FileResponse, Response, JSONResponse, RedirectResp
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text
-from datetime import datetime, timedelta
+from sqlalchemy import func, text, or_, and_
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Any, Dict
 import os
 import re
+import sys
 import csv
 import io
 import json
@@ -20,13 +21,14 @@ import asyncio
 from pathlib import Path
 from urllib.parse import urlencode
 import shutil
+import imaplib
 import httpx
 from jose import JWTError, jwt
 import bcrypt as _bcrypt
 from pydantic import BaseModel as _BaseModel
 
 from database import (
-    init_db, get_db, SessionLocal, Job, ApplicationEvent, ResumeVersion,
+    init_db, get_db, SessionLocal, Job, ApplicationEvent, ApplicationFormEntry, ResumeVersion,
     CoverLetterVersion, Settings, LLMComparison,
     EvaluationReport, StoryBankEntry, FollowUpLog,
     MasterResumeComponent, ChatInteraction, User,
@@ -51,11 +53,15 @@ from schemas import (
 )
 import chat_store
 import connectors
+import apply_queue as aq
+import linkedin_guest
 from search import router as search_router
 from dotenv import load_dotenv
 from loguru import logger
 
 load_dotenv()
+import telegram_bot   # after load_dotenv: reads TELEGRAM_BOT_TOKEN at import
+import discord_bot    # same, DISCORD_BOT_TOKEN
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 # loguru was imported in eight modules but never configured, so everything went
@@ -66,9 +72,17 @@ LOG_DIR = Path(os.getenv("LOG_DIR", "./logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 logger.add(
     LOG_DIR / "hireos_{time:YYYY-MM-DD}.log",
-    rotation="10 MB", retention="7 days", level=os.getenv("LOG_LEVEL", "INFO"),
+    rotation="10 MB", retention="30 days", level=os.getenv("LOG_LEVEL", "INFO"),
     backtrace=True, diagnose=False, enqueue=True,
 )
+# Recent errors, served by /api/ops/errors so the OpenClaw watchdog can post them to
+# Discord #alerts -- an error that only reaches a log file is an error nobody sees.
+import collections as _collections
+OPS_ERRORS: "_collections.deque" = _collections.deque(maxlen=200)
+logger.add(lambda m: OPS_ERRORS.append({"at": m.record["time"].astimezone(timezone.utc).isoformat(),
+                                        "where": f'{m.record["name"]}:{m.record["function"]}',
+                                        "message": str(m.record["message"])[:500]}),
+           level="ERROR", format="{message}")
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 # Same shape as BILLING_UNLIMITED_EMAILS: an env allowlist, so admin rights need
@@ -490,6 +504,7 @@ _USER_KEY_MAP = {
     "openai_api_key": "openai",
     "nvidia_api_key": "nvidia",
     "ollama_base_url": "ollama_url",
+    "local_llm_url": "local_url",
     "github_token": "github_token",
     "github_username": "github_username",
 }
@@ -1127,6 +1142,59 @@ def startup():
         db.close()
 
     logger.info("HireOS API started ✓")
+
+
+@app.on_event("startup")
+async def _start_telegram():
+    # DATABASE_URL guard: tests import main and must never poll the real bot
+    if telegram_bot.TOKEN and "test" not in os.getenv("DATABASE_URL", ""):
+        asyncio.create_task(telegram_bot.run())
+        logger.info("[telegram] bot polling started")
+
+
+@app.on_event("startup")
+async def _start_discord():
+    if discord_bot.TOKEN and "test" not in os.getenv("DATABASE_URL", ""):
+        asyncio.create_task(discord_bot.run())
+        logger.info("[discord] bot started")
+
+
+@app.post("/api/discord/link")
+def discord_link(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """One-time code (15 min): typing `link <code>` in a Discord channel binds that channel and that Discord user."""
+    if not discord_bot.TOKEN:
+        raise HTTPException(503, "Discord bot is not configured on this server")
+    code, stored = telegram_bot.new_link_code(datetime.utcnow())
+    _put_setting(db, current_user.id, discord_bot.CODE_KEY, stored)
+    db.commit()
+    return {"code": code, "say": f"link {code}"}
+
+
+def _chat_send(db: Session, user_id: int, text: str, markup: dict = None, photo: bytes = None) -> dict:
+    """One message to every chat the user linked (Telegram, Discord). {"msg": telegram id, "dmsg": discord id}."""
+    if photo:
+        return {"msg": telegram_bot.send_photo(db, user_id, photo, text, markup),
+                "dmsg": discord_bot.send_photo(db, user_id, photo, text, markup)}
+    return {"msg": telegram_bot.send(db, user_id, text, markup), "dmsg": discord_bot.send(db, user_id, text, markup)}
+
+
+@app.on_event("startup")
+async def _start_scheduler():
+    import scheduler, sys
+    if scheduler.enabled():
+        asyncio.create_task(scheduler.run(sys.modules[__name__]))
+        logger.info("[scheduler] background jobs started")
+
+
+@app.post("/api/telegram/link")
+def telegram_link(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """One-time t.me link (15 min) that binds the Telegram chat that opens it to this user."""
+    if not telegram_bot.TOKEN:
+        raise HTTPException(503, "Telegram bot is not configured on this server")
+    code, stored = telegram_bot.new_link_code(datetime.utcnow())
+    _put_setting(db, current_user.id, telegram_bot.CODE_KEY, stored)
+    db.commit()
+    return {"url": f"https://t.me/{telegram_bot.username()}?start={code}"}
 
 
 
@@ -2128,6 +2196,14 @@ async def track_url(payload: Dict[str, Any], db: Session = Depends(get_db), curr
     if not url:
         raise HTTPException(status_code=400, detail="url is required")
 
+    # Alert emails repeat postings; answer from the DB before spending a scrape + LLM call.
+    existing = _find_duplicate_job(db, current_user.id, url=url)
+    if existing:
+        return {"job_id": existing.id, "duplicate": True, "job": {
+            "id": existing.id, "company": existing.company, "title": existing.title,
+            "status": existing.status, "platform": existing.platform, "remote": existing.remote,
+        }}
+
     try:
         # Retrieve additional settings for scraping (per-user)
         captcha_key = db.query(Settings).filter(Settings.key == "twocaptcha_api_key", Settings.user_id == current_user.id).first()
@@ -2147,6 +2223,16 @@ async def track_url(payload: Dict[str, Any], db: Session = Depends(get_db), curr
         # Unexpected crash
         raise HTTPException(status_code=500, detail=f"Job discovery failed: {e}")
 
+    # LinkedIn reposts one opening under several ids (one per city), and a posting can
+    # arrive from both an ATS feed and LinkedIn, so the URL check above isn't enough.
+    existing = _find_duplicate_job(db, current_user.id, url=data.get("url"),
+                                   company=data.get("company"), title=data.get("title"))
+    if existing:
+        return {"job_id": existing.id, "duplicate": True, "job": {
+            "id": existing.id, "company": existing.company, "title": existing.title,
+            "status": existing.status, "platform": existing.platform, "remote": existing.remote,
+        }}
+
     # Map extracted data to DB fields
     job = Job(
         company=data.get("company") or "Unknown",
@@ -2157,7 +2243,7 @@ async def track_url(payload: Dict[str, Any], db: Session = Depends(get_db), curr
         remote=data.get("remote", False),
         salary_min=_as_int(data.get("salary_min")),
         salary_max=_as_int(data.get("salary_max")),
-        platform=data.get("platform", "direct"),
+        platform=_platform_for(data.get("url") or url, data.get("platform")),
         status="found",
         meta={"tech_stack": data.get("tech_stack", []), "seniority": data.get("seniority")},
         user_id=current_user.id,
@@ -2177,13 +2263,243 @@ async def track_url(payload: Dict[str, Any], db: Session = Depends(get_db), curr
 
 
 
+@app.post("/api/agent/linkedin-search")
+async def linkedin_search(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Import LinkedIn jobs via the public guest API (no LinkedIn login).
+    Body: { "keywords": "...", "location": "Toronto, Ontario, Canada", "posted_within": "day|week|month|any", "limit": 10, "llm": "gemini" }
+    New postings go through track-url, so each one costs one LLM extraction; duplicates are free.
+    """
+    keywords = (payload.get("keywords") or "").strip()
+    if not keywords:
+        raise HTTPException(status_code=400, detail="keywords is required")
+    # ponytail: synchronous and capped at 10 so the request finishes inside proxy timeouts; move to a background task if bigger imports are needed
+    limit = max(1, min(int(payload.get("limit") or 10), 10))
+    try:
+        ids = await linkedin_guest.search_ids(keywords, payload.get("location") or "",
+                                              payload.get("posted_within") or "week", limit=limit * 3)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+    added, duplicates, failed = [], 0, []
+    for job_id in ids:
+        if len(added) >= limit:
+            break
+        url = linkedin_guest.canonical_url(job_id)
+        if _find_duplicate_job(db, current_user.id, url=url):
+            duplicates += 1
+            continue
+        try:
+            res = await track_url({"url": url, "llm": payload.get("llm")}, db, current_user)
+        except HTTPException as e:
+            failed.append({"url": url, "error": e.detail})
+            continue
+        if res.get("duplicate"):
+            duplicates += 1
+        else:
+            added.append(res["job"])
+        await asyncio.sleep(1.5)  # stay well under LinkedIn's burst limit
+
+    return {"found": len(ids), "added": added, "duplicates": duplicates, "failed": failed}
+
+
+async def _linkedin_twin(j: Dict[str, str]) -> str:
+    """LinkedIn URL of the same posting (same company, same title) as a Glassdoor alert job, or ''."""
+    import mail_updates
+    try:
+        ids = await linkedin_guest.search_ids(f'{j["title"]} {j["company"]}', j.get("location") or "", "month", limit=5)
+        for job_id in ids[:5]:
+            li = await linkedin_guest.fetch_job(job_id)
+            if mail_updates._says(li["company"], j["company"]) and mail_updates._says(li["title"], j["title"]):
+                return linkedin_guest.canonical_url(job_id)
+            await asyncio.sleep(1)
+    except ValueError:
+        pass
+    return ""
+
+
+@app.post("/api/agent/scan-mail")
+async def scan_mail(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Add jobs from LinkedIn / Indeed / Glassdoor alert emails in the Gmail inbox set by GMAIL_ADDRESS (read-only IMAP).
+    Body: { "days": 2, "limit": 10, "llm": "local" }
+    Re-scanning is cheap: postings already tracked are skipped before any fetch or LLM call.
+    Indeed jobs only have the alert-email snippet as their JD and are flagged meta.partial_jd.
+    """
+    import mail_alerts
+    # ponytail: one mailbox from env, fine for the local single-user instance; per-user creds in Settings if Fly users need it
+    limit = max(1, min(int(payload.get("limit") or 10), 10))
+    try:
+        found = await asyncio.to_thread(mail_alerts.fetch_alert_jobs, int(payload.get("days") or 2))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except imaplib.IMAP4.error as e:
+        raise HTTPException(status_code=401, detail=f"Gmail login failed: {e}")
+
+    added, duplicates, failed = [], 0, []
+    for j in found:
+        if len(added) >= limit:
+            break
+        if _find_duplicate_job(db, current_user.id, url=j["url"], company=j.get("company"), title=j.get("title")):
+            duplicates += 1
+            continue
+        try:
+            if j["source"] == "glassdoor":
+                # Glassdoor pages are behind Cloudflare: take the full posting from LinkedIn when it is there.
+                li = await _linkedin_twin(j)
+                if li:
+                    j = {**j, "source": "linkedin", "url": li}
+            if j["source"] == "linkedin":
+                res = await track_url({"url": j["url"], "llm": payload.get("llm")}, db, current_user)
+                await asyncio.sleep(1.5)  # LinkedIn burst limit
+            else:
+                res = await track_jd_text({"url": j["url"], "text": j["text"], "llm": payload.get("llm")}, db, current_user)
+                if not res.get("duplicate"):
+                    job = db.query(Job).get(res["job_id"])
+                    job.meta = {**(job.meta or {}), "partial_jd": True}
+                    db.commit()
+                    res["job"]["partial_jd"] = True
+        except HTTPException as e:
+            failed.append({"url": j["url"], "error": e.detail})
+            continue
+        if res.get("duplicate"):
+            duplicates += 1
+        else:
+            added.append({**res["job"], "url": j["url"]})
+
+    return {"found": len(found), "added": added, "duplicates": duplicates, "failed": failed}
+
+
+@app.post("/api/agent/workday-verify-link")
+async def workday_verify_link(payload: Dict[str, Any], current_user: User = Depends(get_current_user)):
+    """
+    Newest Workday account-verification link from the Gmail inbox (read-only), for the apply agent.
+    Body: { "host": "manulife.wd3.myworkdayjobs.com", "minutes": 30 }  →  { "link": "..." | "" }
+    Only links on *.myworkdayjobs.com (and on `host`, when given) are ever returned.
+    """
+    import mail_alerts
+    try:
+        link = await asyncio.to_thread(mail_alerts.fetch_workday_verify_link,
+                                       (payload.get("host") or "").strip().lower(), int(payload.get("minutes") or 30))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except imaplib.IMAP4.error as e:
+        raise HTTPException(status_code=401, detail=f"Gmail login failed: {e}")
+    return {"link": link}
+
+
+@app.post("/api/agent/email-code")
+async def agent_email_code(payload: Dict[str, Any], current_user: User = Depends(get_current_user)):
+    """
+    Newest one-time code an application system (Oracle, Greenhouse, Workday, ...) emailed the user.
+    Body: { "minutes": 15 }  →  { "code": "123456", "sender": "oraclecloud.com" } | {}
+    Mail from any other sender is never downloaded, so this can't read Google or bank codes.
+    """
+    import mail_alerts
+    try:
+        return await asyncio.to_thread(mail_alerts.fetch_ats_code, int(payload.get("minutes") or 15))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except imaplib.IMAP4.error as e:
+        raise HTTPException(status_code=401, detail=f"Gmail login failed: {e}")
+
+
+@app.post("/api/agent/confirmation-email")
+async def agent_confirmation_email(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Emails confirming an application to this job's company, for applications made outside an
+    apply run. Body: { "job_id": 47, "days": 14 } → { "company", "emails": [{from, subject, date, matched_on}] }
+    Headers only; no message body is read.
+    """
+    import mail_alerts
+    job = db.query(Job).filter(Job.id == int(payload.get("job_id") or 0), Job.user_id == current_user.id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        emails = await asyncio.to_thread(mail_alerts.fetch_confirmations, job.company, job.title, int(payload.get("days") or 14))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except imaplib.IMAP4.error as e:
+        raise HTTPException(status_code=401, detail=f"Gmail login failed: {e}")
+    return {"job_id": job.id, "company": job.company, "emails": emails}
+
+
+@app.post("/api/agent/scan-updates")
+async def agent_scan_updates(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Application status updates from Gmail (received / rejected / interview / assessment / offer),
+    applied to the matching jobs. Each email is handled once. Body: { "days": 3 }
+    → { "checked": n, "updates": [{job_id?, company, title, kind, old, new, subject, from, date}] }
+    Status only moves forward, and only when the email names the job's title (company-only
+    matches are reported, not applied).
+    """
+    try:
+        return await scan_mail_updates(db, current_user.id, int(payload.get("days") or 3))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except imaplib.IMAP4.error as e:
+        raise HTTPException(status_code=401, detail=f"Gmail login failed: {e}")
+
+
+async def scan_mail_updates(db: Session, user_id: int, days: int) -> Dict[str, Any]:
+    """The Gmail status scan behind /api/agent/scan-updates (also run by scheduler.py).
+    Raises ValueError (Gmail not configured) and imaplib.IMAP4.error (login failed)."""
+    import mail_updates as mu
+    seen = json.loads(_setting(db, user_id, "mail_updates_seen") or "[]")
+    jobs = [{"id": j.id, "company": j.company or "", "title": j.title or "", "status": j.status, "applied_at": j.applied_at}
+            for j in db.query(Job).filter(Job.user_id == user_id, Job.status != "withdrawn").all()]
+    mails = await asyncio.to_thread(mu.fetch, days, set(seen), jobs)
+    router = get_llm_router(db, user_id)
+    updates = []
+    for m in reversed(mails):                             # oldest first, so statuses move in order
+        try:
+            kind = await mu.classify(router, m, loads=_parse_llm_json)
+        except Exception as e:                            # local model down: keep it unseen, retry next scan
+            logger.warning(f"[mail-updates] classify failed, will retry: {e}")
+            break
+        seen.append(m["id"])
+        mj = m["job"]
+        if kind == "other" or (not mj and kind == "received"):
+            continue
+        u = {"kind": kind, "subject": m["subject"], "from": m["from"], "date": m["date"],
+             "company": mj.get("company", ""), "title": mj.get("title", ""), "job_id": mj.get("id")}
+        if mj:
+            job = db.query(Job).get(mj["id"])
+            named = mu._says(m["subject"] + " " + m["body"], job.title or "")
+            new = mu.new_status(job.status, kind) if named else ""
+            u.update(old=job.status, new=new or job.status, title_matched=named)
+            if new:
+                job.status = new
+                if new == "applied" and not job.applied_at:
+                    job.applied_at = datetime.utcnow()
+                if new == "rejected":
+                    job.rejection_reason = m["subject"][:200]
+                mj["status"] = new
+            elif kind == "received":
+                continue                                  # already past "applied": nothing to say
+            _log_event(db, job.id, "status_change" if new else "agent_action", f"Email: {kind}",
+                       f'"{m["subject"]}" from {m["from"]} ({m["date"]})', old_value=u["old"], new_value=u["new"],
+                       source="email", user_id=user_id)
+        updates.append(u)
+    _put_setting(db, user_id, "mail_updates_seen", json.dumps(seen[-1000:]))
+    db.commit()
+    return {"checked": len(mails), "updates": updates}
+
+
 @app.post("/api/agent/track-jd")
 async def track_jd_text(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Extract job data from pasted JD text (for LinkedIn and login-walled sites).
-    Body: { "text": "...", "llm": "gemini" }
+    Body: { "text": "...", "llm": "gemini", "url"?: "where the JD came from" }
     """
     text = payload.get("text", "").strip()
+    source_url = (payload.get("url") or "").strip()
+    existing = _find_duplicate_job(db, current_user.id, url=source_url) if source_url else None
+    if existing:
+        return {"job_id": existing.id, "duplicate": True, "job": {
+            "id": existing.id, "company": existing.company, "title": existing.title,
+            "status": existing.status, "platform": existing.platform, "remote": existing.remote,
+        }}
     llm = resolve_llm(db, current_user.id, payload.get("llm"))
     if not text or len(text) < 50:
         raise HTTPException(status_code=400, detail="Please paste the full job description text (at least 50 characters).")
@@ -2194,16 +2510,25 @@ async def track_jd_text(payload: Dict[str, Any], db: Session = Depends(get_db), 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Job extraction failed: {e}")
 
+    existing = _find_duplicate_job(db, current_user.id, url=data.get("url"),
+                                   company=data.get("company"), title=data.get("title"))
+    if existing:
+        return {"job_id": existing.id, "duplicate": True, "job": {
+            "id": existing.id, "company": existing.company, "title": existing.title,
+            "status": existing.status, "platform": existing.platform, "remote": existing.remote,
+        }}
+
+    job_url = source_url or data.get("url") or ""
     job = Job(
         company=data.get("company") or "Unknown",
         title=data.get("title") or "Unknown",
-        url=data.get("url") or "",
+        url=job_url,
         job_description=data.get("job_description") or text,
         location=data.get("location", ""),
         remote=data.get("remote", False),
         salary_min=_as_int(data.get("salary_min")),
         salary_max=_as_int(data.get("salary_max")),
-        platform=data.get("platform", "linkedin"),
+        platform=_platform_for(job_url, data.get("platform") or "linkedin"),
         status="found",
         meta={"tech_stack": data.get("tech_stack", []), "seniority": data.get("seniority")},
         user_id=current_user.id,
@@ -2233,6 +2558,7 @@ class _AppQuestion(_BaseModel):
 class _AppAnswer(_BaseModel):
     id: str
     answer: Optional[str] = None
+    drafted: bool = False   # written by the model rather than taken from a stated fact
 
 
 class _AppAnswerList(_BaseModel):
@@ -2257,8 +2583,9 @@ def _validate_answers(answers: List[dict], questions: List[dict]) -> List[dict]:
             ans = match  # None if the model invented a choice
         if ans is not None and q.get("maxlen"):
             ans = ans[: int(q["maxlen"])]
-        out[q["id"]] = ans
-    return [{"id": qid, "answer": out.get(qid)} for qid in q_by_id]
+        out[q["id"]] = (ans, bool(a.get("drafted")) and ans is not None)
+    return [{"id": qid, "answer": out.get(qid, (None, False))[0], "drafted": out.get(qid, (None, False))[1]}
+            for qid in q_by_id]
 
 
 def _qa_components_text(db: Session, user_id: int) -> str:
@@ -2280,7 +2607,50 @@ STRICT RULES:
 - If the background does not contain the information needed, return null for that question's answer.
 - When a question lists options, the answer MUST be exactly one of the options (verbatim).
 - Respect maxlen when given. Write in first person, concise and professional.
-- Legal/eligibility questions (visa, work authorization, criminal record, etc.): null unless explicitly stated in the background."""
+- Legal/eligibility questions (visa, work authorization, criminal record, etc.): null unless explicitly stated in the background.
+- The APPLICATION PROFILE is filled in by the candidate and overrides anything else. Its custom Q&A answers apply to any question asking the same thing.
+- Voluntary demographic (EEO) questions: use the profile's answer; if it has none, pick the "decline to answer"/"prefer not to say" option, or null if there is none.
+- Set drafted=false on every answer unless a rule below allows drafting."""
+
+SYSTEM_APP_DRAFTS = """
+- DRAFTING ALLOWED for open-ended prose questions only (why this company, why this role, tell us about a project, cover-letter style): write a short answer from the background and job description and set drafted=true. Never draft facts: eligibility, salary, dates, years, degrees, yes/no or option questions stay grounded or null."""
+
+
+APPLICATION_PROFILE_KEY = "application_profile"
+
+
+def _application_profile(db: Session, user_id: int) -> Dict[str, Any]:
+    try:
+        return json.loads(_setting(db, user_id, APPLICATION_PROFILE_KEY) or "{}")
+    except ValueError:
+        return {}
+
+
+def _application_profile_text(profile: Dict[str, Any]) -> str:
+    """The form as "label: value" lines for the answer prompt; blanks dropped."""
+    lines = [f"{k.replace('_', ' ')}: {v}" for k, v in profile.items()
+             # work/education history duplicate the master resume, which the prompt already has
+             if not k.startswith("_") and k not in ("custom_qa", "work_history", "education_history")
+             and str(v or "").strip()]
+    lines += [f"Q: {qa.get('q')}\nA: {qa.get('a')}" for qa in profile.get("custom_qa") or []
+              if str(qa.get("q") or "").strip() and str(qa.get("a") or "").strip()]
+    return "\n".join(lines)
+
+
+@app.get("/api/apply/profile")
+def get_application_profile(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _application_profile(db, current_user.id)
+
+
+@app.put("/api/apply/profile")
+def put_application_profile(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """The user's own answers to common application questions -- ground truth for the apply agent."""
+    raw = json.dumps(payload)
+    if len(raw) > 50_000:
+        raise HTTPException(status_code=400, detail="Profile too large")
+    _put_setting(db, current_user.id, APPLICATION_PROFILE_KEY, raw)
+    db.commit()
+    return payload
 
 
 @app.post("/api/agent/answer-questions")
@@ -2303,8 +2673,10 @@ async def answer_questions(payload: Dict[str, Any], db: Session = Depends(get_db
 
     background = get_master_resume(db, current_user.id)
     qa_text = _qa_components_text(db, current_user.id)
-    contact = extract_contact_info(get_raw_resume_content(db, current_user.id))
-    if not background and not qa_text:
+    contact = contact_facts(db, current_user.id)
+    profile = _application_profile(db, current_user.id)
+    profile_text = _application_profile_text(profile)
+    if not background and not qa_text and not profile_text:
         raise HTTPException(status_code=400, detail="No master resume configured — nothing to answer from.")
 
     llm = resolve_llm(db, current_user.id, payload.get("llm"))
@@ -2319,6 +2691,8 @@ JOB DESCRIPTION:
 CANDIDATE CONTACT FACTS (verified):
 {json.dumps(contact)}
 
+{"APPLICATION PROFILE (filled in by the candidate -- highest priority):" + chr(10) + profile_text if profile_text else ""}
+
 CANDIDATE BACKGROUND (verified — the ONLY source of truth):
 {background[:12000]}
 
@@ -2332,21 +2706,690 @@ APPLICATION QUESTIONS:
 Answer each question. Return null for any answer not grounded in the background."""
 
     try:
-        result = await router.structured_complete(prompt, _AppAnswerList, llm=llm, system=SYSTEM_APP_ANSWERS)
+        system = SYSTEM_APP_ANSWERS + (SYSTEM_APP_DRAFTS if profile.get("_allow_drafts") else "")
+        result = await router.structured_complete(prompt, _AppAnswerList, llm=llm, system=system)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
 
     answers = _validate_answers([a.model_dump() for a in result.answers], questions)
+    drafted = [q["label"] for q, a in zip(questions, answers) if a["drafted"]]
     _log_event(db, job.id, "agent_action", "Application questions answered",
-               f"{sum(1 for a in answers if a['answer'])} of {len(answers)} fields grounded",
+               f"{sum(1 for a in answers if a['answer'] and not a['drafted'])} of {len(answers)} fields grounded"
+               + (f"; drafted (review): {', '.join(drafted)}" if drafted else ""),
                source="agent", user_id=current_user.id)
+    _add_form_entries(db, job, current_user.id, [
+        {"label": q["label"], "value": a["answer"], "kind": "proposed", "drafted": a["drafted"]}
+        for q, a in zip(questions, answers)], source="answers")
     return {"answers": answers}
+
+
+# ── Application form data (what each application was filled with) ─────────────
+
+def _add_form_entries(db: Session, job: Job, user_id: int, entries: List[Dict[str, Any]], source: str):
+    attempt = (job.meta or {}).get("apply_attempts") or 1
+    for e in entries:
+        label = str(e.get("label") or "").strip()
+        if not label:
+            continue
+        value = e.get("value")
+        db.add(ApplicationFormEntry(
+            job_id=job.id, user_id=user_id, attempt=attempt, label=label[:500],
+            value=None if value is None else str(value)[:4000], kind=e.get("kind"), source=source,
+            drafted=bool(e.get("drafted")), page_url=(e.get("page_url") or None)))
+    db.commit()
+
+
+@app.post("/api/apply/{job_id}/form")
+def add_form_entries(job_id: int, payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Body: {entries: [{label, value, kind, page_url?}]} -- fields the apply agent filled."""
+    job = get_owned_job(db, job_id, current_user)
+    _add_form_entries(db, job, current_user.id, payload.get("entries") or [], source="browser")
+    return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/form")
+def get_form_entries(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Every field of every apply attempt, oldest first; the last browser value per label is
+    what was submitted."""
+    get_owned_job(db, job_id, current_user)
+    rows = db.query(ApplicationFormEntry).filter_by(job_id=job_id, user_id=current_user.id) \
+        .order_by(ApplicationFormEntry.id).all()
+    return [{"attempt": r.attempt, "label": r.label, "value": r.value, "kind": r.kind, "source": r.source,
+             "drafted": r.drafted, "page_url": r.page_url, "at": r.created_at.isoformat()} for r in rows]
+
+
+def merge_contact(read: dict, resume_name: str, resume_contact: str, form: Dict[str, Any]) -> dict:
+    """Contact facts for application forms. The application form the user filled in
+    wins, then the parsed resume's header, then the regex read of the raw resume
+    (which can mistake a job title for the name)."""
+    c = dict(read)
+    if (resume_name or "").strip():
+        c["name"] = resume_name.strip()
+    # Header line: "Kitchener, Ontario, Canada | +1 ... | email | linkedin"
+    first = (resume_contact or "").split("|")[0].strip()
+    if first and "@" not in first and not re.search(r"\d", first):
+        c["location"] = first
+    for key, field in (("preferred_name", "preferred_name"), ("phone", "phone"),
+                       ("linkedin_url", "linkedin"), ("github_url", "github"),
+                       ("portfolio_url", "website"), ("street_address", "street_address"),
+                       ("postal_code", "postal_code")):
+        v = str(form.get(key) or "").strip()
+        if v:
+            c[field] = v
+    names = c.get("name", "").split()
+    # one word ("Girijesh") is a first name with no last name, not nothing
+    c["first_name"], c["last_name"] = (" ".join(names[:-1]), names[-1]) if len(names) > 1 else ((names or [""])[0], "")
+    parts = [x.strip() for x in c.get("location", "").split(",")]
+    c["city"], c["province"], c["country"] = (parts + ["", "", ""])[:3]
+    c["problems"] = contact_problems(c)
+    return c
+
+
+def contact_problems(c: dict) -> List[str]:
+    """Sanity checks on what an application form will receive. A non-empty list
+    means a reader upstream is broken -- the agent stops instead of typing it."""
+    p = []
+    name = c.get("name", "")
+    if not c.get("last_name") or re.search(r"[*#()\d|@]", name) or len(name.split()) > 4 \
+            or re.search(r"\b(scientist|engineer|lead|manager|developer|analyst|present)\b", name, re.I):
+        p.append(f"name looks wrong: {name!r}")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.\w+", c.get("email", "")):
+        p.append("email missing")
+    if len(re.sub(r"\D", "", c.get("phone", ""))) < 10:
+        p.append("phone missing")
+    loc = c.get("location", "").lower()
+    if not c.get("city") or any(t.lower() in loc for t in name.split() if len(t) > 2):
+        p.append(f"location looks wrong: {c.get('location', '')!r}")
+    return p
+
+
+def contact_facts(db: Session, user_id: int) -> dict:
+    rp = load_resume_profile(db, user_id)
+    return merge_contact(extract_contact_info(get_raw_resume_content(db, user_id)),
+                         rp.name if rp else "", rp.contact if rp else "",
+                         _application_profile(db, user_id))
 
 
 @app.get("/api/profile/contact")
 def profile_contact(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Verified contact facts (regex-extracted, no LLM) — extension fills profile fields locally."""
-    return extract_contact_info(get_raw_resume_content(db, current_user.id))
+    """Contact facts (no LLM) for the extension and the apply agent."""
+    return contact_facts(db, current_user.id)
+
+
+# ── Apply queue (consumed by the OpenClaw apply agent) ─────────────────────────
+# The agent asks for one job at a time; caps and approval are decided here, so
+# the agent never controls the volume.
+
+def _platform_for(url: Optional[str], extracted: Optional[str]) -> str:
+    """The URL's host is authoritative; the LLM's guess only fills "other"."""
+    detected = aq.detect_platform(url)
+    if detected != "other":
+        return detected
+    guess = (extracted or "").lower()
+    return guess if guess and guess != "direct" else "other"
+
+
+def _find_duplicate_job(db: Session, user_id: int, url: str = None,
+                        company: str = None, title: str = None) -> Optional[Job]:
+    norm = aq.normalize_url(url)
+    if norm:
+        # ids and URLs only (not whole rows with their descriptions); normalize_url is cached.
+        # ponytail: still a scan per insert -- store the normalized URL in an indexed column past ~50k jobs
+        for jid, u in db.query(Job.id, Job.url).filter(Job.user_id == user_id, Job.url.isnot(None), Job.url != ""):
+            if aq.normalize_url(u) == norm:
+                return db.get(Job, jid)
+    if company and title and company != "Unknown":
+        since = datetime.utcnow() - timedelta(days=60)
+        return db.query(Job).filter(
+            Job.user_id == user_id, Job.created_at >= since,
+            func.lower(Job.company) == company.lower(), func.lower(Job.title) == title.lower(),
+        ).first()
+    return None
+
+
+def _setting(db: Session, user_id: int, key: str) -> Optional[str]:
+    row = db.query(Settings).filter(Settings.key == key, Settings.user_id == user_id).first()
+    return row.value if row else None
+
+
+def _put_setting(db: Session, user_id: int, key: str, value: str):
+    row = db.query(Settings).filter(Settings.key == key, Settings.user_id == user_id).first()
+    if row:
+        row.value = value
+        row.updated_at = datetime.utcnow()
+    else:
+        db.add(Settings(key=key, value=value, user_id=user_id))
+
+
+def _apply_config(db: Session, user_id: int) -> Dict[str, Any]:
+    def num(key, default, cast=float):
+        try:
+            return cast(float(_setting(db, user_id, key) or default))
+        except ValueError:
+            return default
+    cfg = {
+        "auto_apply": (_setting(db, user_id, aq.AUTO_APPLY_KEY) or "").lower() == "true",
+        "paused": (_setting(db, user_id, aq.PAUSED_KEY) or "").lower() == "true",
+        "min_score": num(aq.MIN_SCORE_KEY, aq.DEFAULT_MIN_SCORE),
+        "max_attempts": num(aq.MAX_ATTEMPTS_KEY, aq.MAX_ATTEMPTS, int),
+        "claim_ttl_minutes": num(aq.CLAIM_TTL_KEY, int(aq.CLAIM_TTL.total_seconds() // 60), int),
+        "caps": aq.parse_caps(_setting(db, user_id, aq.CAPS_KEY)),
+        "timezone": _setting(db, user_id, aq.TIMEZONE_KEY) or aq.DEFAULT_TIMEZONE,
+        "max_posting_age_hours": num(aq.MAX_AGE_KEY, aq.DEFAULT_MAX_AGE_HOURS, int),
+        "auto_min_score": num(aq.AUTO_MIN_SCORE_KEY, aq.DEFAULT_AUTO_MIN_SCORE),
+    }
+    # min_score decides which jobs get a tailored resume; auto mode only applies on its
+    # own at the stricter auto_min_score -- review mode still shows everything >= min_score.
+    cfg["auto_min_score"] = max(cfg["auto_min_score"], cfg["min_score"])
+    # Two modes, one switch: auto = approve at/above min_score and apply on schedule;
+    # review = nothing is applied until the user approves the resume in #resume-review.
+    cfg["mode"] = "auto" if cfg["auto_apply"] else "review"
+    return cfg
+
+
+def _claim_ttl(cfg: Dict[str, Any]) -> timedelta:
+    return timedelta(minutes=cfg["claim_ttl_minutes"])
+
+
+def _latest_resume_pdf(db: Session, job_id: int) -> Optional[ResumeVersion]:
+    rows = (db.query(ResumeVersion).filter(ResumeVersion.job_id == job_id)
+            .order_by(ResumeVersion.version.desc()).all())
+    return next((r for r in rows if r.pdf_path and os.path.exists(r.pdf_path)), None)
+
+
+def _apply_usage(db: Session, user_id: int, cfg: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    """Per-platform {used, cap} for the user's current day. In-flight claims
+    count as used, so two concurrent agent runs can't overshoot a cap."""
+    now = datetime.utcnow()
+    day, start, end = aq.day_bounds_utc(cfg["timezone"], now)
+    used: Dict[str, int] = {}
+    applied = db.query(Job.platform).filter(
+        Job.user_id == user_id, Job.applied_at >= start, Job.applied_at < end).all()
+    for (platform,) in applied:
+        used[platform or "other"] = used.get(platform or "other", 0) + 1
+    for job in db.query(Job).filter(Job.user_id == user_id, Job.status.in_(["applying", "waiting_human"])).all():
+        if job.status == "waiting_human" or not aq.claim_is_stale(
+                (job.meta or {}).get("apply_claimed_at"), now, _claim_ttl(cfg)):
+            used[job.platform or "other"] = used.get(job.platform or "other", 0) + 1
+    platforms = set(used) | {p for p in cfg["caps"] if p != "default"}
+    return {p: {"used": used.get(p, 0), "cap": aq.daily_cap(cfg["caps"], p, user_id, day)}
+            for p in sorted(platforms)}
+
+
+@app.get("/api/apply/config")
+def get_apply_config(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _apply_config(db, current_user.id)
+
+
+@app.put("/api/apply/config")
+def put_apply_config(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Body (all optional): {mode: auto|review, auto_apply: bool, paused: bool, min_score: 0-100,
+    auto_min_score: 0-100 (auto mode's bar; never below min_score),
+    max_attempts: 1-10, max_posting_age_hours: 1-720,
+    claim_ttl_minutes: 10-1440, caps: {platform: n | [lo, hi]}, timezone}"""
+    if "mode" in payload:
+        if payload["mode"] not in ("auto", "review"):
+            raise HTTPException(status_code=400, detail="mode must be auto or review")
+        payload = {**payload, "auto_apply": payload["mode"] == "auto"}
+    for field, key in (("auto_apply", aq.AUTO_APPLY_KEY), ("paused", aq.PAUSED_KEY)):
+        if field in payload:
+            _put_setting(db, current_user.id, key, "true" if payload[field] else "false")
+    for field, key, lo, hi in (("max_attempts", aq.MAX_ATTEMPTS_KEY, 1, 10),
+                               ("claim_ttl_minutes", aq.CLAIM_TTL_KEY, 10, 1440),
+                               ("max_posting_age_hours", aq.MAX_AGE_KEY, 1, 720)):
+        if field in payload:
+            try:
+                n = int(payload[field])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{field} must be a whole number")
+            if not lo <= n <= hi:
+                raise HTTPException(status_code=400, detail=f"{field} must be between {lo} and {hi}")
+            _put_setting(db, current_user.id, key, str(n))
+    for field, key in (("min_score", aq.MIN_SCORE_KEY), ("auto_min_score", aq.AUTO_MIN_SCORE_KEY)):
+        if field not in payload:
+            continue
+        try:
+            score = float(payload[field])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{field} must be a number")
+        if not 0 <= score <= 100:
+            raise HTTPException(status_code=400, detail=f"{field} must be between 0 and 100")
+        _put_setting(db, current_user.id, key, str(score))
+    if "caps" in payload:
+        if not isinstance(payload["caps"], dict):
+            raise HTTPException(status_code=400, detail="caps must be an object")
+        bad = [k for k, v in payload["caps"].items() if not aq.valid_cap(v)]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"caps must be a whole number or [low, high]: {', '.join(map(str, bad))}")
+        _put_setting(db, current_user.id, aq.CAPS_KEY, json.dumps(payload["caps"]))
+    if "timezone" in payload:
+        from zoneinfo import ZoneInfo
+        try:
+            ZoneInfo(payload["timezone"])
+        except Exception:
+            raise HTTPException(status_code=400, detail="Unknown timezone")
+        _put_setting(db, current_user.id, aq.TIMEZONE_KEY, payload["timezone"])
+    db.commit()
+    return _apply_config(db, current_user.id)
+
+
+@app.get("/api/apply/status")
+def apply_status(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Today's usage per platform plus queue depth -- for the UI and the agent."""
+    cfg = _apply_config(db, current_user.id)
+    by_status = dict(db.query(Job.status, func.count(Job.id)).filter(
+        Job.user_id == current_user.id,
+        Job.status.in_(["pending", "approved", "applying", "waiting_human", "needs_human"]),
+    ).group_by(Job.status).all())
+    return {"auto_apply": cfg["auto_apply"], "paused": cfg["paused"], "min_score": cfg["min_score"],
+            "today": _apply_usage(db, current_user.id, cfg), "queue": by_status}
+
+
+# Why the agent handed a job back, from its own note. First match wins.
+# ponytail: keyword heuristic on free-text notes; store a structured cause on /result if it misfiles.
+HANDOFF_CAUSES = [
+    ("workday", "Workday account — agent can do these now (Retry)", r"workday|myworkdayjobs"),
+    ("easy_apply", "LinkedIn Easy Apply only", r"easy apply"),
+    ("not_found", "No company posting found", r"no public apply|not found|no reachable|none found"),
+    ("account", "Needs an account / sign-in", r"account|sign[- ]?in|log ?in|passport\.amazon"),
+    ("bot", "Bot wall / CAPTCHA", r"captcha|bot|access denied|incapsula|cloudflare|robot"),
+    ("answers", "Missing answers", r"no grounded|required field|has no grounded|missing"),
+]
+
+
+def handoff_cause(note: str) -> str:
+    n = (note or "").lower()
+    return next((k for k, _, rx in HANDOFF_CAUSES if re.search(rx, n)), "other")
+
+
+@app.get("/api/apply/handoff")
+def apply_handoff(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Jobs the agent handed back, grouped by cause, with what you need to apply yourself."""
+    jobs = db.query(Job).filter(Job.user_id == current_user.id, Job.status == "needs_human").all()
+    groups: Dict[str, list] = {}
+    for job in jobs:
+        ev = (db.query(ApplicationEvent).filter(ApplicationEvent.job_id == job.id,
+                                                ApplicationEvent.title == "Apply agent: needs human")
+              .order_by(ApplicationEvent.id.desc()).first())
+        note = ev.description if ev else ""
+        rv = (db.query(ResumeVersion).filter(ResumeVersion.job_id == job.id)
+              .order_by(ResumeVersion.version.desc()).first())
+        careers = re.search(r"\[careers: (\S+?)\]", job.notes or "")
+        groups.setdefault(handoff_cause(note), []).append({
+            "id": job.id, "company": job.company, "title": job.title, "url": job.url,
+            "careers_url": careers.group(1) if careers else None, "note": note,
+            "resume_version": rv.version if rv else None,
+            "has_pdf": bool(rv and rv.pdf_path), "has_docx": bool(rv and rv.docx_path),
+            "answers": (job.meta or {}).get("apply_answers") or [],
+        })
+    labels = {k: label for k, label, _ in HANDOFF_CAUSES} | {"other": "Other"}
+    order = [k for k, _, _ in HANDOFF_CAUSES] + ["other"]
+    return [{"cause": k, "label": labels[k], "jobs": groups[k]} for k in order if k in groups]
+
+
+# A run that stops for the user (CAPTCHA, sign-in, missing answers, email code) parks
+# its job as waiting_human: the queue never hands it out again on its own, so a slow
+# reply can't lead to a second application of the same job. The 2-hour claim expiry
+# only applies to "applying", i.e. runs that died.
+@app.post("/api/apply/{job_id}/wait")
+def apply_wait(job_id: int, payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Body: {reason, kind?: wait|question|code|captcha|submit, url?, photo_b64?, doc_b64?, doc_name?, minutes?: 15}. Only a job this run
+    claimed (applying) can wait. The user is asked on Telegram. If they answer within `minutes`
+    the waiting run continues (it polls GET /api/apply/{id}/ask); later, the job is re-approved
+    and the watchdog starts a fresh run."""
+    job = get_owned_job(db, job_id, current_user)
+    if job.status != "applying":
+        raise HTTPException(409, f"Job is {job.status}, not applying -- only a claimed job can wait")
+    reason = (payload.get("reason") or "").strip() or "waiting for the user"
+    kind = payload.get("kind") if payload.get("kind") in ("question", "code", "captcha", "submit") else "wait"
+    deadline = datetime.utcnow() + timedelta(minutes=int(payload.get("minutes") or 15))
+    text, markup = telegram_bot.ask_message(job, kind, reason, payload.get("url"))
+    _send_doc(db, current_user.id, payload)
+    import base64   # photo: e.g. the Review page, so he sees exactly what would be sent
+    sent = _chat_send(db, current_user.id, text, markup,
+                      base64.b64decode(payload["photo_b64"]) if payload.get("photo_b64") else None)
+    job.status = "waiting_human"
+    job.meta = {**(job.meta or {}), "waiting_since": datetime.utcnow().isoformat(), "waiting_reason": reason,
+                "ask": {"q": reason, "kind": kind, **sent, "deadline": deadline.isoformat()}}
+    db.commit()
+    _log_event(db, job.id, "status_change", "Apply agent: waiting for you", reason,
+               old_value="applying", new_value="waiting_human", source="agent", user_id=current_user.id)
+    return {"job_id": job.id, "status": job.status, "telegram": bool(sent["msg"]), "discord": bool(sent["dmsg"])}
+
+
+def _send_doc(db: Session, user_id: int, payload: Dict[str, Any]):
+    """An attached file (doc_b64 + doc_name), sent ahead of the message it belongs to."""
+    if payload.get("doc_b64"):
+        import base64
+        name = re.sub(r"[^\w.-]+", "_", payload.get("doc_name") or "review.pdf")[:80]
+        data = base64.b64decode(payload["doc_b64"])
+        telegram_bot.send_document(db, user_id, data, name)
+        discord_bot.send_document(db, user_id, data, name)
+
+
+@app.get("/api/apply/{job_id}/ask")
+def apply_ask_status(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """What the waiting run polls: status goes back to applying once the user answered in time."""
+    job = get_owned_job(db, job_id, current_user)
+    ask = (job.meta or {}).get("ask") or {}
+    return {"job_id": job.id, "status": job.status, "kind": ask.get("kind"), "answer": ask.get("answer")}
+
+
+@app.post("/api/notify")
+def notify_user(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Body: {text, retry_job_id?, photo_b64?, doc_b64?, doc_name?}. A message (or screenshot + caption) to the user's linked Telegram chat."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+    rid = payload.get("retry_job_id")
+    markup = telegram_bot.retry_button(int(rid)) if rid else None
+    _send_doc(db, current_user.id, payload)
+    import base64
+    sent = _chat_send(db, current_user.id, text, markup,
+                      base64.b64decode(payload["photo_b64"]) if payload.get("photo_b64") else None)
+    return {"sent": bool(sent["msg"] or sent["dmsg"])}
+
+
+@app.post("/api/apply/{job_id}/continue")
+def apply_continue(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """The user answered: the same run takes the job back, with a fresh claim."""
+    job = get_owned_job(db, job_id, current_user)
+    if job.status != "waiting_human":
+        raise HTTPException(409, f"Job is {job.status}, not waiting")
+    meta = {k: v for k, v in (job.meta or {}).items() if k not in ("waiting_since", "waiting_reason")}
+    meta["apply_claimed_at"] = datetime.utcnow().isoformat()
+    job.status, job.meta = "applying", meta
+    db.commit()
+    _log_event(db, job.id, "status_change", "Apply agent: continuing", None,
+               old_value="waiting_human", new_value="applying", source="agent", user_id=current_user.id)
+    return {"job_id": job.id, "status": job.status}
+
+
+@app.post("/api/jobs/{job_id}/approve")
+def approve_job(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    job = get_owned_job(db, job_id, current_user)
+    if job.status in ("applied", "applying"):
+        raise HTTPException(status_code=409, detail=f"Job is already {job.status}")
+    old, job.status = job.status, "approved"
+    # A fresh approval (e.g. after needs_human) gets a fresh set of attempts. Approving a job held
+    # for the company cooldown is the user choosing to apply anyway.
+    meta = {k: v for k, v in (job.meta or {}).items() if k not in ("apply_attempts", "apply_claimed_at", "company_hold")}
+    if (job.meta or {}).get("company_hold"):
+        meta["company_ok"] = True
+    job.meta = meta
+    db.commit()
+    _log_event(db, job.id, "status_change", "Approved for applying", old_value=old, new_value="approved",
+               source="user", user_id=current_user.id)
+    return {"job_id": job.id, "status": job.status}
+
+
+@app.post("/api/apply/next")
+def apply_next(payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Claim the next job to apply to. Body (optional): {platforms: ["greenhouse", ...], job_id: 91}.
+    With job_id, only that job can be claimed (an apply worker spawned for one job).
+
+    Picks an approved job (or, with auto-apply on, a pending one at/above the
+    minimum score) that has a tailored resume PDF and whose platform still has
+    room under today's cap. 204 when nothing is ready; 429 when every requested
+    platform is at its cap; 423 when the user paused the agent.
+    """
+    cfg = _apply_config(db, current_user.id)
+    if cfg["paused"]:
+        raise HTTPException(status_code=423, detail="Auto-apply is paused in HireOS settings")
+    usage = _apply_usage(db, current_user.id, cfg)
+    wanted = [p.lower() for p in (payload.get("platforms") or [])]
+    # Platforms the HireOS apply worker owns: hidden from other claimers (OpenClaw), and the
+    # only ones the worker (payload.worker) takes.
+    worker_platforms = {p.strip().lower() for p in (_setting(db, current_user.id, "worker_platforms") or "").split(",") if p.strip()}
+    worker_owns = lambda platform: "*" in worker_platforms or platform in worker_platforms   # "*": the worker takes every job
+    now = datetime.utcnow()
+    auto_ok = aq.auto_claim_allowed(cfg["timezone"], now, _setting(db, current_user.id, aq.AUTO_LAST_KEY))
+
+    def has_room(platform: str) -> bool:
+        u = usage.get(platform) or {"used": 0, "cap": aq.daily_cap(cfg["caps"], platform, current_user.id,
+                                                                   aq.day_bounds_utc(cfg["timezone"], now)[0])}
+        return u["used"] < u["cap"]
+
+    candidates = db.query(Job).filter(
+        Job.user_id == current_user.id,
+        Job.status.in_(["approved", "pending", "applying"]),
+        *([Job.id == int(payload["job_id"])] if payload.get("job_id") else []),
+    ).order_by(Job.match_score.desc().nullslast(), Job.created_at).all()
+
+    since = now - timedelta(days=aq.COMPANY_COOLDOWN_DAYS)
+    applied_to = {aq.company_key(c): (c, at) for c, at in db.query(Job.company, Job.applied_at).filter(
+        Job.user_id == current_user.id, Job.applied_at >= since)}
+
+    capped = False
+    for job in candidates:
+        platform = job.platform or "other"
+        if wanted and platform not in wanted:
+            continue
+        if worker_owns(platform) != bool(payload.get("worker")):
+            continue
+        meta = dict(job.meta or {})
+        if job.status == "applying" and not aq.claim_is_stale(meta.get("apply_claimed_at"), now, _claim_ttl(cfg)):
+            continue
+        if job.status == "pending" and not aq.is_auto_approvable(cfg["auto_apply"], cfg["auto_min_score"], job.status, job.match_score):
+            continue
+        if job.status == "pending" and not auto_ok and not payload.get("job_id"):   # auto mode's own pace
+            continue
+        if meta.get("apply_attempts", 0) >= cfg["max_attempts"]:
+            continue
+        # One application per company per cooldown. Checked only for a job that would be claimed now,
+        # so it is held (and logged) once. Naming the job, or approving it again after the hold, overrides.
+        key = aq.company_key(job.company)
+        prior = applied_to.get(key) if key else None
+        if prior and not payload.get("job_id") and not meta.get("company_ok"):
+            old = job.status
+            job.status, meta["apply_attempts"], meta["company_hold"] = "pending", cfg["max_attempts"], True
+            job.meta = meta
+            db.commit()
+            _log_event(db, job.id, "status_change", "Held: already applied to this company",
+                       f"Applied to {prior[0]} on {prior[1]:%Y-%m-%d}; one application per company per "
+                       f"{aq.COMPANY_COOLDOWN_DAYS} days. Approve it again (or tap Retry) to apply anyway.",
+                       old_value=old, new_value="pending", source="agent", user_id=current_user.id)
+            continue
+        if not has_room(platform):
+            capped = True
+            continue
+        resume = _latest_resume_pdf(db, job.id)
+        if not resume:
+            continue
+        if job.status == "pending":
+            _put_setting(db, current_user.id, aq.AUTO_LAST_KEY, now.isoformat())
+            _log_event(db, job.id, "status_change", "Auto-approved",
+                       f"Match score {job.match_score} ≥ {cfg['auto_min_score']}", old_value="pending",
+                       new_value="approved", source="agent", user_id=current_user.id)
+        meta["apply_claimed_at"] = now.isoformat()
+        meta["apply_attempts"] = meta.get("apply_attempts", 0) + 1
+        job.meta = meta
+        job.status = "applying"
+        db.commit()
+        _log_event(db, job.id, "agent_action", "Apply agent: claimed",
+                   f"Attempt {meta['apply_attempts']} on {platform}", old_value=None, new_value="applying",
+                   source="agent", user_id=current_user.id)
+        return {
+            "job_id": job.id, "company": job.company, "title": job.title, "url": job.url,
+            "platform": platform, "match_score": job.match_score, "location": job.location,
+            "resume_pdf_url": f"/api/jobs/{job.id}/resume.pdf",
+            "resume_filename": resume_filename(job, resume),
+            "attempt": meta["apply_attempts"],
+            "remaining_today": usage.get(platform, {}).get("cap", 0) - usage.get(platform, {}).get("used", 0) - 1,
+        }
+    if capped:
+        raise HTTPException(status_code=429, detail="Daily apply cap reached for every platform with queued jobs")
+    return Response(status_code=204)
+
+
+@app.post("/api/apply/{job_id}/result")
+def apply_result(job_id: int, payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Report how an application went. Body: {outcome: submitted|needs_human|failed|skipped,
+    notes?, answers?: [{label, answer}], screenshot_b64?: PNG}"""
+    job = get_owned_job(db, job_id, current_user)
+    max_attempts = _apply_config(db, current_user.id)["max_attempts"]
+    outcome = payload.get("outcome")
+    if outcome not in aq.OUTCOMES:
+        raise HTTPException(status_code=400, detail=f"outcome must be one of {', '.join(aq.OUTCOMES)}")
+    meta = dict(job.meta or {})
+    meta.pop("apply_claimed_at", None)
+
+    shot = payload.get("screenshot_b64")
+    if shot:
+        import base64
+        out_dir = Path(os.getenv("OUTPUT_DIR", "./output")) / str(job.id)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        name = f"apply_{outcome}_{datetime.utcnow():%Y%m%d_%H%M%S}.png"
+        try:
+            (out_dir / name).write_bytes(base64.b64decode(shot.split(",", 1)[-1]))
+            meta.setdefault("apply_screenshots", []).append(name)
+        except (ValueError, OSError) as e:
+            logger.warning(f"[apply] screenshot not saved for job {job.id}: {e}")
+    if payload.get("answers"):
+        meta["apply_answers"] = payload["answers"]
+
+    old = job.status
+    if outcome == "submitted":
+        job.status, job.applied_at = "applied", datetime.utcnow()
+    elif outcome == "needs_human":
+        job.status = "needs_human"
+    elif outcome == "skipped":
+        job.status = "pending"
+        meta["apply_attempts"] = max_attempts   # don't hand it out again automatically
+    else:  # failed: back in the queue until max_attempts, then a human looks
+        job.status = "approved" if meta.get("apply_attempts", 0) < max_attempts else "needs_human"
+    job.meta = meta
+    db.commit()
+    _log_event(db, job.id, "status_change" if job.status != old else "agent_action",
+               f"Apply agent: {outcome.replace('_', ' ')}", payload.get("notes") or None,
+               old_value=old, new_value=job.status, source="agent", user_id=current_user.id)
+    telegram_bot.notify_outcome(db, current_user.id, job, outcome, payload.get("notes"))
+    discord_bot.notify_outcome(db, current_user.id, job, outcome, payload.get("notes"))
+    return {"job_id": job.id, "status": job.status}
+
+
+# ── Activity & flags (dashboard) ──────────────────────────────────────────────
+# Everything comes from tables that already exist: the event log, job status/meta
+# and LLM task statuses. A flag is derived on each request, so it clears itself
+# once the underlying problem is fixed; dismissing only hides it.
+
+DISMISSED_FLAGS_KEY = "dismissed_flags"
+
+
+@app.get("/api/activity")
+def activity(days: int = 7, source: Optional[str] = None, limit: int = 500,
+             db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Recent events across all jobs, newest first, with the job's company/title/platform."""
+    since = datetime.utcnow() - timedelta(days=max(1, min(days, 90)))
+    q = (db.query(ApplicationEvent, Job.company, Job.title, Job.platform)
+         .join(Job, Job.id == ApplicationEvent.job_id)
+         .filter(Job.user_id == current_user.id, ApplicationEvent.created_at >= since))
+    if source:
+        q = q.filter(ApplicationEvent.source == source)
+    rows = q.order_by(ApplicationEvent.created_at.desc()).limit(max(1, min(limit, 2000))).all()
+    return [{"id": e.id, "job_id": e.job_id, "company": c, "title": t, "platform": p or "other",
+             "event_type": e.event_type, "event_title": e.title, "description": e.description,
+             "old_value": e.old_value, "new_value": e.new_value, "source": e.source,
+             "created_at": e.created_at.isoformat() if e.created_at else None}
+            for e, c, t, p in rows]
+
+
+def _flags(db: Session, user_id: int) -> List[Dict[str, Any]]:
+    cfg = _apply_config(db, user_id)
+    now = datetime.utcnow()
+    week_ago = now - timedelta(days=7)
+    flags = []
+
+    def add(fid, severity, kind, message, job=None, at=None):
+        flags.append({"id": fid, "severity": severity, "kind": kind, "message": message,
+                      "job_id": job.id if job else None, "company": job.company if job else None,
+                      "title": job.title if job else None, "at": (at or now).isoformat()})
+
+    def last_agent_note(job):
+        ev = (db.query(ApplicationEvent).filter(ApplicationEvent.job_id == job.id, ApplicationEvent.source == "agent")
+              .order_by(ApplicationEvent.id.desc()).first())
+        return (ev.description or ev.title) if ev else ""
+
+    if cfg["paused"]:
+        add("paused", "info", "paused", "Auto-apply is paused")
+    jobs = db.query(Job).filter(Job.user_id == user_id,
+                                Job.status.in_(["needs_human", "applying", "approved", "applied"])).all()
+    for job in jobs:
+        meta = job.meta or {}
+        if job.status == "needs_human":
+            add(f"needs_human:{job.id}", "high", "needs_human", last_agent_note(job) or "The agent needs you", job, job.updated_at)
+        elif job.status == "applying" and aq.claim_is_stale(meta.get("apply_claimed_at"), now, _claim_ttl(cfg)):
+            add(f"stuck:{job.id}:{meta.get('apply_claimed_at')}", "medium", "stuck",
+                "Claimed but no result reported; it goes back in the queue", job)
+        elif job.status == "approved" and meta.get("apply_attempts"):
+            add(f"retrying:{job.id}:{meta['apply_attempts']}", "medium", "failed_attempt",
+                f"Failed attempt {meta['apply_attempts']} of {cfg['max_attempts']}: {last_agent_note(job)}", job)
+        elif (job.status == "applied" and meta.get("apply_attempts") and not meta.get("apply_screenshots")
+              and job.applied_at and job.applied_at >= week_ago):
+            add(f"no_screenshot:{job.id}", "medium", "no_screenshot",
+                "Agent reported submitted without a confirmation screenshot -- check it went through", job, job.applied_at)
+
+    drafted = (db.query(ApplicationEvent, Job).join(Job, Job.id == ApplicationEvent.job_id)
+               .filter(Job.user_id == user_id, ApplicationEvent.created_at >= week_ago,
+                       ApplicationEvent.description.like("%drafted (review)%")).all())
+    for ev, job in drafted:
+        add(f"drafted:{ev.id}", "low", "drafted_answers",
+            ev.description.split("; ", 1)[-1], job, ev.created_at)
+
+    failed_tasks = (db.query(LLMTaskStatus, Job).join(Job, Job.id == LLMTaskStatus.job_id)
+                    .filter(Job.user_id == user_id, LLMTaskStatus.status == "failed",
+                            LLMTaskStatus.updated_at >= week_ago).all())
+    for t, job in failed_tasks:
+        add(f"task:{t.id}", "medium", "llm_error", f"{t.task_type} failed: {(t.error_message or '')[:200]}", job, t.updated_at)
+
+    for platform, u in _apply_usage(db, user_id, cfg).items():
+        if u["cap"] and u["used"] >= u["cap"]:
+            add(f"cap:{platform}:{aq.day_bounds_utc(cfg['timezone'], now)[0]}", "info", "cap_reached",
+                f"{platform}: daily cap reached ({u['used']}/{u['cap']})")
+
+    try:
+        dismissed = set(json.loads(_setting(db, user_id, DISMISSED_FLAGS_KEY) or "[]"))
+    except ValueError:
+        dismissed = set()
+    order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+    return sorted((f for f in flags if f["id"] not in dismissed), key=lambda f: (order[f["severity"]], f["at"]))
+
+
+@app.get("/api/flags")
+def flags(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _flags(db, current_user.id)
+
+
+@app.post("/api/flags/dismiss")
+def dismiss_flag(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    fid = str(payload.get("id") or "")
+    if not fid:
+        raise HTTPException(status_code=400, detail="id is required")
+    try:
+        dismissed = json.loads(_setting(db, current_user.id, DISMISSED_FLAGS_KEY) or "[]")
+    except ValueError:
+        dismissed = []
+    # ponytail: list grows forever; prune ids older than a month if it ever matters
+    _put_setting(db, current_user.id, DISMISSED_FLAGS_KEY, json.dumps((dismissed + [fid])[-2000:]))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/resume.pdf")
+def latest_resume_pdf(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    job = get_owned_job(db, job_id, current_user)
+    rv = _latest_resume_pdf(db, job_id)
+    if not rv:
+        raise HTTPException(status_code=404, detail="No tailored resume PDF for this job yet")
+    return FileResponse(rv.pdf_path, media_type="application/pdf", filename=resume_filename(job, rv))
+
+
+def resume_filename(job: Job, rv: ResumeVersion) -> str:
+    """The name an employer sees on the upload: girijesh_singh_manulife_resume.pdf.
+    The candidate's name comes from the resume's own '# Name' header line."""
+    name = next((l[2:] for l in (rv.content_md or "").splitlines() if l.startswith("# ")), "")
+    slug = lambda s: re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+    return "_".join(x for x in (slug(name), slug(job.company or ""), "resume") if x) + ".pdf"
 
 
 # ── Agent: Fit Assessment ──────────────────────────────────────────────────────
@@ -2368,7 +3411,8 @@ async def _bg_analyze(job_id: int, llm: str, user_id: int):
         master_resume = get_master_resume(db, user_id)
         if not master_resume: raise ValueError("Master resume not found. Upload it in Settings → Resume Intelligence.")
 
-        job.status = "analyzing"
+        if job.status == "found":
+            job.status = "analyzing"
         db.commit()
 
         agent = get_agent("fit", db, user_id)
@@ -2384,7 +3428,8 @@ async def _bg_analyze(job_id: int, llm: str, user_id: int):
         job.strengths = result.get("strengths", [])
         job.gaps = result.get("gaps", [])
         job.action_items = result.get("action_items", [])
-        job.status = "pending"
+        if job.status in ("found", "analyzing"):  # re-scoring must not undo an approval or hand-off
+            job.status = "pending"
 
         db.add(ApplicationEvent(
             job_id=job_id, user_id=user_id, event_type="agent_action",
@@ -2518,6 +3563,11 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
             if design_rules.strip():
                 resume_md = await agent_resume.validate_design(resume_md, design_rules, llm=llm)
                 resume_md = agent_resume.enforce_header(resume_md, contact_facts)
+
+        # Standing "never include" rules: enforced here, after either generation path.
+        resume_md, dropped = resume_profile.drop_excluded(resume_md, _rules(db, user_id)["exclude"])
+        if dropped:
+            logger.info(f"[Resume] job {job_id}: removed {len(dropped)} excluded point(s)")
 
         # ── Step 8: Save ──
         version = db.query(func.count(ResumeVersion.id)).filter(ResumeVersion.job_id == job_id).scalar() + 1
@@ -2680,7 +3730,10 @@ async def start_generate_resume(
     require_resume_quota(current_user)
     llm = resolve_llm(db, current_user.id, payload.get("llm"))
     feedback = payload.get("feedback", "")
-    critic_llm = payload.get("critic_llm", "claude")
+    # Claude critiques by default, but only when the user has a Claude key --
+    # otherwise the critic call fails over on every generation.
+    critic_llm = payload.get("critic_llm") or (
+        "claude" if "claude" in get_llm_router(db, current_user.id).available_providers() else llm)
     background_tasks.add_task(_bg_resume, job_id, llm, feedback, current_user.id, critic_llm)
     return {"status": "processing"}
 
@@ -2838,6 +3891,303 @@ async def save_chat_resume(
     return {"status": "saved", "version": version, "pdf": bool(paths.get("pdf"))}
 
 
+# ── Ops: what the watchdog needs to make failures loud ─────────────────────────
+
+@app.exception_handler(Exception)
+async def _log_unhandled(request: Request, exc: Exception):
+    # Without this an unhandled error is a bare 500 with no ERROR record to alert on.
+    logger.opt(exception=exc).error(f"Unhandled {type(exc).__name__} on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
+
+
+def stuck_jobs(db: Session, user_id: int, now: datetime) -> tuple:
+    """(apply claims with no result for over an hour, jobs waiting on the user for over 24 h)."""
+    stale = []
+    for job in db.query(Job).filter(Job.user_id == user_id, Job.status == "applying").all():
+        at = (job.meta or {}).get("apply_claimed_at")
+        if at and now - datetime.fromisoformat(at) > timedelta(hours=1):
+            stale.append({"job_id": job.id, "company": job.company, "claimed_at": at})
+    waiting = []
+    for job in db.query(Job).filter(Job.user_id == user_id, Job.status == "waiting_human").all():
+        at = (job.meta or {}).get("waiting_since")
+        if at and now - datetime.fromisoformat(at) > timedelta(hours=24):
+            waiting.append({"job_id": job.id, "company": job.company, "since": at,
+                            "reason": (job.meta or {}).get("waiting_reason")})
+    return stale, waiting
+
+
+# ── Discovery (discovery.py; scheduled by scheduler.py) ───────────────────────
+@app.get("/api/discovery/targets")
+def get_discovery_targets(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    import discovery, scheduler
+    # runs_here: only the instance with the scheduler on runs discovery (not the hosted app)
+    return {"targets": discovery.targets(sys.modules[__name__], db, current_user.id),
+            "runs_here": scheduler.CURRENT is not None}
+
+
+@app.put("/api/discovery/targets")
+def put_discovery_targets(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Body: {targets: {...}} (see discovery.py). An empty object switches scheduled discovery off."""
+    import discovery
+    t = payload.get("targets")
+    if t == {}:
+        db.query(Settings).filter(Settings.key == discovery.TARGETS_KEY, Settings.user_id == current_user.id).delete()
+        db.commit()
+        return {"targets": None}
+    try:
+        clean = discovery.clean_targets(t)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
+    _put_setting(db, current_user.id, discovery.TARGETS_KEY, json.dumps(clean))
+    db.commit()
+    return {"targets": clean}
+
+
+@app.post("/api/discovery/run")
+def run_discovery(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Start a discovery run now (it takes minutes; problems arrive on Telegram)."""
+    import discovery, scheduler
+    if not scheduler.CURRENT:
+        raise HTTPException(409, "Discovery runs only on the instance with the scheduler on.")
+    if discovery.targets(sys.modules[__name__], db, current_user.id) is None:
+        raise HTTPException(400, "Set your discovery targets first.")
+    return {"started": scheduler.CURRENT.start_discovery_threadsafe(current_user.id)}
+
+
+@app.get("/api/ops/errors")
+def ops_errors(since: str = "", db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Errors logged after `since` (ISO time), failed background tasks, and apply claims
+    with no result for over an hour."""
+    errors = [e for e in OPS_ERRORS if e["at"] > since]
+    now = datetime.utcnow()
+    stale, waiting = stuck_jobs(db, current_user.id, now)
+    # Every apply outcome since the last poll, so the watchdog can tell the user about each one.
+    since_dt = datetime.fromisoformat(since).astimezone(timezone.utc).replace(tzinfo=None) if since else now
+    results = [{"job_id": e.job_id, "company": c, "title": t, "url": u, "outcome": e.title.split(": ", 1)[1],
+                "notes": (e.description or "")[:1500]}
+               for e, c, t, u in db.query(ApplicationEvent, Job.company, Job.title, Job.url).join(Job, Job.id == ApplicationEvent.job_id)
+               .filter(ApplicationEvent.user_id == current_user.id, ApplicationEvent.created_at > since_dt,
+                       ApplicationEvent.title.like("Apply agent: %"),
+                       ApplicationEvent.title.notin_(["Apply agent: claimed", "Apply agent: continuing"]))
+               .order_by(ApplicationEvent.id)]
+    cfg = _apply_config(db, current_user.id)
+    ready = db.query(func.count(Job.id)).filter(Job.user_id == current_user.id, or_(
+        Job.status == "approved",
+        and_(Job.status == "pending", cfg["auto_apply"], Job.match_score >= cfg["auto_min_score"]))).scalar()
+    return {"now": datetime.now(timezone.utc).isoformat(), "errors": errors, "stale_claims": stale,
+            "long_waits": waiting, "results": results, "mode": cfg["mode"], "paused": cfg["paused"],
+            "worker_platforms": [p.strip() for p in (_setting(db, current_user.id, "worker_platforms") or "").split(",") if p.strip()],
+            "ready": ready, "timezone": cfg["timezone"]}
+
+
+# ── Standing resume rules ("remember this for future resumes") ────────────────
+# style   -> resume_style_guide, one rule per line; every generation and edit prompt gets them
+# exclude -> resume_excluded_points (JSON list); matching bullets are removed in code
+# ban     -> resume_banned_words (comma list); generation and edits are checked in code
+RULE_KEYS = {"style": "resume_style_guide", "exclude": "resume_excluded_points", "ban": "resume_banned_words"}
+
+
+def _rules(db: Session, user_id: int) -> Dict[str, List[str]]:
+    out = {}
+    for kind, key in RULE_KEYS.items():
+        raw = _setting(db, user_id, key) or ""
+        if kind == "exclude":
+            try:
+                out[kind] = [str(x) for x in json.loads(raw or "[]")]
+            except ValueError:
+                out[kind] = []
+        elif kind == "ban":
+            out[kind] = [w.strip() for w in re.split(r'[,\n]', raw) if w.strip()]
+        else:
+            out[kind] = [l.strip() for l in raw.split("\n") if l.strip()]
+    return out
+
+
+def _save_rules(db: Session, user_id: int, kind: str, items: List[str]):
+    value = json.dumps(items) if kind == "exclude" else (", " if kind == "ban" else "\n").join(items)
+    _put_setting(db, user_id, RULE_KEYS[kind], value)
+    db.commit()
+
+
+@app.get("/api/resume/rules")
+def get_resume_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _rules(db, current_user.id)
+
+
+# Resumes that may still change. Applied/closed ones are the record of what was sent; one being
+# applied (or parked mid-form) must keep the file the agent is uploading.
+RULES_OPEN_STATUSES = ("found", "analyzing", "pending", "approved", "needs_human")
+
+
+def _exclusion_targets(db: Session, user_id: int, excluded: List[str]) -> List[tuple]:
+    """[(job, latest version, new md, removed lines)] for open jobs whose latest resume has an excluded point."""
+    out = []
+    for job in db.query(Job).filter(Job.user_id == user_id, Job.status.in_(RULES_OPEN_STATUSES)).all():
+        latest = db.query(ResumeVersion).filter_by(job_id=job.id).order_by(ResumeVersion.version.desc()).first()
+        if latest and latest.content_md:
+            md, removed = resume_profile.drop_excluded(latest.content_md, excluded)
+            if removed:
+                out.append((job, latest, md, removed))
+    return out
+
+
+async def _bg_apply_exclusions(user_id: int):
+    """New resume version (text removal only, no model) for every open job still carrying an excluded point."""
+    db = SessionLocal()
+    try:
+        done, failed = [], []
+        for job, latest, md, removed in _exclusion_targets(db, user_id, _rules(db, user_id)["exclude"]):
+            try:
+                await _save_version(db, job.id, user_id, md, "rules",
+                                    {"instruction": "removed excluded point(s): " + "; ".join(r[:80] for r in removed),
+                                     "from_version": latest.version}, f"cleaned (from v{latest.version})")
+                done.append(job.id)
+            except Exception as e:
+                failed.append(job.id)
+                logger.error(f"[Rules] excluded point not removed from job {job.id}: {e}")
+        logger.info(f"[Rules] excluded points removed from {len(done)} resume(s): {done}; failed: {failed}")
+    finally:
+        db.close()
+
+
+@app.post("/api/resume/rules/apply")
+def apply_resume_rules(background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Remove excluded points from the latest resume of every open job (found → needs_human), in the background."""
+    ids = [t[0].id for t in _exclusion_targets(db, current_user.id, _rules(db, current_user.id)["exclude"])]
+    if ids:
+        background_tasks.add_task(_bg_apply_exclusions, current_user.id)
+    return {"updating": ids, "skipped_statuses": "applied, rejected, withdrawn, applying, waiting_human (kept as sent / in use)"}
+
+
+@app.post("/api/resume/rules")
+def add_resume_rule(payload: Dict[str, Any], background_tasks: BackgroundTasks = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Body: {kind: style|exclude|ban, text}. Applies to resumes generated or edited from now on;
+    an exclude rule is also applied right away to the latest resume of every open job."""
+    kind, text = payload.get("kind"), (payload.get("text") or "").strip()
+    if kind not in RULE_KEYS or not text:
+        raise HTTPException(400, "kind must be style, exclude or ban, with text")
+    rules = _rules(db, current_user.id)
+    if text.lower() not in (r.lower() for r in rules[kind]):
+        rules[kind].append(text)
+        _save_rules(db, current_user.id, kind, rules[kind])
+        logger.info(f"[Rules] {kind} rule added: {text[:120]}")
+    if kind == "exclude" and background_tasks is not None:
+        rules["updating"] = apply_resume_rules(background_tasks, db=db, current_user=current_user)["updating"]
+    return rules
+
+
+@app.delete("/api/resume/rules/{kind}/{index}")
+def remove_resume_rule(kind: str, index: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """index is 1-based, as listed."""
+    rules = _rules(db, current_user.id)
+    if kind not in RULE_KEYS or not 1 <= index <= len(rules[kind]):
+        raise HTTPException(404, f"no {kind} rule #{index}")
+    removed = rules[kind].pop(index - 1)
+    _save_rules(db, current_user.id, kind, rules[kind])
+    logger.info(f"[Rules] {kind} rule removed: {removed[:120]}")
+    return rules
+
+
+# ── Resume review (Discord #resume-review) ────────────────────────────────────
+# A reviewer asks for a change in plain language; resume_edit applies it as exact
+# patches and refuses anything that would invent or alter a fact. Every accepted edit
+# is a new version rendered with the same template, so the apply agent uploads it.
+
+def _pdf_style(db: Session, user_id: int) -> dict:
+    row = db.query(Settings).filter(Settings.key == "resume_pdf_style", Settings.user_id == user_id).first()
+    try:
+        return json.loads(row.value) if row and row.value else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+async def _save_version(db: Session, job_id: int, user_id: int, md: str, llm_used: str, notes: dict, title: str) -> ResumeVersion:
+    from doc_generator import save_resume, _fit_pages, MAX_RESUME_PAGES
+    style = _pdf_style(db, user_id)
+    # PDF rendering is CPU work for seconds: off the event loop so the API stays responsive.
+    pages = len((await asyncio.to_thread(_fit_pages, md, style)).pages)
+    if pages > MAX_RESUME_PAGES:
+        raise HTTPException(422, f"That change makes the resume {pages} pages (limit {MAX_RESUME_PAGES}); nothing saved.")
+    latest = db.query(ResumeVersion).filter_by(job_id=job_id).order_by(ResumeVersion.version.desc()).first()
+    version = (latest.version if latest else 0) + 1
+    paths = await asyncio.to_thread(save_resume, job_id, version, md, style)
+    rv = ResumeVersion(job_id=job_id, user_id=user_id, version=version, content_md=md, pdf_path=paths.get("pdf"),
+                       docx_path=paths.get("docx"), llm_used=llm_used, critic_notes=notes)
+    db.add(rv)
+    db.commit()
+    _log_event(db, job_id, "document_generated", f"Resume v{version} {title}", notes.get("instruction"),
+               source="user", user_id=user_id)
+    return rv
+
+
+def _parse_llm_json(text: str) -> dict:
+    from agents import _parse_json
+    out = _parse_json(text)
+    if not isinstance(out, dict):
+        raise ValueError("not a JSON object")
+    return out
+
+
+@app.post("/api/jobs/{job_id}/resume/edit")
+async def edit_resume(job_id: int, payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Body: {instruction}. Applies one requested change to the latest resume version.
+    422 with the reason when the change would alter or invent a fact; nothing is saved then."""
+    import resume_edit
+    job = get_owned_job(db, job_id, current_user)
+    instruction = (payload.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(400, "instruction is required")
+    latest = db.query(ResumeVersion).filter_by(job_id=job_id).order_by(ResumeVersion.version.desc()).first()
+    if not latest or not latest.content_md:
+        raise HTTPException(404, "This job has no resume yet -- prepare it first")
+    rules = _rules(db, current_user.id)
+    llm = resolve_llm(db, current_user.id, payload.get("llm"))
+    try:
+        new_md, edits = await resume_edit.edit(
+            get_llm_router(db, current_user.id), latest.content_md, instruction,
+            get_master_resume(db, current_user.id), job.job_description or "", rules["ban"], llm,
+            loads=_parse_llm_json, style="\n".join(f"- {r}" for r in rules["style"]))
+    except resume_edit.EditError as e:
+        raise HTTPException(422, str(e))
+    new_md, _ = resume_profile.drop_excluded(new_md, rules["exclude"])
+    rv = await _save_version(db, job_id, current_user.id, new_md, f"edit:{llm}",
+                       {"instruction": instruction, "edits": edits, "from_version": latest.version},
+                       f"edited (from v{latest.version})")
+    return {"version": rv.version, "from_version": latest.version, "edits": edits, "pdf": bool(rv.pdf_path)}
+
+
+@app.post("/api/jobs/{job_id}/resume/use/{version}")
+async def use_resume_version(job_id: int, version: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Make an older version the current one (saved as a new version, history kept)."""
+    get_owned_job(db, job_id, current_user)
+    old = db.query(ResumeVersion).filter_by(job_id=job_id, version=version).first()
+    if not old:
+        raise HTTPException(404, f"No resume v{version} for job {job_id}")
+    rv = await _save_version(db, job_id, current_user.id, old.content_md, f"copy-of-v{version}",
+                       {"instruction": f"use v{version} again", "from_version": version}, f"restored from v{version}")
+    return {"version": rv.version, "from_version": version}
+
+
+@app.get("/api/review/pending")
+def review_pending(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Jobs whose latest resume version hasn't been posted for review yet (not applied/closed)."""
+    out = []
+    for job in db.query(Job).filter(Job.user_id == current_user.id,
+                                    Job.status.in_(["pending", "approved", "found", "needs_human"])).all():
+        latest = db.query(ResumeVersion).filter_by(job_id=job.id).order_by(ResumeVersion.version.desc()).first()
+        if latest and latest.pdf_path and (job.meta or {}).get("review_posted_version") != latest.version:
+            out.append({"job_id": job.id, "version": latest.version})
+    return out
+
+
+@app.post("/api/review/{job_id}/posted")
+def review_posted(job_id: int, payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    job = get_owned_job(db, job_id, current_user)
+    job.meta = {**(job.meta or {}), "review_posted_version": int(payload["version"])}
+    db.commit()
+    return {"ok": True}
+
+
 # ── Agent: Generate Cover Letter ───────────────────────────────────────────────
 
 async def _bg_cover_letter(job_id: int, llm: str, feedback: str, resume_version: int, user_id: int):
@@ -2983,6 +4333,72 @@ Return cover letter markdown only."""
 
 # ── Agent: Floating Chat ───────────────────────────────────────────────────────
 
+def _chat_jobs(db: Session, uid: int, p: dict) -> str:
+    """list_jobs for the chat: status / last N hours / best score first, up to 25."""
+    q = db.query(Job).filter(Job.user_id == uid)
+    if p.get("status"):
+        q = q.filter(Job.status == p["status"])
+    elif p.get("sort") == "score":   # "top matches" means ones still open, not applied or rejected ones
+        q = q.filter(Job.status.in_(("found", "pending", "approved", "needs_human")))
+    hours = p.get("since_hours")
+    if isinstance(hours, (int, float)) and hours > 0:
+        q = q.filter(Job.created_at >= datetime.utcnow() - timedelta(hours=hours))
+    q = q.order_by(Job.match_score.desc().nullslast(), Job.id.desc()) if p.get("sort") == "score" \
+        else q.order_by(Job.id.desc())
+    limit = max(1, min(int(p.get("limit") or 10), 25))
+    jobs = q.limit(limit).all()
+    if not jobs:
+        return "No jobs match that."
+    when = f" from the last {hours:g}h" if isinstance(hours, (int, float)) and hours > 0 else ""
+    head = f"{'Top' if p.get('sort') == 'score' else 'Latest'} {len(jobs)} jobs{when}" + \
+        (f" ({p['status']})" if p.get("status") else "") + ":"
+    return head + "\n" + "\n".join(
+        f"• #{j.id} {j.company} — {j.title} · {j.status}" + (f" · score {j.match_score:g}" if j.match_score is not None else "")
+        for j in jobs)
+
+
+def _chat_approve(db: Session, user: User, ids: list) -> str:
+    """Approve the named jobs that have a resume; say why the others weren't."""
+    out = []
+    for jid in [int(i) for i in ids if str(i).isdigit()][:25]:
+        job = db.query(Job).filter(Job.id == jid, Job.user_id == user.id).first()
+        if not job:
+            out.append(f"#{jid}: not found")
+        elif job.status in ("applied", "applying"):
+            out.append(f"#{jid} {job.company}: already {job.status}")
+        elif not db.query(ResumeVersion).filter_by(job_id=jid).first():
+            out.append(f"#{jid} {job.company}: no resume yet — not approved")
+        else:
+            try:
+                approve_job(jid, db, user)
+                out.append(f"#{jid} {job.company}: approved")
+            except HTTPException as e:
+                out.append(f"#{jid} {job.company}: {e.detail}")
+    return "\n".join(out) or "Which jobs? Give me their numbers, e.g. approve 154 155."
+
+
+def _chat_status(db: Session, uid: int, hours: float = 24) -> str:
+    """What's going on: what moved in the period, what's in flight, what waits for the user."""
+    since = datetime.utcnow() - timedelta(hours=hours)
+    jobs = db.query(Job).filter(Job.user_id == uid)
+    found = jobs.filter(Job.created_at >= since).count()
+    applied = jobs.filter(Job.applied_at >= since).count()
+    lines = [f"Last {hours:g}h: {found} new jobs found, {applied} applications submitted."]
+    for status, label in (("applying", "Applying now"), ("waiting_human", "Waiting for you"),
+                          ("approved", "Queued to apply"), ("needs_human", "Apply yourself")):
+        rows = jobs.filter(Job.status == status).order_by(Job.id.desc()).all()
+        if rows:
+            names = ", ".join(f"#{j.id} {j.company}" for j in rows[:6]) + (f" +{len(rows) - 6}" if len(rows) > 6 else "")
+            lines.append(f"{label} ({len(rows)}): {names}")
+    pending = jobs.filter(Job.status == "pending").count()
+    if pending:
+        lines.append(f"Resumes to review: {pending} (say review)")
+    last = _setting(db, uid, "discovery_last_run")
+    if last:
+        lines.append(f"Last discovery run: {last}")
+    return "\n".join(lines)
+
+
 @app.post("/api/chat")
 async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
@@ -3096,6 +4512,21 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
         elif action_type == "get_stats":
             stats = get_stats(db=db, current_user=current_user)
             reply = f"📊 You have **{stats.total}** jobs tracked — {stats.by_status.get('applied', 0)} applied, {stats.interviews_scheduled} interviews, {stats.offers} offers. {stats.follow_ups_due} follow-ups due!"
+
+        elif action_type == "list_jobs" and (action.get("params") or {}):
+            reply = _chat_jobs(db, uid, action["params"])
+
+        elif action_type == "approve_jobs":
+            reply = _chat_approve(db, current_user, (action.get("params") or {}).get("job_ids") or
+                                  ([action["job_id"]] if action.get("job_id") else []))
+
+        elif action_type == "run_discovery":
+            reply = "🔎 Discovery started — new resumes arrive here when it's done." \
+                if run_discovery(db, current_user)["started"] else "A discovery run is already going."
+
+        elif action_type == "status_summary":
+            hours = (action.get("params") or {}).get("since_hours")
+            reply = _chat_status(db, uid, hours if isinstance(hours, (int, float)) and hours > 0 else 24)
 
         elif action_type == "list_jobs":
             filt = action.get("filter")

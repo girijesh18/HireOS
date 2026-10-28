@@ -1,17 +1,18 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../api/client'
+import HandoffPanel from '../components/HandoffPanel'
 
 const STAGES = [
-  { value: 'found',        label: '🔍 Found' },
+  { value: 'found',        label: 'Found' },
   { value: 'pending',      label: '⏳ Resume Prepared' },
-  { value: 'applied',      label: '📤 Applied' },
-  { value: 'screening',    label: '📞 Recruiter Reached' },
-  { value: 'interview_1',  label: '🎤 Interview 1' },
-  { value: 'interview_2',  label: '🎤 Interview 2' },
-  { value: 'offer',        label: '🎉 Offer' },
-  { value: 'rejected',     label: '❌ Rejected' },
-  { value: 'withdrawn',    label: '↩️ Withdrawn' },
+  { value: 'applied',      label: 'Applied' },
+  { value: 'screening',    label: 'Recruiter Reached' },
+  { value: 'interview_1',  label: 'Interview 1' },
+  { value: 'interview_2',  label: 'Interview 2' },
+  { value: 'offer',        label: 'Offer' },
+  { value: 'rejected',     label: 'Rejected' },
+  { value: 'withdrawn',    label: 'Withdrawn' },
 ]
 
 function StageDropdown({ job, onUpdate }) {
@@ -57,9 +58,9 @@ function StageDropdown({ job, onUpdate }) {
     <div onClick={e => e.stopPropagation()}>
       <button ref={btnRef} onClick={toggle}
         style={{
-          background:'var(--surface-2)', border:'1px solid var(--surface-border)',
-          borderRadius:6, padding:'4px 10px', cursor:'pointer', color:'var(--fg)',
-          fontSize:'0.78rem', fontWeight:500, display:'flex', alignItems:'center', gap:4,
+          background:'transparent', border:'1px solid var(--fg)',
+          minHeight:44, padding:'0 14px', cursor:'pointer', color:'var(--fg)',
+          fontSize:'0.85rem', fontWeight:600, display:'flex', alignItems:'center', gap:4,
           opacity: saving ? 0.5 : 1
         }}>
         {saving ? '…' : 'Move ▾'}
@@ -70,7 +71,7 @@ function StageDropdown({ job, onUpdate }) {
           style={{
             position:'fixed', top: pos.top, right: pos.right, zIndex:9999,
             background:'var(--bg-2)', border:'1px solid var(--surface-border)',
-            borderRadius:8, minWidth:190, boxShadow:'var(--shadow-lg)',
+            minWidth:190, boxShadow:'var(--shadow-lg)',
             overflow:'hidden'
           }}>
           {STAGES.map(s => (
@@ -116,12 +117,6 @@ function ScoreRing({ score }) {
   )
 }
 
-const BADGE_EMOJI = {
-  found: '🔍', analyzing: '🤖', pending: '⏳', approved: '✅',
-  applied: '📤', screening: '📞', interview_1: '🎤', interview_2: '🎤',
-  offer: '🎉', rejected: '❌', withdrawn: '↩️'
-}
-
 export default function Dashboard({ onOpenJob }) {
   const [stats, setStats] = useState(EMPTY_STATS)
   const [jobs, setJobs] = useState([])
@@ -154,6 +149,7 @@ export default function Dashboard({ onOpenJob }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+      <HandoffPanel onOpenJob={onOpenJob} />
       {/* Stats Row */}
       <div className="stats-grid fade-in">
         {[
@@ -253,7 +249,7 @@ export default function Dashboard({ onOpenJob }) {
               </div>
               <ScoreRing score={job.match_score} />
               <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>
-                <span className={`badge badge-${job.status}`}>{BADGE_EMOJI[job.status]} {job.status.replace(/_/g, ' ')}</span>
+                <span className={`badge badge-${job.status}`}>{job.status.replace(/_/g, ' ')}</span>
                 <StageDropdown job={job} onUpdate={handleStatusUpdate} />
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-subtle)', textAlign: 'right', minWidth:80 }}>

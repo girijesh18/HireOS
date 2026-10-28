@@ -378,6 +378,22 @@ def parroted(text: str, jd: str, source: str) -> List[str]:
 PARROT_LIMIT = 2   # a couple of generic words ("improving", "scalable") are fine
 
 
+def drop_excluded(md: str, excluded: List[str]) -> Tuple[str, List[str]]:
+    """Remove every bullet whose label or text contains an excluded phrase (the user's
+    "never include this point" rules). Code, not a prompt: the model can't bring it back.
+    -> (markdown, removed bullet lines)."""
+    phrases = [re.sub(r'\s+', ' ', p).strip().lower() for p in excluded if p and p.strip()]
+    if not phrases:
+        return md, []
+    kept, removed = [], []
+    for line in md.split('\n'):
+        if re.match(r'^\s*[-•]\s', line) and any(p in plain(line).lower() for p in phrases):
+            removed.append(line)
+        else:
+            kept.append(line)
+    return '\n'.join(kept), removed
+
+
 def split_label(md: str) -> Tuple[str, str]:
     """"**Label:** body" -> ("Label", "body"); no label -> ("", md)."""
     m = re.match(r'^\*\*(.+?):\*\*\s*(.*)$', md) or re.match(r'^\*\*(.+?)\*\*:\s*(.*)$', md)
@@ -417,6 +433,19 @@ def _max_len(source_md: str) -> int:
 
 MAX_BULLETS = 6
 MIN_BULLETS = 3
+
+
+def with_opener(summary: str, opener: str) -> str:
+    """Make summary start with opener by swapping its leading title words:
+    "Data scientist, 8 years" + "Lead data scientist" -> "Lead data scientist, 8 years"."""
+    if not opener or summary.startswith(opener):
+        return summary
+    words = opener.split()
+    for k in range(len(words)):
+        tail = " ".join(words[k:])
+        if summary.lower().startswith(tail.lower()):
+            return opener + summary[len(tail):]
+    return summary
 
 
 async def _ask(router, prompt: str, model_cls, validate: Callable, llm: str, system: str):
@@ -464,7 +493,10 @@ async def tailor(router, p: Profile, job_description: str, company: str = "", ti
     vocab = render(p)                     # everything the candidate's own resume says
     min_metrics = min(2, len(numbers(p.summary)))
     headline = p.headline
-    opener = headline if headline and p.summary.lower().startswith(headline.lower()) else ""
+    # Always open with the current title, sentence-cased ("Lead Data Scientist" -> "Lead data scientist");
+    # acronyms like ML stay as written.
+    opener = " ".join(w if w.isupper() else w.lower() for w in headline.split())
+    opener = opener[:1].upper() + opener[1:]
     labels = [g.label for g in p.skills]
 
     def check_summary(o: _SummaryOut) -> List[str]:
@@ -472,7 +504,7 @@ async def tailor(router, p: Profile, job_description: str, company: str = "", ti
         errs = []
         if not 200 <= len(s) <= 900:
             errs.append(f"summary is {len(s)} characters; write 200-900")
-        if opener and not s.lower().startswith(opener.lower()):
+        if opener and not s.startswith(opener):
             errs.append(f'summary must start with "{opener}"')
         new = numbers(s) - numbers(all_text)
         if new:
@@ -575,7 +607,7 @@ Rules:
     if not answered:
         raise RuntimeError(f"{llm} returned no usable answer: {s_errs[0] if s_errs else 'unknown error'}")
 
-    summary = p.summary
+    summary = with_opener(p.summary, opener)  # master summary is the fallback; it must open with the title too
     skill_order = None
     if s_out is not None:
         if not s_errs:
@@ -621,3 +653,74 @@ Rules:
     logger.info(f"[ResumeProfile] tailored {len(bullets)} roles; summary={'llm' if summary != p.summary else 'master'}; "
                 f"{fallbacks} bullet(s) kept master wording")
     return render(p, summary=summary, bullets=bullets, skill_order=skill_order)
+
+
+# ── Structured work history / education for application forms ────────────────
+# The master resume's own structure, read by code (no model, nothing invented):
+#   ### Company[, Location | (Location)] || Mon YYYY – Mon YYYY|Present
+#   **Title** [(Mon YYYY – Mon YYYY)]      one or more roles at that company
+#   intro paragraph + "- " bullets         that role's description
+#   ### Degree || dates  /  *School, City, Country*
+
+_HEAD = re.compile(r"^###\s+(.+?)\s*\|\|\s*(.+?)\s*$")
+_TITLE = re.compile(r"^\*\*([^*]+)\*\*\s*(?:\(([^)]+)\))?\s*$")
+_DATES = re.compile(r"\s*[–—-]\s*")
+
+
+def _split_dates(s: str) -> tuple:
+    parts = _DATES.split((s or "").strip(), maxsplit=1)
+    return (parts[0].strip(), parts[1].strip() if len(parts) > 1 else "")
+
+
+def _split_place(s: str) -> tuple:
+    m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", s)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    name, _, place = s.partition(",")
+    return name.strip(), place.strip()
+
+
+def _plain_text(lines: list) -> str:
+    out = [re.sub(r"\*\*|__|`", "", l.strip()) for l in lines if l.strip()]
+    return "\n".join(out).strip()
+
+
+def parse_history(md: str) -> dict:
+    """{"work": [{company, location, title, start, end, description}],
+        "education": [{degree, school, location, start, end}]} from the master resume."""
+    work, edu = [], []
+    section = ""
+    company = None
+    role = None
+    for line in (md or "").splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            section = s[3:].lower()
+            company = role = None
+            continue
+        head = _HEAD.match(s)
+        if head and "experience" in section:
+            name, place = _split_place(head.group(1))
+            company = {"company": name, "location": place, "dates": _split_dates(head.group(2))}
+            role = None
+            continue
+        if head and "education" in section:
+            start, end = _split_dates(head.group(2))
+            edu.append({"degree": head.group(1).strip(), "school": "", "location": "", "start": start, "end": end})
+            continue
+        if "education" in section and edu and re.match(r"^\*[^*].*\*$", s) and not edu[-1]["school"]:
+            school, _, place = s.strip("*").partition(",")
+            edu[-1].update(school=school.strip(), location=place.strip())
+            continue
+        title = _TITLE.match(s)
+        if title and company:
+            start, end = _split_dates(title.group(2)) if title.group(2) else company["dates"]
+            role = {"company": company["company"], "location": company["location"], "title": title.group(1).strip(),
+                    "start": start, "end": end, "_lines": []}
+            work.append(role)
+            continue
+        if role is not None and s:
+            role["_lines"].append(s)
+    for r in work:
+        r["description"] = _plain_text(r.pop("_lines"))
+    return {"work": work, "education": edu}

@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react'
 import { api } from '../api/client'
 import { setCustomNvidiaModels } from '../llmOptions'
 import BillingPanel from '../components/BillingPanel'
+import AutoApplyPanel from '../components/AutoApplyPanel'
+import DiscoveryPanel from '../components/DiscoveryPanel'
+import ApplicationProfileForm from '../components/ApplicationProfileForm'
 
 const LLM_PROVIDERS = [
   { key:'gemini_api_key', label:'Gemini API Key', provider:'Google Gemini', placeholder:'AIza...' },
@@ -10,6 +13,7 @@ const LLM_PROVIDERS = [
   { key:'together_api_key', label:'Together AI Key', provider:'Together AI', placeholder:'...' },
   { key:'nvidia_api_key', label:'NVIDIA API Key', provider:'NVIDIA (MiniMax-M3)', placeholder:'nvapi-...' },
   { key:'ollama_base_url', label:'Ollama Base URL', provider:'Local Ollama', placeholder:'http://localhost:11434' },
+  { key:'local_llm_url', label:'Local LLM URL (OpenAI-compatible)', provider:'llama.cpp / vLLM / LM Studio', placeholder:'http://localhost:8080/v1' },
 ]
 // Catalogue entry -> picker label. `extra` is the provider's own note: an
 // OpenRouter price ("free", "$0.20 in / $0.60 out per M") or a context window.
@@ -32,15 +36,6 @@ const CAPTCHA = [
 const STEALTH = [
   { key:'proxy_url', label:'Residential Proxy URL', placeholder:'http://user:pass@host:port' },
 ]
-const HUNT_FILTERS = [
-  { key:'hunt_keywords', label:'Job Keywords (comma separated)', placeholder:'Principal AI Engineer, ML Architect, Staff Data Scientist' },
-  { key:'hunt_exclude', label:'Exclude Keywords', placeholder:'Staffing, Recruiter, Contract Only' },
-  { key:'hunt_salary_min', label:'Minimum Salary ($)', placeholder:'180000' },
-  { key:'hunt_locations', label:'Preferred Locations', placeholder:'Remote, San Francisco, New York' },
-  { key:'hunt_remote_only', label:'Remote Only?', placeholder:'true or false' },
-  { key:'hunt_platforms', label:'Target Platforms', placeholder:'linkedin, greenhouse, lever, workday' },
-]
-
 const DEFAULT_PDF_STYLE = {
   fontFamily: 'Cambria, Georgia, serif',
   fontSize: '10.5',
@@ -267,6 +262,8 @@ export default function Settings() {
     { id: 'resume', label: 'Resume Intelligence' },
     { id: 'models', label: 'AI Models' },
     { id: 'strategy', label: 'Job Discovery' },
+    { id: 'autoapply', label: 'Auto-Apply' },
+    { id: 'appprofile', label: 'Application Profile' },
     { id: 'stealth', label: 'Stealth & Integrations' },
     { id: 'billing', label: 'Plan & Billing' },
   ]
@@ -276,21 +273,21 @@ export default function Settings() {
   return (
     <div style={{ display:'flex', flexDirection:'column', height: '100%' }}>
       {/* Top Header */}
-      <div className="flex justify-between items-center mb-lg">
+      <div className="flex justify-between items-center mb-lg stack-mobile">
         <div>
-          <h2 style={{ fontSize: '1.75rem', fontWeight: 800 }}>Settings</h2>
+          <h2 style={{ fontSize: '1.75rem' }}>Settings</h2>
           <p style={{ color:'var(--fg-muted)', fontSize:'0.875rem', marginTop:4 }}>
             Manage your AI personas, API keys, and automation preferences.
           </p>
         </div>
-        <button className="btn btn-primary" onClick={save} style={{ height: 42, padding: '0 1.5rem' }}>
+        <button className="btn btn-primary" onClick={save}>
           {saved ? 'Configuration Saved' : 'Save Changes'}
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: '2rem', flex: 1, minHeight: 0 }}>
+      <div className="settings-layout" style={{ display: 'flex', gap: '2rem', flex: 1, minHeight: 0 }}>
         {/* Local Settings Sidebar */}
-        <div style={{ width: 220, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        <div className="settings-nav" style={{ width: 220, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           {CATEGORIES.map(cat => (
             <button
               key={cat.id}
@@ -316,10 +313,13 @@ export default function Settings() {
         <div style={{ flex: 1, overflowY: 'auto', paddingRight: '1rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
           {activeCategory === 'billing' && <BillingPanel />}
 
+          {activeCategory === 'autoapply' && <AutoApplyPanel />}
+          {activeCategory === 'appprofile' && <ApplicationProfileForm />}
+
           {activeCategory === 'resume' && (
             <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1.5rem', borderLeft: '4px solid var(--primary)' }}>
-                <div className="flex justify-between items-start">
+                <div className="flex justify-between items-start stack-mobile">
                   <div>
                     <h3 style={{ fontSize:'1.1rem', color:'var(--primary)' }}>Master Resume Sources</h3>
                     <p style={{ fontSize:'0.85rem', color:'var(--fg-muted)', marginTop:4 }}>
@@ -353,7 +353,7 @@ export default function Settings() {
                     }}>
                       <div className="flex items-center justify-between mb-sm">
                         <div className="flex items-center gap-sm">
-                          <span style={{ fontSize: '1.2rem' }}>{c.type === 'file' ? '📄' : '📝'}</span>
+                          <span className="badge">{c.type === 'file' ? 'File' : 'Note'}</span>
                           <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{c.name}</span>
                         </div>
                         <button className="btn btn-icon btn-ghost" style={{ color:'var(--danger)', padding:4 }} onClick={() => deleteComponent(c.id)}>
@@ -481,7 +481,7 @@ export default function Settings() {
                         type="color"
                         value={pdfStyle.sectionColor}
                         onChange={e => setPdfStyle(p => ({ ...p, sectionColor: e.target.value }))}
-                        style={{ width: 42, height: 36, padding: 2, border: '1px solid var(--surface-border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-2)', cursor: 'pointer' }}
+                        style={{ width: 52, height: 52, padding: 4, border: '1px solid var(--surface-border)', background: 'var(--bg-2)', cursor: 'pointer' }}
                       />
                       <input
                         type="text"
@@ -594,7 +594,7 @@ export default function Settings() {
                           <div style={{ fontSize:'0.72rem', color:'var(--fg-muted)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{m.id}</div>
                         </div>
                         <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', flexShrink:0 }}>
-                          <span style={{ fontSize:'0.72rem', color: m.extra === 'free' ? 'var(--success, #3fb950)' : 'var(--fg-muted)', whiteSpace:'nowrap' }}>
+                          <span style={{ fontSize:'0.72rem', color: m.extra === 'free' ? 'var(--success)' : 'var(--fg-muted)', whiteSpace:'nowrap' }}>
                             {m.extra || '—'}
                           </span>
                           <button className="btn btn-outline btn-sm" disabled={added} onClick={() => addModel(m.id, modelLabel(m))}>
@@ -623,15 +623,7 @@ export default function Settings() {
             </div>
           )}
 
-          {activeCategory === 'strategy' && (
-            <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-              <Section
-                title="Hunting Logic"
-                description="Configure what the Job Discovery Agent looks for during its autonomous runs."
-                fields={HUNT_FILTERS}
-              />
-            </div>
-          )}
+          {activeCategory === 'strategy' && <DiscoveryPanel />}
 
           {activeCategory === 'stealth' && (
             <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -666,7 +658,7 @@ export default function Settings() {
                   </div>
                 )}
 
-                <div style={{ display:'flex', gap:'0.75rem', alignItems:'center' }}>
+                <div style={{ display:'flex', flexWrap:'wrap', gap:'0.75rem', alignItems:'center' }}>
                   <button className="btn btn-outline" onClick={generateMcpToken} disabled={mcpBusy}>
                     {mcpExists ? 'Regenerate Token' : 'Generate Token'}
                   </button>
