@@ -21,7 +21,7 @@ export default function JobList({ onOpenJob }) {
   const loadJobs = useCallback(async (q = searchQuery, filters = filter) => {
     setLoading(true)
     try {
-      const params = {}
+      const params = { limit: 2000 }   // ponytail: everything in one list; paginate past a few thousand jobs
       if (filters.status) params.status = filters.status
       if (filters.platform) params.platform = filters.platform
       if (filters.starred) params.starred = filters.starred === 'true'
