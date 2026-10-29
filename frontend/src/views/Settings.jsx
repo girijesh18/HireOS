@@ -280,9 +280,12 @@ export default function Settings() {
             Manage your AI personas, API keys, and automation preferences.
           </p>
         </div>
-        <button className="btn btn-primary" onClick={save}>
-          {saved ? 'Configuration Saved' : 'Save Changes'}
-        </button>
+        {/* Only the tabs built from `values` save here; the others have their own Save button */}
+        {['resume', 'models', 'stealth'].includes(activeCategory) && (
+          <button className="btn btn-primary" onClick={save}>
+            {saved ? 'Configuration Saved' : 'Save Changes'}
+          </button>
+        )}
       </div>
 
       <div className="settings-layout" style={{ display: 'flex', gap: '2rem', flex: 1, minHeight: 0 }}>

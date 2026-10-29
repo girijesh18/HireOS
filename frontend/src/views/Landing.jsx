@@ -17,39 +17,39 @@ const IconMenu = ({ open }) => (
 
 /* ── Content ──────────────────────────────────────────────────────────────── */
 const FEATURES = [
-  { title: 'Smart job ingestion',
-    body: 'Paste a URL or dump raw JD text. An agentic parser pulls out company, title, salary, location and the full structured description — no forms to fill.' },
-  { title: 'A–G fit assessment',
-    body: 'A 0–100 match score against your master resume plus a 7-axis breakdown: role archetype, leveling strategy, market demand, interview likelihood, JD red flags.' },
-  { title: 'Tailored resume engine',
-    body: 'ATS-optimized resumes written per job, run through a two-pass design-rule validator, exported to PDF and DOCX.' },
-  { title: 'Cover letters & outreach',
-    body: 'Letters drafted from the tailored resume so the narrative stays consistent, plus LinkedIn notes tuned per contact type.' },
-  { title: 'Deep company research',
-    body: 'A 6-axis investigative sweep: business model, competitors, engineering culture, recent news, value prop, leadership.' },
-  { title: 'Multi-model engine',
-    body: 'Gemini, Groq, OpenRouter and local Ollama behind one adapter. Fan a prompt out to several models and compare.' },
+  { title: 'Discovery that runs itself',
+    body: 'Twice every weekday it checks the Greenhouse, Lever, Ashby and Workday boards of the companies you pick, LinkedIn\'s public job search and your job-alert emails, then scores every new posting against your resume.' },
+  { title: 'A resume for every job',
+    body: 'Each match gets its own ATS-friendly resume, as PDF and DOCX, and a cover letter when the form asks for one. Everything is written from your master resume, never made up.' },
+  { title: 'Review from your phone',
+    body: 'Resume cards land in Telegram or Discord with the PDF and a list of what changed. Approve, skip or ask for edits in plain words, or just ask "what came in today?"' },
+  { title: 'An agent that fills the form',
+    body: 'A real browser fills Workday, Greenhouse, Lever and Ashby applications, reads back every value it entered and sends you the review page. Open the live screen to watch it work.' },
+  { title: 'Answers you can trust',
+    body: 'Facts come only from your profile and resume. A question it can\'t answer from them comes to you once, and your reply is saved for the next form.' },
+  { title: 'Status that updates itself',
+    body: 'Read-only Gmail scanning moves each job to received, rejected, interview or offer, and you get a message whenever something needs you.' },
 ]
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI']
 
 const STEPS = [
-  { n: '01', title: 'Track', body: 'Drop in a link or paste the JD. The parser does the data entry.' },
-  { n: '02', title: 'Assess', body: 'Seven axes of gap analysis decide whether the role is worth your time.' },
-  { n: '03', title: 'Research', body: 'A background agent builds the company dossier while you keep moving.' },
-  { n: '04', title: 'Tailor', body: 'Resume and cover letter generated against that specific description.' },
-  { n: '05', title: 'Apply', body: 'Export the documents, or hand the posting to the Playwright bot.' },
-  { n: '06', title: 'Follow up', body: 'Every state change lands on an application timeline you can search.' },
+  { n: '01', title: 'Discover', body: 'Scheduled runs pull fresh postings from the boards and searches you choose.' },
+  { n: '02', title: 'Score', body: 'Each job gets a fit score and gap analysis against your resume; weak matches drop out.' },
+  { n: '03', title: 'Tailor', body: 'A resume, and a cover letter when needed, written for that exact posting.' },
+  { n: '04', title: 'Approve', body: 'One tap in Telegram, Discord or the web, or let auto mode approve your best matches.' },
+  { n: '05', title: 'Apply', body: 'The agent fills and checks the form, then submits when you tap Submit. CAPTCHAs and email codes always come to you.' },
+  { n: '06', title: 'Track', body: 'Email updates, daily caps, company cooldowns and one timeline per job.' },
 ]
 
 // Product facts, not outcome claims. Swap in real usage numbers only once they are measured.
 const STATS = [
-  { v: '7', l: 'Evaluation axes per job' },
-  { v: '4', l: 'LLM providers, one switch' },
-  { v: '2-pass', l: 'Resume rule validation' },
-  { v: '100%', l: 'Your data, your database' },
+  { v: '4', l: 'Application systems it fills' },
+  { v: '2×', l: 'Discovery runs every weekday' },
+  { v: '1 tap', l: 'Between you and Submit' },
+  { v: '0', l: 'Answers invented' },
 ]
 
-const SOURCES = ['LinkedIn', 'Greenhouse', 'Lever', 'Workday', 'Ashby', 'Wellfound', 'Company sites', 'Raw text']
+const SOURCES = ['Greenhouse', 'Lever', 'Ashby', 'Workday', 'LinkedIn search', 'Job-alert emails', 'Pasted links & text']
 
 const NAV = [['why', 'Why HireOS'], ['features', 'Features'], ['how', 'How it works']]
 
@@ -100,13 +100,13 @@ export default function Landing({ onGetStarted, onSignIn, signedIn = false }) {
         <div className="l-container l-hero-grid">
           <div>
             <Eyebrow>Hiring, considered</Eyebrow>
-            <h1 className="l-h1">Stop rewriting <em>your resume.</em></h1>
+            <h1 className="l-h1">Find it. Tailor it. <em>Apply.</em></h1>
           </div>
           <div>
             <p className="l-lead">
-              HireOS is an agentic job-hunt platform. Paste a posting, get a scored fit
-              assessment, a company dossier, and an ATS-tuned resume written for that
-              exact description — while the pipeline tracks every application for you.
+              HireOS finds jobs that fit you, writes a resume for each one, and fills the
+              application in a real browser. You approve from Telegram or Discord, and
+              nothing is sent until you tap Submit.
             </p>
             <div className="l-actions">
               <button className="btn btn-primary" onClick={onGetStarted}>
@@ -114,7 +114,7 @@ export default function Landing({ onGetStarted, onSignIn, signedIn = false }) {
               </button>
               <button className="btn btn-outline" onClick={() => goTo('how')}>See how it works</button>
             </div>
-            <p className="l-note">No credit card · Bring your own API keys · Data stays in your database</p>
+            <p className="l-note">Free to start · Answers only from your resume · Bot checks always stay with you</p>
           </div>
         </div>
       </header>
@@ -137,13 +137,13 @@ export default function Landing({ onGetStarted, onSignIn, signedIn = false }) {
         <div className="l-container l-why">
           <div>
             <Eyebrow>Why HireOS</Eyebrow>
-            <h2 className="l-h2">Every step of the hunt, run by an <em>agent</em></h2>
+            <h2 className="l-h2">The whole hunt, run by an <em>agent</em></h2>
             <p className="l-body">
-              Not a spreadsheet with AI bolted on. Each stage is a background worker that
-              writes its result back to your timeline.
+              Set your targets once. HireOS searches, scores, tailors and applies in the
+              background, and asks you only when a decision is yours to make.
             </p>
             <p className="l-sources">
-              <span className="l-sources-label">Ingests postings from</span>
+              <span className="l-sources-label">Finds postings on</span>
               {SOURCES.join(' · ')}
             </p>
           </div>
@@ -163,7 +163,7 @@ export default function Landing({ onGetStarted, onSignIn, signedIn = false }) {
       <section className="l-section on-navy l-how" id="how">
         <div className="l-container">
           <Eyebrow>Pipeline</Eyebrow>
-          <h2 className="l-h2">Six stages, <em>one timeline</em></h2>
+          <h2 className="l-h2">From posting to <em>applied</em></h2>
           <ol className="l-steps">
             {STEPS.map(s => (
               <li key={s.n} className="l-step">
@@ -183,8 +183,8 @@ export default function Landing({ onGetStarted, onSignIn, signedIn = false }) {
       <section className="l-cta">
         <div className="l-container l-cta-inner">
           <div>
-            <h2 className="l-h2">Your next application, in <em>minutes</em></h2>
-            <p className="l-body">Create an account, paste one job posting, and see the whole pipeline run.</p>
+            <h2 className="l-h2">Set your targets <em>once</em></h2>
+            <p className="l-body">Create an account, add your resume and the companies you want. The next discovery run does the rest.</p>
           </div>
           <div className="l-actions">
             <button className="btn btn-primary" onClick={onGetStarted}>
@@ -198,7 +198,7 @@ export default function Landing({ onGetStarted, onSignIn, signedIn = false }) {
       <footer className="l-footer">
         <div className="l-container l-footer-inner">
           <span className="logo-word">Hire<em>OS</em></span>
-          <span>© {new Date().getFullYear()} HireOS — agentic job-hunt platform</span>
+          <span>© {new Date().getFullYear()} HireOS — your job hunt, on autopilot with you at the wheel</span>
         </div>
       </footer>
     </div>
