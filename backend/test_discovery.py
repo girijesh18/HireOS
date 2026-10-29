@@ -160,6 +160,23 @@ def _fake_llm(scores: dict, calls: list):
     return analyze, resume
 
 
+def test_careers_site_follows_the_jobs_country_page():
+    """Adastra: home -> /careers/ (country links only) -> /careers/canada/ -> iCIMS."""
+    pad = " " * 2000
+    routes = {("GET", "https://ca.linkedin.com/company/adastra"):
+              (200, '<a href="https://www.linkedin.com/redir?url=https%3A%2F%2Fadastra.com" data-tracking-control-name="about_website">'),
+              ("GET", "https://adastra.com"): (200, '<a href="https://adastra.com/careers/">Careers</a>' + pad),
+              ("GET", "https://adastra.com/careers/"): (200, '<a href="https://adastra.com/careers/bulgaria/">BG</a>'
+                                                            '<a href="https://adastra.com/careers/canada/">CA</a>'),
+              ("GET", "https://adastra.com/careers/canada/"): (200, '<a href="https://careers-x.icims.com/jobs/intro">Jobs</a>')}
+    page = {"html": '<a href="https://ca.linkedin.com/company/adastra?trk=x">Adastra</a>'}
+
+    async def go():
+        async with client(routes) as c:
+            return await d.careers_site(c, page, "Toronto, Ontario, Canada")
+    assert asyncio.run(go()) == {"careers_url": "https://careers-x.icims.com/jobs/intro"}
+
+
 def test_prepare():
     db, u = _db_user()
     main._put_setting(db, u.id, main.aq.MIN_SCORE_KEY, "70")

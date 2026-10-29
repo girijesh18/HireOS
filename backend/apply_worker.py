@@ -391,8 +391,9 @@ def watch(headless: bool):
             where = job.get("url")
             if job.get("careers_url"):    # discovery found the company's own careers site
                 where = f"{job['careers_url']} (company careers site; the posting: {job.get('url')})"
+            why = f"#{job['job_id']} can't be applied for you: {job['manual_reason']}" if job.get("manual_reason") else f"{e}."
             api.post(f"/apply/{job['job_id']}/result", {"outcome": "needs_human", "notes":
-                     f"{e}. Apply yourself: {where} — your tailored resume is on the card above."})
+                     f"{why} Apply yourself: {where} — your tailored resume is on the card above."})
         except Exception as e:   # never let one job stop the service
             print(f"watch: #{job['job_id']} crashed: {e!r}", file=sys.stderr, flush=True)
             try:

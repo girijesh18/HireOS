@@ -497,6 +497,25 @@ def test_worker_star_takes_every_platform():
     assert claim(db, u, worker=True)["job_id"] == other.id
 
 
+def test_manual_reason():
+    """Why the worker can't fill a job, said before approving (resume card) and after (hand-off)."""
+    import telegram_bot
+    J = lambda url, notes="", platform=None: Job(id=1, company="Adastra", title="DS", url=url, notes=notes, platform=platform)
+    assert aq.manual_reason(J("https://boards.greenhouse.io/acme/jobs/1")) is None
+    assert aq.manual_reason(J("https://acme.wd3.myworkdayjobs.com/x/job/1")) is None
+    assert aq.manual_reason(J("https://acme.com/careers/1", platform="greenhouse")) is None      # embedded Greenhouse
+    li = "https://www.linkedin.com/jobs/view/4483826333/"
+    icims = aq.manual_reason(J(li, "[careers: https://careers-adastragrp.icims.com/jobs/intro?hashed=1]"))
+    assert icims.startswith("the application is on iCIMS, which the agent can't fill yet"), icims
+    assert "own careers site (adastracorp.com)" in aq.manual_reason(J(li, "[careers: https://adastracorp.com/careers]"))
+    assert "behind its sign-in" in aq.manual_reason(J(li))
+    assert aq.manual_reason(J(li, "[find-ats: LinkedIn Easy Apply only — needs a LinkedIn login]")).startswith("LinkedIn Easy Apply only")
+    assert "Taleo" in aq.manual_reason(J("https://acme.taleo.net/careersection/1"))
+    card = telegram_bot.card_text(J(li, "[careers: https://careers-adastragrp.icims.com/x]"), 1, [])
+    assert "⚠️ You'll apply to this one yourself: the application is on iCIMS" in card, card
+    assert "⚠️" not in telegram_bot.card_text(J("https://jobs.lever.co/acme/1"), 1, [])
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

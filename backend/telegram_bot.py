@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
+
+import apply_queue
 from fastapi import HTTPException
 from loguru import logger
 
@@ -97,7 +99,10 @@ def changes_summary(md: str, master_md: str, notes: dict = None, limit: int = 4)
 def card_text(job, version: int, changes: list) -> str:
     score = f"score {job.match_score:g}" if job.match_score is not None else ""
     meta = " · ".join(x for x in (score, job.location or "", f"resume v{version}") if x)
-    return "\n".join([f"#{job.id}  {job.company} · {job.title}", meta, *([""] + changes if changes else [])])
+    why = apply_queue.manual_reason(job)     # known before approving: approving won't get it applied for you
+    manual = [f"⚠️ You'll apply to this one yourself: {why}"] if why else []
+    return "\n".join([f"#{job.id}  {job.company} · {job.title}", meta, *manual,
+                      *([""] + changes if changes else [])])
 
 
 def buttons(job_id: int) -> dict:

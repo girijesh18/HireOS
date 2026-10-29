@@ -63,6 +63,41 @@ _PLATFORM_HOSTS = [
     ("successfactors", r"(^|\.)successfactors\.(com|eu)$|(^|\.)sapsf\.com$"),
 ]
 
+# What the apply worker fills (apply_worker.SUPPORTED); everything else is applied to by the user.
+WORKER_FILLS = ("greenhouse", "lever", "ashby", "workday")
+_ATS_NAMES = {"icims": "iCIMS", "taleo": "Taleo", "successfactors": "SAP SuccessFactors",
+              "smartrecruiters": "SmartRecruiters", "avature": "Avature", "oraclecloud": "Oracle",
+              "jobvite": "Jobvite", "bamboohr": "BambooHR", "workable": "Workable", "dayforcehcm": "Dayforce",
+              "ultipro": "UKG", "adp": "ADP", "paylocity": "Paylocity", "recruitee": "Recruitee",
+              "breezy": "Breezy", "rippling": "Rippling"}
+
+
+def manual_reason(job) -> Optional[str]:
+    """Why the apply worker can't fill this job, in plain words, or None when it can.
+    Shown on the resume card before approving and in the hand-off after."""
+    platform = detect_platform(job.url)
+    if platform in WORKER_FILLS or (job.platform or "").lower() in ("greenhouse", "lever", "ashby"):
+        return None
+    notes = job.notes or ""
+    if "LinkedIn Easy Apply only" in notes:
+        return "LinkedIn Easy Apply only: it needs your LinkedIn sign-in, and the agent never signs in to LinkedIn."
+    careers = re.search(r"\[careers: (\S+?)\]", notes)
+    if careers:
+        host = (urlsplit(careers.group(1)).hostname or "").lower()
+        ats = next((name for key, name in _ATS_NAMES.items() if key in host), None)
+        if ats:
+            return (f"the application is on {ats}, which the agent can't fill yet ({ats} usually needs an "
+                    "account first, and the agent only creates accounts on Workday).")
+        return (f"the application is on the company's own careers site ({host}); the agent only fills "
+                "Greenhouse, Lever, Ashby and Workday forms.")
+    if platform == "linkedin":
+        return ("LinkedIn hides this posting's apply link behind its sign-in, and no Greenhouse, Lever, Ashby "
+                "or Workday posting was found for it.")
+    host = (urlsplit(job.url or "").hostname or "no link").lower()
+    name = _ATS_NAMES.get(platform) or host
+    return f"it's on {name}, which the agent can't fill; it only fills Greenhouse, Lever, Ashby and Workday forms."
+
+
 # Query params that only track where a click came from; dropping them lets the
 # same posting reached from two alert emails dedupe to one job.
 _TRACKING_PARAMS = re.compile(r"^(utm_.*|ref|refid|trk|trackingid|src|source|from|gh_src|lipi|eBP|alid|tk)$", re.I)

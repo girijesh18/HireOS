@@ -262,9 +262,10 @@ def is_ats(u: str) -> bool:
     return any(a in host for a in ATS_HOSTS)
 
 
-async def careers_site(c: httpx.AsyncClient, job_page: dict) -> Optional[dict]:
-    """Company website (from LinkedIn's public company page) -> its careers page -> the ATS it links
-    to: {careers_url, workday?} or None. No search engine, no login."""
+async def careers_site(c: httpx.AsyncClient, job_page: dict, location: str = "") -> Optional[dict]:
+    """Company website (from LinkedIn's public company page) -> its careers page (and the one for the
+    job's country or city, e.g. /careers/canada/) -> the ATS it links to: {careers_url, workday?} or
+    None. No search engine, no login."""
     mo = re.search(r'href="(https://[a-z]+\.linkedin\.com/company/[^"?]+)', job_page["html"])
     if not mo:
         return None
@@ -286,13 +287,21 @@ async def careers_site(c: httpx.AsyncClient, job_page: dict) -> Optional[dict]:
     ats = [u for u in links if is_ats(u)]
     careers = [u for u in links if re.search(r"career|carri[eè]re|/jobs|emploi|join-us|work-with-us", u, re.I)
                and (urlparse(u).hostname or "").endswith(domain)][:3]
+    places = [w for w in re.split(r"[^a-z]+", (location or "").lower()) if len(w) > 3]
+    seen = set(careers)
     for cu in careers:
         if ats:
             break
         try:
-            ats = [u for u in hrefs(cu, (await get_page(c, cu))["html"]) if is_ats(u)]
+            links = hrefs(cu, (await get_page(c, cu))["html"])
         except httpx.HTTPError:
-            pass
+            continue
+        ats = [u for u in links if is_ats(u)]
+        # one level down: the careers page for the job's place, on the same site
+        if len(careers) < 6:      # at most a few extra pages
+            careers += [u for u in links if u not in seen and any(p in u.lower() for p in places)
+                        and (urlparse(u).hostname or "").endswith(domain)][:2]
+        seen.update(careers)
     wd = next((u for u in ats if "myworkdayjobs.com" in u), None)
     if wd:   # board = origin + site (first path segment that isn't a locale)
         u = urlparse(wd)
@@ -343,7 +352,7 @@ async def find_ats(c: httpx.AsyncClient, job, t: dict) -> Dict[str, Any]:
     site = None
     if li:
         try:
-            site = await careers_site(c, li)
+            site = await careers_site(c, li, job.location or "")
         except httpx.HTTPError:
             site = None
     if site and site.get("workday"):

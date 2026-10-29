@@ -3222,6 +3222,7 @@ def apply_next(payload: Dict[str, Any] = {}, db: Session = Depends(get_db), curr
         return {
             "job_id": job.id, "company": job.company, "title": job.title, "url": job.url,
             "careers_url": (re.search(r"\[careers: (\S+?)\]", job.notes or "") or [None, None])[1],   # found by discovery
+            "manual_reason": aq.manual_reason(job),     # why the worker can't fill it, if it can't
             "platform": platform, "match_score": job.match_score, "location": job.location,
             "resume_pdf_url": f"/api/jobs/{job.id}/resume.pdf",
             "resume_filename": resume_filename(job, resume),

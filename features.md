@@ -119,3 +119,9 @@ SSO accounts are created with `password_hash=""` (`main.py:244`) and `/auth/logi
 
 ### 3. Keyless resume generation over MCP
 Let someone use HireOS from Claude without any LLM provider key, using their Claude subscription as the model. MCP `sampling` is **not** supported by Claude Code, so the route is an MCP **prompt** (`/mcp__hireos__tailor_resume <job_id>`) that injects JD + master resume + style guide into the conversation; Claude writes the markdown and calls `hireos_save_resume`, which makes zero LLM calls. Needs: the prompt handler on the MCP server (separate repo), and `enforce_header` (`agents.py:619`) applied in `save_chat_resume` (`main.py:1867`) so model-authored contact details can never reach a PDF. Everything else — analysis, cover letters, ATS, research — still requires a provider key.
+
+### 4. Apply worker: iCIMS (and the next ATS by volume)
+The worker fills Greenhouse, Lever, Ashby and Workday only. Jobs whose application lives elsewhere are handed back with the reason (`apply_queue.manual_reason`), shown on the resume card before approving. First seen: #350 Adastra (LinkedIn → adastracorp.com/careers/canada → `careers-adastragrp.icims.com`).
+* **iCIMS needs an account per tenant** (email + password) before the form, like Workday. Do it the Workday way: the worker signs in / creates the account from the vault (`HIREOS_VAULT`, password never seen), fills the form, and the user taps Submit. No account creation outside the vault.
+* **Before building:** count how many approved/pending jobs land on each unsupported ATS (careers notes + URL hosts) and build the top one first; iCIMS is a guess from one job.
+* Then: a form filler like `ats_form.py` for iCIMS's multi-page flow (profile → questions → EEO → review), with the same rules — facts only from the resume/profile, questions it can't answer go to the user, CAPTCHAs and email codes go to the user.
