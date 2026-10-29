@@ -37,7 +37,7 @@ const STEPS = [
   { n: '02', title: 'Score', body: 'Each job gets a fit score and gap analysis against your resume; weak matches drop out.' },
   { n: '03', title: 'Tailor', body: 'A resume, and a cover letter when needed, written for that exact posting.' },
   { n: '04', title: 'Approve', body: 'One tap in Telegram, Discord or the web, or let auto mode approve your best matches.' },
-  { n: '05', title: 'Apply', body: 'The agent fills and checks the form, then submits when you tap Submit. CAPTCHAs and email codes always come to you.' },
+  { n: '05', title: 'Apply', body: 'The agent fills and checks the form. Review mode waits for your Submit; auto mode sends clean forms itself. CAPTCHAs and email codes always come to you.' },
   { n: '06', title: 'Track', body: 'Email updates, daily caps, company cooldowns and one timeline per job.' },
 ]
 
@@ -45,7 +45,7 @@ const STEPS = [
 const STATS = [
   { v: '4', l: 'Application systems it fills' },
   { v: '2×', l: 'Discovery runs every weekday' },
-  { v: '1 tap', l: 'Between you and Submit' },
+  { v: '2', l: 'Modes: review or auto' },
   { v: '0', l: 'Answers invented' },
 ]
 
@@ -105,8 +105,8 @@ export default function Landing({ onGetStarted, onSignIn, signedIn = false }) {
           <div>
             <p className="l-lead">
               HireOS finds jobs that fit you, writes a resume for each one, and fills the
-              application in a real browser. You approve from Telegram or Discord, and
-              nothing is sent until you tap Submit.
+              application in a real browser. Review each one from Telegram or Discord, or
+              let auto mode send the ones it could fill entirely from your resume.
             </p>
             <div className="l-actions">
               <button className="btn btn-primary" onClick={onGetStarted}>

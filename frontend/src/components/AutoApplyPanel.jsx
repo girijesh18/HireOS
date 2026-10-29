@@ -112,14 +112,14 @@ export default function AutoApplyPanel() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {[[false, 'Review mode', 'Nothing is applied until you approve the resume on Telegram'],
-            [true, 'Auto mode', 'Jobs at or above the auto score are applied on their own, weekdays 8:00–20:00, one every 20 minutes']].map(([auto, name, what]) => (
+          {[[false, 'Review mode', 'You approve each resume, then tap Submit on the filled form'],
+            [true, 'Auto mode', 'Jobs at or above the auto score are approved and, when the form was filled and checked entirely from your profile, submitted on their own — weekdays 8:00–20:00, one every 20 minutes']].map(([auto, name, what]) => (
             <button key={name} type="button" className={`btn btn-sm ${cfg.auto_apply === auto ? 'btn-primary' : 'btn-outline'}`}
               onClick={() => setCfg(c => ({ ...c, auto_apply: auto }))} title={what}>{name}</button>
           ))}
           <span style={{ fontSize: '0.8rem', color: 'var(--fg-subtle)', alignSelf: 'center' }}>
-            {cfg.auto_apply ? `Jobs scoring ${cfg.auto_min_score ?? 85}+ are applied on their own during work hours; the rest wait for your approval.`
-              : 'Nothing is applied until you approve the resume on Telegram.'}
+            {cfg.auto_apply ? `Jobs scoring ${cfg.auto_min_score ?? 85}+ are applied on their own during work hours. A form with a drafted answer, a blank field or an error still waits for your Submit; the rest wait for your approval.`
+              : 'You approve each resume, then tap Submit on the filled form. Nothing is sent before that.'}
           </span>
         </div>
         <div className="form-grid">

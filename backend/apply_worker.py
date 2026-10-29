@@ -162,6 +162,10 @@ class Run:
             return {}
         r = self.api.post("/agent/answer-questions", {"job_id": self.job["id"], "questions": questions,
                                                        "guidance": getattr(self, "guidance", "")})
+        labels = {q["id"]: q.get("label") or q["id"] for q in questions}
+        for a in r.get("answers", []):   # written by the model, not taken from the profile: auto mode won't submit
+            if a.get("drafted") and a.get("answer"):
+                self.record.setdefault("drafted", []).append(labels.get(a["id"], a["id"]))
         return {a["id"]: a.get("answer") for a in r.get("answers", [])}
 
 
@@ -199,10 +203,23 @@ def ask_and_wait(api: HireOS, run, body: dict, minutes: int) -> str:
     return "timeout"
 
 
-def wait_for_submit(api: HireOS, run, minutes: int = 30) -> str:
+def not_clean(r: dict) -> list:
+    """Why auto mode must still ask before Submit; [] = clean: every value read back and matched,
+    every answer from the profile / resume, nothing left out, no form errors."""
+    why = []
+    if not r.get("review_checked"):
+        why.append("the filled values weren't checked")
+    for key, label in (("drafted", "answers written by the model"), ("skipped", "left out"),
+                       ("unanswered", "no answer for"), ("errors", "form errors")):
+        if r.get(key):
+            why.append(f"{label}: " + "; ".join(r[key])[:200])
+    return why
+
+
+def wait_for_submit(api: HireOS, run, minutes: int = 30, note: str = "") -> str:
     """Send the checked Review page to Telegram and wait: 'submit', 'cancel' or 'timeout'."""
     r = run.record
-    reason = f"All {r.get('review_checked', 0)} values checked against what was entered."
+    reason = note + f"All {r.get('review_checked', 0)} values checked against what was entered."
     if r.get("consented"):
         reason += " Agreed for you: " + "; ".join(r["consented"])[:300] + "."
     if r.get("cover_letter"):   # its own message first, so it can be read before Submit
@@ -233,7 +250,7 @@ class Unsupported(Exception):
     """A job on a site the worker can't fill: the user applies themselves."""
 
 
-def run_job(job_id: int, headless: bool, live: bool, claimed: bool = False) -> dict:
+def run_job(job_id: int, headless: bool, live: bool, claimed: bool = False, auto_submit: bool = False) -> dict:
     import ats_form
     import workday
     api = HireOS()
@@ -241,6 +258,7 @@ def run_job(job_id: int, headless: bool, live: bool, claimed: bool = False) -> d
         claim = api.post("/apply/next", {"job_id": job_id, "worker": True})
         if not claim:
             raise SystemExit(f"#{job_id} can't be claimed (not approved, already applied, capped or not a worker platform)")
+        auto_submit = bool(claim.get("auto_submit"))
     job = api.get(f"/jobs/{job_id}").json()
     platform = platform_of(job)
     if not platform:
@@ -277,12 +295,18 @@ def run_job(job_id: int, headless: bool, live: bool, claimed: bool = False) -> d
             if not live:
                 run.record["outcome"] = f"reached Review, all {checked} values checked — stopped before Submit (dry run)"
             else:
-                decision = wait_for_submit(api, run)
+                why = not_clean(run.record) if auto_submit else None
+                if why == []:   # auto mode, clean run: no Submit card
+                    decision, run.record["auto_submitted"] = "submit", True
+                else:
+                    decision = wait_for_submit(api, run, note=f"Auto mode didn't submit this one — {'; '.join(why)}. "
+                                               if why else "")
                 if decision == "submit":
                     CLICKED.add(job_id)
                     confirmed = filler.submit(run)
                     outcome = "submitted" if confirmed else "unconfirmed"
-                    run.record["outcome"] = "submitted — confirmation page seen" if confirmed else \
+                    run.record["outcome"] = ("submitted by auto mode (clean run)" if run.record.get("auto_submitted")
+                                             else "submitted") + " — confirmation page seen" if confirmed else \
                         f"Submit clicked but no confirmation seen — check your email or {job['url']} before retrying"
                     result = {"outcome": "submitted" if confirmed else "needs_human",
                               "notes": run.record["outcome"]}
@@ -362,7 +386,7 @@ def watch(headless: bool):
             notify(api, f"Applying to #{job['job_id']} {job['company']} · {job['title']} now. "
                         "The filled form comes here for Submit in about 10 minutes.")
         try:
-            run_job(job["job_id"], headless, live=True, claimed=True)
+            run_job(job["job_id"], headless, live=True, claimed=True, auto_submit=bool(job.get("auto_submit")))
         except (Unsupported, SystemExit) as e:   # a site the worker can't fill: the user applies
             api.post(f"/apply/{job['job_id']}/result", {"outcome": "needs_human", "notes":
                      f"{e}. Apply yourself: {job.get('url')} — your tailored resume is on the card above."})

@@ -3219,6 +3219,7 @@ def apply_next(payload: Dict[str, Any] = {}, db: Session = Depends(get_db), curr
             "resume_pdf_url": f"/api/jobs/{job.id}/resume.pdf",
             "resume_filename": resume_filename(job, resume),
             "attempt": meta["apply_attempts"],
+            "auto_submit": bool(cfg["auto_apply"]),   # auto mode: the worker submits a clean run itself
             "remaining_today": usage.get(platform, {}).get("cap", 0) - usage.get(platform, {}).get("used", 0) - 1,
         }
     if capped:

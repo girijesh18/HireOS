@@ -38,17 +38,20 @@ class FakeHireOS:
         return {}
 
 
-def run(fill=None, submit=None, decision="submit"):
-    FakeHireOS.posts = []
+ASKED = []   # the notes wait_for_submit was called with (the Submit card)
+
+
+def run(fill=None, submit=None, decision="submit", auto=False):
+    FakeHireOS.posts, ASKED[:] = [], []
     real = (aw.HireOS, aw.wait_for_submit, ats_form.fill, ats_form.submit, aw.RUNS, aw.PROFILE, aw.screen_up)
     tmp = Path(tempfile.mkdtemp())
     aw.HireOS, aw.RUNS, aw.PROFILE = FakeHireOS, tmp / "runs", tmp / "profile"
     aw.screen_up = lambda: False                 # never the real screen
-    aw.wait_for_submit = lambda api, run: decision
+    aw.wait_for_submit = lambda api, run, note="": ASKED.append(note) or decision
     ats_form.fill = fill or (lambda run, resume: None)
     ats_form.submit = submit or (lambda run: True)
     try:
-        aw.run_job(JOB["id"], headless=True, live=True, claimed=True)
+        aw.run_job(JOB["id"], headless=True, live=True, claimed=True, auto_submit=auto)
     finally:
         aw.HireOS, aw.wait_for_submit, ats_form.fill, ats_form.submit, aw.RUNS, aw.PROFILE, aw.screen_up = real
     return [b for p, b in FakeHireOS.posts if p.endswith("/result")]
@@ -144,6 +147,38 @@ def test_config_env_over_file_and_screen_probe():
         aw.CREDS, aw.SCREEN_DISPLAY = real[0], real[2]
         os.environ.clear()
         os.environ.update(real[1])
+
+
+def clean_fill(run, resume):
+    run.record["review_checked"] = 9
+
+
+def test_auto_mode_submits_a_clean_run():
+    [res] = run(fill=clean_fill, auto=True)
+    assert ASKED == [] and res["outcome"] == "submitted" and "auto mode" in res["notes"], (ASKED, res)
+
+
+def test_auto_mode_asks_when_not_clean():
+    def drafted(run, resume):
+        clean_fill(run, resume)
+        run.record["drafted"] = ["Why do you want to work here?"]
+    [res] = run(fill=drafted, auto=True)
+    assert len(ASKED) == 1 and "written by the model: Why do you want" in ASKED[0], ASKED
+    assert res["outcome"] == "submitted" and "auto mode" not in res["notes"]       # you tapped Submit
+    [_] = run(fill=clean_fill, auto=False)
+    assert ASKED == [""], "review mode always asks"
+    assert aw.not_clean({}) == ["the filled values weren't checked"]
+    assert aw.not_clean({"review_checked": 3, "skipped": ["Gender"], "errors": []}) == ["left out: Gender"]
+
+
+def test_drafted_answers_recorded():
+    class Api:
+        def post(self, path, body):
+            return {"answers": [{"id": "q1", "answer": "Because...", "drafted": True},
+                                {"id": "q2", "answer": "Yes", "drafted": False}, {"id": "q3", "answer": None, "drafted": True}]}
+    r = aw.Run(Api(), JOB, None, Path(tempfile.mkdtemp()), "greenhouse")
+    got = r.answers([{"id": "q1", "label": "Why us?"}, {"id": "q2", "label": "Authorized?"}, {"id": "q3", "label": "Salary"}])
+    assert got == {"q1": "Because...", "q2": "Yes", "q3": None} and r.record["drafted"] == ["Why us?"]
 
 
 if __name__ == "__main__":
