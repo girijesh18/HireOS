@@ -322,6 +322,8 @@ class OpenAICompatProvider:
         from openai import OpenAI
 
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0, max_retries=1)
+        # HireOS: thinking off on OpenRouter (qwen3.x otherwise reasons for minutes per section)
+        self.extra_body = {"reasoning": {"enabled": False}} if "openrouter.ai" in base_url else None
 
     def chat(
         self,
@@ -341,6 +343,8 @@ class OpenAICompatProvider:
         # endpoints take JSON mode instead — the prompt already spells out the schema.
         if "format" in kwargs:
             params["response_format"] = {"type": "json_object"}
+        if self.extra_body:
+            params["extra_body"] = self.extra_body
         resp = self.client.chat.completions.create(**params)
         return {"message": {"content": resp.choices[0].message.content}}
 

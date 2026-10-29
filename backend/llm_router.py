@@ -224,12 +224,13 @@ class LLMRouter:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def _fallback_chain(self, llm: str) -> List[str]:
-        """The requested model first, then the user's other providers with a key: ones that answered
-        recently first, untried next; one that failed within DOWN_FOR is skipped."""
+        """The requested model first, then the user's chosen model, then their other providers with a
+        key: ones that answered recently first, untried next; one that failed within DOWN_FOR is skipped."""
         primary = _provider(llm)
         rest = [p for p in self.available_providers() if p != primary]
         up = [p for p in rest if not is_down(p)]
-        up.sort(key=lambda p: not _HEALTH.get(p, (False,))[0])   # stable: answered last time first, then by key order
+        chosen = _provider(self.default_llm())
+        up.sort(key=lambda p: (p != chosen, not _HEALTH.get(p, (False,))[0]))   # stable: then by key order
         return [llm] + [self._model_for(p) for p in up]
 
     def _model_for(self, provider: str) -> str:
@@ -535,8 +536,11 @@ class LLMRouter:
                 await asyncio.sleep(wait)
             for model_name in candidates:
                 try:
+                    # Thinking off, as for the local server: a reasoning model (qwen3.x) otherwise spends
+                    # 5-18k tokens and minutes per call thinking. Models that can't switch it off ignore it.
                     return await self._chat(client, "openrouter", json_schema, model=model_name, messages=messages,
-                                            max_tokens=max_tokens, temperature=temperature)
+                                            max_tokens=max_tokens, temperature=temperature,
+                                            extra_body={"reasoning": {"enabled": False}})
                 except OutputTruncated:
                     raise            # a bigger budget is the fix, not another model
                 except Exception as e:

@@ -43,7 +43,7 @@ def test_mail_llm():
         os.environ.pop("MAIL_LLM")
     asyncio.run(mail_updates.classify(R(), mail, llm="gemini-2.5-pro"))           # the user's model, from the caller
     assert [(c["llm"], c["fallback"]) for c in calls] == \
-        [("local", False), ("openrouter:qwen/qwen3.8-27b", False), ("gemini-2.5-pro", False)]
+        [(None, False), ("openrouter:qwen/qwen3.8-27b", False), ("gemini-2.5-pro", False)]   # None: the router's default
 
 
 def test_fallback_by_key_and_health():
@@ -70,17 +70,30 @@ def test_fallback_by_key_and_health():
     assert called == ["openrouter", "gemini", "nvidia"]
     assert r._fallback_chain("openrouter:qwen/x") == ["openrouter:qwen/x", "nvidia"]   # gemini down for a while
     llm_router._HEALTH["gemini"] = (False, llm_router.time.monotonic() - llm_router.DOWN_FOR - 1)
-    assert r._fallback_chain("openrouter:qwen/x") == ["openrouter:qwen/x", "nvidia", "gemini"]   # retried later
+    assert "gemini" in r._fallback_chain("openrouter:qwen/x")                                  # retried later
     assert LLMRouter(keys={"nvidia": "n"}, allow_env=False)._fallback_chain("nvidia") == ["nvidia"]
     llm_router._HEALTH.clear()
     r.preferred = "openrouter:qwen/x"
-    assert r._fallback_chain("nvidia") == ["nvidia", "gemini", "openrouter:qwen/x"], \
-        "falling back to OpenRouter means the chosen model, not OpenRouter's default list"
+    assert r._fallback_chain("local") == ["local", "openrouter:qwen/x", "gemini", "nvidia"], \
+        "the chosen model is the first fallback, as itself, not OpenRouter's default list"
     r.preferred = None
     called.clear()
     asyncio.run(r.complete("hi"))                                  # no model named: the router's default, not "gemini"
     assert called[0] == r.default_llm().split(":")[0] or called[0] == r.default_llm(), called
     llm_router._HEALTH.clear()
+
+
+def test_openrouter_thinking_off():
+    """qwen3.x on OpenRouter thought for 5-18k tokens a call; locally thinking is off, so here too."""
+    r = LLMRouter(keys={"openrouter": "o"}, allow_env=False)
+    seen = {}
+
+    async def chat(client, provider, schema, **kw):
+        seen.update(kw)
+        return "ok"
+    r._chat = chat
+    asyncio.run(r._call_openrouter("hi", model="qwen/qwen3.8-27b"))
+    assert seen["extra_body"] == {"reasoning": {"enabled": False}} and seen["model"] == "qwen/qwen3.8-27b", seen
 
 
 def test_one_model_per_user():

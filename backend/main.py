@@ -3662,7 +3662,7 @@ async def _bg_resume(job_id: int, llm: str, feedback: str, user_id: int, critic_
                 _r = agent_resume.router
                 ats = await asyncio.to_thread(
                     score_resume_pdf, pdf_path, llm,
-                    _r.gemini_key, _r.nvidia_key, _r.github_token,
+                    _r, _r.github_token,
                 )
                 if ats:
                     rv.ats_score = ats
@@ -3797,7 +3797,7 @@ async def _bg_ats(job_id: int, resume_id: int, llm: str, user_id: int):
         _r = get_agent("resume", db, user_id).router
         ats = await asyncio.to_thread(
             score_resume_pdf, rv.pdf_path, llm,
-            _r.gemini_key, _r.nvidia_key, _r.github_token,
+            _r, _r.github_token,
         )
         if not ats:
             raise ValueError("ATS scorer returned no result")
@@ -4290,15 +4290,15 @@ async def generate_cover_letter(job_id: int, background_tasks: BackgroundTasks, 
 async def compare_llms(job_id: int, payload: Dict[str, Any] = {}, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Fan out resume or cover letter generation to multiple LLMs.
-    Body: { "task": "resume|cover_letter", "providers": ["gemini", "groq"] }
+    Body: { "task": "resume|cover_letter", "providers"?: ["gemini", "groq"] }  (default: every provider with a key)
     """
     job = get_owned_job(db, job_id, current_user)
 
     task = (payload or {}).get("task", "resume")
-    providers = (payload or {}).get("providers", ["gemini", "groq"])
-    master_resume = get_master_resume(db, current_user.id)
-
     router = get_llm_router(db, current_user.id)
+    # default: every provider with a key, each on the user's model for it where there is one
+    providers = (payload or {}).get("providers") or [router._model_for(p) for p in router.available_providers()]
+    master_resume = get_master_resume(db, current_user.id)
 
     if task == "resume":
         from agents import SYSTEM_RESUME_AGENT
@@ -4363,12 +4363,12 @@ def _chat_jobs(db: Session, uid: int, p: dict) -> str:
     total = q.count()
     limit = max(1, min(int(p.get("limit") or 10), 25))
     jobs = q.limit(limit).all()
-    if not jobs:
-        return "No jobs match that."
     when = f" from the last {hours:g}h" if isinstance(hours, (int, float)) and hours > 0 else ""
-    head = f"{total} jobs{when}" + (f" scoring {min_score:g}+" if isinstance(min_score, (int, float)) else "") + \
-        (f" ({p['status']})" if p.get("status") else "") + \
-        (f" — {'top' if p.get('sort') == 'score' else 'latest'} {len(jobs)}:" if total > len(jobs) else ":")
+    filt = when + (f" scoring {min_score:g}+" if isinstance(min_score, (int, float)) else "") + \
+        (f" ({p['status']})" if p.get("status") else "")
+    if not jobs:
+        return f"No jobs{filt}."                                   # "No jobs from the last 24h scoring 75+."
+    head = f"{total} jobs{filt}" + (f" — {'top' if p.get('sort') == 'score' else 'latest'} {len(jobs)}:" if total > len(jobs) else ":")
     return head + "\n" + "\n".join(
         f"• #{j.id} {j.company} — {j.title} · {j.status}"
         + (f" · score {j.match_score:g}" if j.match_score is not None else " · not scored yet")

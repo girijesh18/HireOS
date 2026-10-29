@@ -177,7 +177,7 @@ export const api = {
     req('POST', `/agent/cover-letter/${jobId}`, { llm, feedback, resume_version: resumeVersion }),
 
   // Agent: Fan-out LLM comparison
-  compareLLMs: (jobId, task = 'resume', providers = ['gemini', 'groq']) =>
+  compareLLMs: (jobId, task = 'resume', providers = null) =>   // null: every provider with a key
     req('POST', `/agent/compare/${jobId}`, { task, providers }),
 
   // Search: full-text job search

@@ -289,7 +289,8 @@ class PDFHandler:
         for section_name in sections:
             section_data = self._extract_section_data(text_content, section_name)
 
-            if section_data:
+            # HireOS: {} is a section the resume doesn't have (no projects); only None is a failure
+            if section_data is not None:
                 complete_resume.update(section_data)
                 logger.debug(f"✅ Successfully extracted {section_name} section")
             else:

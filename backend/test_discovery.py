@@ -117,7 +117,8 @@ def test_find_ats():
     assert asyncio.run(go({li: (200, '<h2 class="topcard__title">x</h2>')})) == {"route": "easy_apply"}
     gh = ("GET", "https://boards-api.greenhouse.io/v1/boards/acme/jobs")
     hit = asyncio.run(go({li: (200, LI_OPEN), gh: (200, {"jobs": [gh_job("Data Scientist", "Toronto", 1, "https://gh/9")]})}))
-    assert hit == {"route": "found", "platform": "greenhouse", "url": "https://gh/9"}
+    assert {k: hit[k] for k in ("route", "platform", "url")} == {"route": "found", "platform": "greenhouse", "url": "https://gh/9"}
+    assert "text" in hit                                  # the posting's own text, for a snippet-only job
     wd = ("POST", "https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/jobs")
     hit = asyncio.run(go({li: (429, "slow down"), wd: (200, {"jobPostings": [
         {"title": "Data Scientist", "externalPath": "/job/Toronto-ON/DS_R7", "locationsText": "Toronto, ON"}]})}, {"workday": {"Acme": WD}}))
@@ -164,7 +165,8 @@ def test_prepare():
     main._put_setting(db, u.id, main.aq.MIN_SCORE_KEY, "70")
     db.commit()
     li = lambda n: f"https://www.linkedin.com/jobs/view/{n}"
-    jobs = [Job(user_id=u.id, company="Acme", title="Data Scientist", location="Toronto", url=li(1), status="found"),
+    jobs = [Job(user_id=u.id, company="Acme", title="Data Scientist", location="Toronto", url=li(1), status="found",
+                job_description="DS role", meta={"partial_jd": True}),                    # an alert email's snippet
             Job(user_id=u.id, company="Gone", title="DS", url=li(2), status="found"),
             Job(user_id=u.id, company="Low", title="DS", url="https://x/low", status="found"),
             Job(user_id=u.id, company="Easy", title="DS", url=li(4), status="found"),
@@ -179,7 +181,7 @@ def test_prepare():
     calls = []
     real = (main._bg_analyze, main._bg_resume)
     main._bg_analyze, main._bg_resume = _fake_llm({acme.id: 85, low.id: 40, easy.id: 90, broken.id: 99}, calls)
-    t = {"llm": "local"}
+    t = {}
 
     async def go(jid):
         async with client(routes) as c:
@@ -189,6 +191,7 @@ def test_prepare():
         assert asyncio.run(go(acme.id)) == "resume ready"
         db.refresh(acme)
         assert (acme.url, acme.platform) == ("https://gh/a", "greenhouse") and f"[find-ats: was {li(1)}]" in acme.notes
+        assert "Build models" in acme.job_description and "partial_jd" not in acme.meta, acme.job_description  # scored on the posting
         assert asyncio.run(go(gone.id)) == "closed"
         db.refresh(gone)
         assert gone.status == "withdrawn" and ("analyze", gone.id) not in calls     # closed: no LLM spent
@@ -242,7 +245,7 @@ def test_run():
         s = asyncio.run(d.run(main, u.id, transport(routes)))
     finally:
         (main.scan_mail, main.track_jd_text, main.linkedin_search, main._bg_analyze, main._bg_resume) = real
-    assert seen["mail"] == {"days": 3, "limit": 10, "llm": "local"}                  # 72 h window -> 3 days of mail
+    assert seen["mail"] == {"days": 3, "limit": 10}       # 72 h window -> 3 days; the target's old "llm" is ignored
     assert seen["tracked"][0]["url"] == "https://gh/new" and seen["tracked"][0]["text"].startswith("Data Scientist\nacme\nToronto")
     assert len(seen["li"]) == 1 and seen["li"][0]["posted_within"] == "72h"         # 429: rest of LinkedIn skipped
     assert s["added"] == 1

@@ -172,7 +172,7 @@ class SettingsUpdate(BaseModel):
 class CompareRequest(BaseModel):
     job_id: int
     prompt_type: str = "resume"
-    llms: List[str] = ["gemini", "groq"]
+    llms: List[str] = []
 
 
 class CompareResult(BaseModel):

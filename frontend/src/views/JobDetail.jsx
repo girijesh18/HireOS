@@ -392,7 +392,7 @@ export default function JobDetail({ jobId }) {
   const runCompare = async () => {
     setLoading(l => ({ ...l, compare:true }))
     try {
-      const result = await api.compareLLMs(job.id, compareTask, ['gemini','groq','openrouter'])
+      const result = await api.compareLLMs(job.id, compareTask)
       setCompareResults(result)
       showToast(`Comparison complete — ${result.results.length} LLMs compared`)
     } catch (e) {

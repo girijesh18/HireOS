@@ -59,9 +59,8 @@ Available actions:
 - linkedin_outreach: { "action": "linkedin_outreach", "job_id": 123, "contact_type": "recruiter" }
 - deep_research: { "action": "deep_research", "job_id": 123 }
 - interview_prep: { "action": "interview_prep", "job_id": 123 }
-- generate_resume: { "action": "generate_resume", "job_id": 123, "llm": "gemini" }
-- generate_cover_letter: { "action": "generate_cover_letter", "job_id": 123, "llm": "gemini" }
-- compare_llms: { "action": "compare_llms", "job_id": 123, "task": "resume" }
+- generate_resume: { "action": "generate_resume", "job_id": 123 }
+- generate_cover_letter: { "action": "generate_cover_letter", "job_id": 123 }
 - list_jobs: { "action": "list_jobs", "params": {"status": "pending", "since_hours": 24, "min_score": 85, "sort": "score", "limit": 20} }
   every param optional. Also for "how many jobs ..." (the reply starts with the total). min_score: "score above 85" = 85. status: found|pending|approved|applying|waiting_human|needs_human|applied|interview|rejected.
   since_hours: "today" = 24, "this week" = 168. sort: "score" for best/top matches, else "recent". limit: "top 20" = 20 (max 25).
@@ -285,11 +284,7 @@ class JobDiscoveryAgent:
         self.router = router
 
     async def analyze_text(self, jd_text: str, url: str = "", llm: Optional[str] = None) -> Dict:
-        """Extract structured job data from raw JD text (fallback if no url)."""
-        # If url is provided, use the CrewAI Tool-calling implementation
-        if url:
-            return await self.analyze_url(url, llm=llm)
-
+        """Extract structured job data from raw JD text; url is only recorded on the result."""
         prompt = f"""Extract structured information from this job posting.
 
 Job Posting:
@@ -319,7 +314,7 @@ Return JSON with these exact fields:
         return data
 
     async def analyze_url(self, url: str, llm: Optional[str] = None) -> Dict:
-        """Fetch a job posting URL and extract structured data using CrewAI and Native Tools."""
+        """Fetch a job posting URL and extract structured data on the user's model."""
         # LinkedIn: public guest API returns the JD directly — no login wall, no crew needed.
         li_id = linkedin_guest.job_id_from_url(url)
         if li_id:
@@ -329,88 +324,9 @@ Return JSON with these exact fields:
             data["platform"] = "linkedin"
             return data
 
-        logger.info(f"[JobDiscovery] Analyzing {url} with CrewAI")
-
-        import asyncio
-        import threading
-        from crewai import Agent, Task, Crew, Process
-        from crewai.tools import tool
-
-        # 1. Provide the Scraper as a native tool for the LLM
-        @tool("Web Scraper")
-        def web_scraper(target_url: str) -> str:
-            """Useful for scraping and extracting text from any URL. Input must be a valid http URL."""
-            result = ["Error fetching page"]
-            def _fetch():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                # Call our robust existing fetch logic
-                res = new_loop.run_until_complete(self._fetch_page(target_url))
-                result[0] = res[:15000] # Cap to prevent context blowouts
-                new_loop.close()
-            t = threading.Thread(target=_fetch)
-            t.start()
-            t.join()
-            return result[0]
-
-        # 2. Configure CrewAI
-        if self.router.gemini_key:
-            os.environ["GEMINI_API_KEY"] = self.router.gemini_key
-            
-        crew_llm = "gemini/gemini-1.5-pro" if "gemini" in (llm or "") else "gpt-4o-mini"
-
-        # 3. Create the Autonomous Agent
-        hunter_agent = Agent(
-            role="Principal AI Job Discovery Researcher",
-            goal="Navigate to the provided URL, read the job description, and extract precisely structured JSON data.",
-            backstory="You are an elite web-research agent. You autonomously use the Web Scraper tool to read URLs and then synthesize the raw text into clean, structured data.",
-            tools=[web_scraper],
-            llm=crew_llm,
-            verbose=True,
-            allow_delegation=False
-        )
-
-        # 4. Define the Task
-        extract_task = Task(
-            description=f"""Use the Web Scraper tool to fetch the contents of this URL: {url}
-            
-            Once you have the text, extract the following structured information into a valid JSON object:
-            - company
-            - title
-            - location
-            - remote (boolean)
-            - salary_min (integer or null)
-            - salary_max (integer or null)
-            - platform
-            - listed_at
-            - recruiter_name
-            - recruiter_email
-            - job_description (The full JD organized with markdown bullet points)
-            - tech_stack (list of strings)
-            - seniority
-            - url (must be exactly: {url})
-            
-            Return ONLY the raw JSON string without markdown code fences.""",
-            expected_output="A valid JSON string containing the extracted job details.",
-            agent=hunter_agent
-        )
-
-        crew = Crew(
-            agents=[hunter_agent],
-            tasks=[extract_task],
-            process=Process.sequential,
-            verbose=False
-        )
-
-        # Execute synchronously in an executor since CrewAI kickoff is blocking
-        loop = asyncio.get_running_loop()
-        def _run_crew():
-            return crew.kickoff()
-        crew_result = await loop.run_in_executor(None, _run_crew)
-        
-        output_str = str(crew_result.raw if hasattr(crew_result, 'raw') else crew_result)
-        
-        data = _parse_json(output_str)
+        # Any other page: read it as text, then the same extraction as a pasted JD, on the user's
+        # model (a CrewAI agent here ran gpt-4o-mini or a retired Gemini, whatever was chosen).
+        data = await self.analyze_text(await self._fetch_page(url), url=url, llm=llm)
         data["url"] = url
         return data
 
@@ -1366,10 +1282,17 @@ Scoring guide (1-10):
 
 Be the mentor who gives the hard truth, not the friend who lies. Cite exact lines. Don't repeat praise from the resume."""
 
-        text = await self.router.complete(
-            prompt, llm=llm, system=SYSTEM_CRITIC_AGENT, temperature=0.4, max_tokens=5000
-        )
-        result = _parse_json(text)
+        for temperature in (0.4, 0.0):     # one retry: a reply that isn't valid JSON is usually a one-off
+            text = await self.router.complete(
+                prompt, llm=llm, system=SYSTEM_CRITIC_AGENT, temperature=temperature, max_tokens=5000
+            )
+            try:
+                result = _parse_json(text)
+                break
+            except ValueError:
+                if temperature == 0.0:
+                    raise
+                logger.warning(f"[ResumeCritic] reply wasn't JSON for {title} at {company}; asking once more")
         logger.info(
             f"[ResumeCritic] Score: {result.get('score', '?')}/10 for {title} at {company} "
             f"({len(result.get('fabrications') or [])} fabrication(s), "

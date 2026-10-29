@@ -16,7 +16,6 @@ function toForm(t) {
   f.companies = Object.entries(t.companies || {}).flatMap(([ats, slugs]) => slugs.map(s => `${ats} = ${s}`)).join('\n')
   f.workday = Object.entries(t.workday || {}).map(([name, url]) => `${name} = ${url}`).join('\n')
   f.linkedin = (t.linkedin_searches || []).map(s => [s.keywords, s.location, s.limit].filter(x => x !== '' && x != null).join(' | ')).join('\n')
-  f.llm = t.llm || ''
   return f
 }
 
@@ -35,7 +34,6 @@ function fromForm(f) {
     const [keywords, location = '', limit = ''] = l.split('|').map(s => s.trim())
     return { keywords, location, ...(limit ? { limit: Number(limit) } : {}) }
   })
-  if (f.llm.trim()) t.llm = f.llm.trim()
   return t
 }
 
@@ -123,11 +121,6 @@ export default function DiscoveryPanel() {
             'Also used to find a LinkedIn job on the company\'s own Workday site.')}
           {area('linkedin', 'LinkedIn searches (keywords | location | how many)', 'data scientist | Toronto, Ontario, Canada | 5',
             'Uses LinkedIn\'s public job pages; never signs in to LinkedIn. At most 10 per search.')}
-          <div className="form-group">
-            <label className="form-label">Model (optional)</label>
-            <input type="text" value={form.llm} placeholder="your default model"
-              onChange={e => setForm(f => ({ ...f, llm: e.target.value }))} />
-          </div>
         </div>
       </div>
 

@@ -9,7 +9,6 @@ Targets are the user's `discovery_targets` setting (JSON):
   companies: {"greenhouse"|"lever"|"ashby": [board slug, ...]}
   workday: {company name: "https://<tenant>.wdN.myworkdayjobs.com/<site>"}, workday_searches: [query]
   linkedin_searches: [{keywords, location?, limit?}]   (public guest API, never a LinkedIn login)
-  llm: model for extraction / scoring / resumes (optional; else the user's default)
 """
 import json
 import math
@@ -83,9 +82,7 @@ def clean_targets(t: Any) -> dict:
         raise ValueError("linkedin_searches must be a list of {keywords, location?, limit?}")
     out["linkedin_searches"] = [{"keywords": x["keywords"].strip()[:100], "location": str(x.get("location") or "")[:100],
                                  "limit": max(1, min(int(x.get("limit") or 5), 10))} for x in li[:20]]
-    if t.get("llm"):
-        out["llm"] = str(t["llm"])[:60]
-    return out
+    return out      # no model of its own: discovery uses the user's model (Settings › AI Models)
 
 
 # ── ATS feeds: public, keyless. Each returns [{url, title, location, text, postedAt|postedOn}] ──
@@ -338,7 +335,7 @@ async def find_ats(c: httpx.AsyncClient, job, t: dict) -> Dict[str, Any]:
                 continue
             hit = same_job(posts, job.title, job.location)
             if hit:
-                return {"route": "found", "platform": platform, "url": hit["url"]}
+                return {"route": "found", "platform": platform, "url": hit["url"], "text": hit.get("text") or ""}
     # Workday tenants can't be guessed from the name: they come from the targets' `workday` list,
     # then from the company's own website.
     boards = [b for name, b in (t.get("workday") or {}).items()
@@ -378,9 +375,9 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict) -> st
     """One job: find its own posting (LinkedIn), score it, tailor a resume when it clears min_score.
     Returns a short outcome for the run summary."""
     job = m.get_owned_job(db, job_id, user)
-    payload = {"llm": t["llm"]} if t.get("llm") else {}
+    payload = {}                     # the user's model
     route = None
-    if re.search(r"linkedin\.com/jobs/view|glassdoor\.", job.url or ""):
+    if re.search(r"linkedin\.com/jobs/view|glassdoor\.|indeed\.", job.url or ""):
         route = await find_ats(c, job, t)
         if route["route"] == "closed":
             _note(job, "[find-ats: LinkedIn says no longer accepting applications]")
@@ -394,6 +391,10 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict) -> st
         elif route["route"] == "found":
             _note(job, f"[find-ats: was {job.url}]")
             job.url, job.platform = route["url"], route["platform"]
+            if (job.meta or {}).get("partial_jd") and len(route.get("text") or "") > len(job.job_description or ""):
+                # an alert email's snippet: score the real posting instead
+                job.job_description = route["text"]
+                job.meta = {k: v for k, v in job.meta.items() if k != "partial_jd"}
         elif route.get("careers_url") and route["careers_url"] not in (job.notes or ""):
             _note(job, f"[careers: {route['careers_url']}]")
         db.commit()
@@ -448,11 +449,10 @@ async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None) -> Di
             return summary
         cfg = m._apply_config(db, user_id)
         max_age = cfg["max_posting_age_hours"]
-        llm = {"llm": t["llm"]} if t.get("llm") else {}
         async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=12, transport=transport) as c:
             # 1. job-alert emails (fresh as the posting-age window)
             try:
-                r = await m.scan_mail({"days": math.ceil(max_age / 24), "limit": 10, **llm}, db=db, current_user=user)
+                r = await m.scan_mail({"days": math.ceil(max_age / 24), "limit": 10}, db=db, current_user=user)
                 summary["added"] += len(r.get("added") or [])
             except HTTPException as e:
                 summary["errors"].append(f"alert emails: {e.detail}")
@@ -461,7 +461,7 @@ async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None) -> Di
             summary["errors"] += feeds["errors"]
             for j in feeds["found"]:
                 try:
-                    r = await m.track_jd_text({"url": j["url"], **llm,
+                    r = await m.track_jd_text({"url": j["url"],
                                                "text": f"{j['title']}\n{j['company']}\n{j['location']}\n\n{j['text']}"[:20000]},
                                               db=db, current_user=user)
                     summary["added"] += 0 if r.get("duplicate") else 1
@@ -469,7 +469,7 @@ async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None) -> Di
                     summary["errors"].append(f"{j['url']}: {e.detail}")
             for s in t.get("linkedin_searches") or []:
                 try:
-                    r = await m.linkedin_search({"limit": 5, **s, "posted_within": f"{int(max_age)}h", **llm}, db=db, current_user=user)
+                    r = await m.linkedin_search({"limit": 5, **s, "posted_within": f"{int(max_age)}h"}, db=db, current_user=user)
                     summary["added"] += len(r["added"])
                     summary["errors"] += [f"linkedin {f['url']}: {f['error']}" for f in r["failed"]]
                 except HTTPException as e:

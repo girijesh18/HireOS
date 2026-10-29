@@ -447,10 +447,7 @@ async def chat_reply(db, user, text: str) -> str:
     """Free text that isn't a command, an answer or an edit: HireOS's chat assistant (the web app's
     floating chat), on the user's own default model."""
     m = _m()
-    # The local model when this machine has one: free and not rate limited (Gemini's free tier is
-    # 5 requests/min), and what OpenClaw's Discord chat used.
-    llm = "local" if os.getenv("LOCAL_LLM_URL") else m.resolve_llm(db, user.id, None)
-    r = await m.chat(m.ChatMessage(message=text, llm=llm), db, user)
+    r = await m.chat(m.ChatMessage(message=text), db, user)     # the user's model (chat resolves it)
     return r.reply
 
 

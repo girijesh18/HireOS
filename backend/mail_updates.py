@@ -146,7 +146,7 @@ async def classify(router, mail: Dict, loads=json.loads, llm: str = None) -> str
     if RECEIVED_SUBJECT.search(mail["subject"]):
         return "received"
     raw = await router.complete(PROMPT.format(sender=mail["from"], subject=mail["subject"], body=mail["body"][:2500]),
-                                llm=llm or os.getenv("MAIL_LLM", "local"), fallback=False, temperature=0, max_tokens=60)
+                                llm=llm or os.getenv("MAIL_LLM") or None, fallback=False, temperature=0, max_tokens=60)
     kind = str(loads(raw).get("kind", "")).lower().strip()
     return kind if kind in KINDS else "other"
 
