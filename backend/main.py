@@ -4539,6 +4539,25 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
             reply = "🔎 Discovery started — new resumes arrive here when it's done." \
                 if run_discovery(db, current_user)["started"] else "A discovery run is already going."
 
+        elif action_type == "score_jobs":
+            import scheduler
+            p = action.get("params") or {}
+            hours = p.get("since_hours") if isinstance(p.get("since_hours"), (int, float)) and p["since_hours"] > 0 else 48
+            ids = [j.id for j in db.query(Job).filter(
+                Job.user_id == uid, Job.status == "found", Job.match_score.is_(None),
+                Job.created_at >= datetime.utcnow() - timedelta(hours=hours)).order_by(Job.id).limit(50)]
+            show = {"since_hours": hours, "sort": "score", "limit": 25,
+                    **({"min_score": p["min_score"]} if isinstance(p.get("min_score"), (int, float)) else {})}
+            if not ids:
+                reply = "All jobs in that window are scored.\n" + _chat_jobs(db, uid, show)
+            elif not scheduler.CURRENT:
+                reply = "Scoring runs only on the instance with the scheduler on."
+            elif scheduler.CURRENT.start_scoring(uid, ids, lambda d: _chat_jobs(d, uid, show)):
+                reply = (f"Scoring {len(ids)} jobs from the last {hours:g}h (and tailoring resumes for good fits). "
+                         "I'll send the results here when it's done — a few minutes.")
+            else:
+                reply = "A discovery run is going right now and it scores new jobs — ask again when it's done."
+
         elif action_type == "status_summary":
             hours = (action.get("params") or {}).get("since_hours")
             reply = _chat_status(db, uid, hours if isinstance(hours, (int, float)) and hours > 0 else 24)

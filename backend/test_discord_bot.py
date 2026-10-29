@@ -238,6 +238,22 @@ def test_chat_actions():
     assert status.splitlines()[0] == "Last 168h: 4 new jobs found, 1 applications submitted.", status
     assert f"Queued to apply (1): #{hi.id} Hi" in status and "Resumes to review: 1" in status
     assert "only on the instance" in ask({"action": "run_discovery"})               # no scheduler in tests
+    import scheduler
+    started = []
+
+    class Sched:
+        def start_scoring(self, uid, ids, then):
+            started.append((uid, ids, then))
+            return True
+    scheduler.CURRENT = Sched()
+    try:
+        reply = ask({"action": "score_jobs", "params": {"since_hours": 48, "min_score": 50}})
+    finally:
+        scheduler.CURRENT = None
+    assert reply.startswith("Scoring 1 jobs from the last 48h"), reply
+    assert started[0][:2] == (u.id, [nocv.id])                       # only unscored "found" jobs in the window
+    sent = started[0][2](db)                                         # what the user gets when it's done
+    assert sent.splitlines()[0] == "2 jobs from the last 48h scoring 50+:", sent
     db.close()
 
 

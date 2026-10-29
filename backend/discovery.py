@@ -417,6 +417,25 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict) -> st
     return "resume ready"
 
 
+async def score(m, user_id: int, job_ids: List[int]) -> Dict[str, Any]:
+    """prepare() the named jobs now, outside a run (the chat's "score my jobs")."""
+    db = m.SessionLocal()
+    out: Dict[str, Any] = {"prepared": [], "errors": []}
+    try:
+        user = db.get(m.User, user_id)
+        t = targets(m, db, user_id) or {}
+        async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=12) as c:
+            for jid in job_ids:
+                try:
+                    out["prepared"].append((jid, await prepare(m, c, db, user, jid, t)))
+                except Exception as e:                       # one job must not stop the rest
+                    db.rollback()
+                    out["errors"].append(f"#{jid}: {str(e)[:200]}")
+        return out
+    finally:
+        db.close()
+
+
 async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None) -> Dict[str, Any]:
     """A discovery run for one user. Never raises for one source failing: errors are collected."""
     db = m.SessionLocal()

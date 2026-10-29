@@ -252,6 +252,33 @@ class Scheduler:
         self.loop.call_soon_threadsafe(self.start_discovery, uid)
         return True
 
+    def start_scoring(self, uid: int, job_ids: list, then) -> bool:
+        """Score these jobs in the background, then send the user then(db); False while a discovery
+        or scoring run is going for them (it would prepare the same jobs)."""
+        if uid in self.discovering:
+            return False
+        self.discovering.add(uid)
+        asyncio.get_running_loop().create_task(self._score(uid, job_ids, then))
+        return True
+
+    async def _score(self, uid: int, job_ids: list, then):
+        import discovery
+        try:
+            s = await discovery.score(self.m, uid, job_ids)
+            db = self.m.SessionLocal()
+            try:
+                text = then(db)
+            finally:
+                db.close()
+            if s["errors"]:
+                text += f"\n⚠️ {len(s['errors'])} couldn't be scored: " + "; ".join(s["errors"][:3])
+            self._send(uid, text, None)
+        except Exception as e:
+            logger.warning(f"[scheduler] scoring user {uid} failed: {e!r}")
+            self._send(uid, f"🔴 Scoring failed: {str(e)[:300]}", None)
+        finally:
+            self.discovering.discard(uid)
+
     async def _discover(self, uid: int):
         import discovery
         try:
