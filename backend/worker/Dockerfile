@@ -9,6 +9,8 @@ RUN pip install --no-cache-dir httpx==0.28.1 playwright==1.58.0 \
     && playwright install --with-deps chromium \
     && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify \
     && rm -rf /var/lib/apt/lists/*
+# The bare screen address (https://<worker>/) opens the live screen, not noVNC's file listing
+RUN printf '<meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=true&resize=scale">' > /usr/share/novnc/index.html
 COPY --from=tailscale/tailscale:v1.102.5 /usr/local/bin/tailscaled /usr/local/bin/tailscale /usr/local/bin/
 
 WORKDIR /app
