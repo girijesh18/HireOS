@@ -699,7 +699,7 @@ def test_mail_updates_move_status_forward_once(monkeypatch=None):
     seen_arg = []
     orig_fetch, orig_classify = mu.fetch, mu.classify
     mu.fetch = lambda days, seen, jobs: (seen_arg.append(set(seen)), [m for m in mails if m["id"] not in seen])[1]
-    async def kind(router, m, loads=None):
+    async def kind(router, m, loads=None, llm=None):
         return "interview"
     mu.classify = kind
     try:
