@@ -244,7 +244,7 @@ def test_chat_actions():
     class Sched:
         def start_scoring(self, uid, ids, then):
             started.append((uid, ids, then))
-            return True
+            return "started" if len(started) == 1 else "queued"
     scheduler.CURRENT = Sched()
     try:
         reply = ask({"action": "score_jobs", "params": {"since_hours": 48, "min_score": 50}})
@@ -254,6 +254,11 @@ def test_chat_actions():
     assert started[0][:2] == (u.id, [nocv.id])                       # only unscored "found" jobs in the window
     sent = started[0][2](db)                                         # what the user gets when it's done
     assert sent.splitlines()[0] == "2 jobs from the last 48h scoring 50+:", sent
+    scheduler.CURRENT = Sched()
+    try:
+        assert "right after it" in ask({"action": "score_jobs", "params": {"since_hours": 48}})   # during a run
+    finally:
+        scheduler.CURRENT = None
     db.close()
 
 

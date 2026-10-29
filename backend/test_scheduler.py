@@ -155,11 +155,21 @@ def test_discovery_run_reports_errors():
     sent = []
     s = scheduler.Scheduler(main)
     s._user = lambda uid: type("A", (), {"send": lambda self, t, r: sent.append((uid, t))})()
+    s._send = lambda uid, t, r: sent.append((uid, t))
     import discovery
-    real = discovery.run
+    real = discovery.run, discovery.score
 
     async def fake(m, uid):
-        return {"added": 2, "prepared": [(1, "resume ready")], "waiting": 0, "errors": [f"e{i}" for i in range(10)]}
+        assert s.start_scoring(uid, [5, 6], lambda db: "scored list") == "queued"   # asked during the run
+        return {"added": 2, "prepared": [(1, "resume ready"), (2, "below min score")], "waiting": 3,
+                "errors": [f"e{i}" for i in range(10)]}
+
+    async def score(m, uid, ids):
+        sent.append((uid, f"scoring {ids}"))
+        return {"prepared": [], "errors": []}
+
+    async def clean(m, uid):
+        return {"added": 0, "prepared": [], "waiting": 0, "errors": []}
 
     async def boom(m, uid):
         raise RuntimeError("db locked")
@@ -167,15 +177,23 @@ def test_discovery_run_reports_errors():
     async def go(fn):
         discovery.run = fn
         assert s.start_discovery(7) and not s.start_discovery(7)      # one run per user at a time
-        while 7 in s.discovering:
+        for _ in range(300):
             await asyncio.sleep(0.01)
+            if 7 not in s.discovering and 7 not in s.queued_scoring:
+                break
+    discovery.score = score
     try:
         asyncio.run(go(fake))
         asyncio.run(go(boom))
+        asyncio.run(go(clean))
     finally:
-        discovery.run = real
-    assert sent[0] == (7, "🟠 Discovery run: 2 new, 1 prepared, 10 problem(s):\n• e0\n• e1\n• e2\n• e3\n• e4\n• e5\n• e6\n• e7\n… and 2 more")
-    assert sent[1] == (7, "🔴 Discovery run failed: db locked")
+        discovery.run, discovery.score = real
+    assert sent[0] == (7, "🟠 Discovery done: 2 new, 2 scored — 1 resume(s) ready to review, 1 below your min score, "
+                          "3 still unscored (next run, or ask me to score them).\n10 problem(s):\n• e0\n• e1\n• e2\n• e3\n"
+                          "• e4\n• e5\n• e6\n• e7\n… and 2 more"), sent[0]
+    assert sent[1:3] == [(7, "scoring [5, 6]"), (7, "scored list")], sent                 # the queued request ran after
+    assert sent[3] == (7, "🔴 Discovery run failed: db locked")
+    assert sent[4] == (7, "✅ Discovery done: 0 new, 0 scored — 0 resume(s) ready to review, 0 below your min score."), sent[4]
 
 
 def test_off_by_default():

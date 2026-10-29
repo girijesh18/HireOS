@@ -611,7 +611,9 @@ def get_llm_router(db: Session = None, user_id: int = None):
                 keys[_USER_KEY_MAP[r.key]] = r.value
         if _provider_keys(keys):
             # Own key: unmetered, unrestricted, exactly as before.
-            return LLMRouter(keys=keys, allow_env=False)
+            router = LLMRouter(keys=keys, allow_env=False)
+            router.preferred = next((r.value for r in rows if r.key == DEFAULT_LLM_KEY and r.value), None)
+            return router
 
         provider, _ = platform_selection(db)
         key = platform_key_for(db, provider)
@@ -667,12 +669,14 @@ def resolve_llm(db: Session, user_id: int, requested=None) -> str:
     A user on the platform's key gets the admin's choice regardless of what they
     asked for -- otherwise the model picker in the top bar would let anyone run
     the most expensive model available on our account."""
+    from llm_router import is_down
     if on_platform_key(db, user_id):
         return platform_llm(db)
     router = get_llm_router(db, user_id)
     # A stored choice (a job or target saved on the PC with "local") is skipped where that provider
     # has no key or URL, so it falls to the user's model rather than the router's fallback chain.
-    if requested and llm_provider(requested) in router.available_providers():
+    # ...and so is one that failed on its last call (a saved local URL the server can't reach).
+    if requested and llm_provider(requested) in router.available_providers() and not is_down(llm_provider(requested)):
         return requested
     mine = _setting(db, user_id, DEFAULT_LLM_KEY)   # the one model the user picked (Settings / top bar)
     if mine and llm_provider(mine) in router.available_providers():
@@ -4552,11 +4556,12 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
                 reply = "All jobs in that window are scored.\n" + _chat_jobs(db, uid, show)
             elif not scheduler.CURRENT:
                 reply = "Scoring runs only on the instance with the scheduler on."
-            elif scheduler.CURRENT.start_scoring(uid, ids, lambda d: _chat_jobs(d, uid, show)):
+            elif scheduler.CURRENT.start_scoring(uid, ids, lambda d: _chat_jobs(d, uid, show)) == "started":
                 reply = (f"Scoring {len(ids)} jobs from the last {hours:g}h (and tailoring resumes for good fits). "
                          "I'll send the results here when it's done — a few minutes.")
             else:
-                reply = "A discovery run is going right now and it scores new jobs — ask again when it's done."
+                reply = (f"A discovery run is going right now. I'll score the {len(ids)} jobs from the last {hours:g}h "
+                         "right after it and send the results here — no need to ask again.")
 
         elif action_type == "status_summary":
             hours = (action.get("params") or {}).get("since_hours")

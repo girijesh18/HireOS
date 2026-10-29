@@ -87,10 +87,17 @@ def discovery_slot(now_utc: datetime, tz: str) -> Optional[str]:
     return local.strftime("%Y-%m-%d %H") if local.weekday() < 5 and local.hour in DISCOVERY_HOURS else None
 
 
-def discovery_errors_text(summary: dict) -> str:
+def discovery_done_text(summary: dict) -> str:
+    """Sent after every run: what it found and scored, what is left, what went wrong."""
+    outcomes = [o for _, o in summary["prepared"]]
+    text = (f"{'🟠' if summary['errors'] else '✅'} Discovery done: {summary['added']} new, {len(outcomes)} scored — "
+            f"{outcomes.count('resume ready')} resume(s) ready to review, {outcomes.count('below min score')} below your min score"
+            + (f", {summary['waiting']} still unscored (next run, or ask me to score them)" if summary.get("waiting") else "") + ".")
     errs = summary["errors"]
-    lines = "\n".join(f"• {e[:200]}" for e in errs[:8]) + (f"\n… and {len(errs) - 8} more" if len(errs) > 8 else "")
-    return f"🟠 Discovery run: {summary['added']} new, {len(summary['prepared'])} prepared, {len(errs)} problem(s):\n{lines}"
+    if errs:
+        text += f"\n{len(errs)} problem(s):\n" + "\n".join(f"• {e[:200]}" for e in errs[:8]) + \
+            (f"\n… and {len(errs) - 8} more" if len(errs) > 8 else "")
+    return text
 
 
 def llm_up(url: str) -> bool:
@@ -120,6 +127,7 @@ class Scheduler:
         self.admin_alerts = Alerts(self._to_admins, now)
         self.user_alerts: Dict[int, Alerts] = {}
         self.discovering: set = set()
+        self.queued_scoring: dict = {}     # user -> (job ids, then): a score request made during a run
         # Telegram/Discord calls are blocking HTTP (10 s timeouts): they go to one thread, in order,
         # so a slow chat service never stalls the API's event loop. tick() waits for them, off the loop.
         self.outbox = ThreadPoolExecutor(1, thread_name_prefix="scheduler-send")
@@ -252,14 +260,15 @@ class Scheduler:
         self.loop.call_soon_threadsafe(self.start_discovery, uid)
         return True
 
-    def start_scoring(self, uid: int, job_ids: list, then) -> bool:
-        """Score these jobs in the background, then send the user then(db); False while a discovery
-        or scoring run is going for them (it would prepare the same jobs)."""
+    def start_scoring(self, uid: int, job_ids: list, then) -> str:
+        """Score these jobs in the background, then send the user then(db). While a discovery or
+        scoring run is going for them it waits for that one ("queued"): both would prepare the same jobs."""
         if uid in self.discovering:
-            return False
+            self.queued_scoring[uid] = (job_ids, then)
+            return "queued"
         self.discovering.add(uid)
         asyncio.get_running_loop().create_task(self._score(uid, job_ids, then))
-        return True
+        return "started"
 
     async def _score(self, uid: int, job_ids: list, then):
         import discovery
@@ -277,7 +286,12 @@ class Scheduler:
             logger.warning(f"[scheduler] scoring user {uid} failed: {e!r}")
             self._send(uid, f"🔴 Scoring failed: {str(e)[:300]}", None)
         finally:
-            self.discovering.discard(uid)
+            self._finished(uid)
+
+    def _finished(self, uid: int):
+        self.discovering.discard(uid)
+        if uid in self.queued_scoring:
+            self.start_scoring(uid, *self.queued_scoring.pop(uid))
 
     async def _discover(self, uid: int):
         import discovery
@@ -285,13 +299,12 @@ class Scheduler:
             s = await discovery.run(self.m, uid)
             logger.info(f"[scheduler] discovery user {uid}: added {s['added']}, prepared {s['prepared']}, "
                         f"waiting {s['waiting']}, errors {len(s['errors'])}")
-            if s["errors"]:
-                self._user(uid).send(discovery_errors_text(s), None)
+            self._send(uid, discovery_done_text(s), None)
         except Exception as e:
             logger.warning(f"[scheduler] discovery user {uid} failed: {e!r}")
             self._user(uid).send(f"🔴 Discovery run failed: {str(e)[:300]}", None)
         finally:
-            self.discovering.discard(uid)
+            self._finished(uid)
 
     async def tick(self):
         self.check_errors()

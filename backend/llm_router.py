@@ -26,6 +26,12 @@ _HEALTH: Dict[str, tuple] = {}     # provider -> (answered, time.monotonic() of 
 DOWN_FOR = 600                     # seconds a failed provider is left out of fallbacks
 
 
+def is_down(provider: str) -> bool:
+    """Failed on its last call, within DOWN_FOR."""
+    h = _HEALTH.get(provider)
+    return bool(h) and not h[0] and time.monotonic() - h[1] <= DOWN_FOR
+
+
 def _provider(llm: str) -> str:
     """'openrouter:qwen/x' -> openrouter, 'gemini-2.5-flash' -> gemini."""
     return (llm.split(":", 1)[0] if ":" in llm else llm.split("-")[0]).lower()
@@ -119,6 +125,7 @@ class LLMRouter:
         # allow_env=False enforces strict per-user isolation (no shared server key leakage)
         # for multi-tenant requests; allow_env=True is for server-level / health contexts.
         self._keys = {k: v for k, v in (keys or {}).items() if v}
+        self.preferred: Optional[str] = None   # the user's chosen model (Settings › AI Models), set by main
         self._allow_env = allow_env
         # Called with (input_tokens, output_tokens) after every completed call.
         # Set only for routers running on the platform's key -- a user on their
@@ -220,11 +227,18 @@ class LLMRouter:
         """The requested model first, then the user's other providers with a key: ones that answered
         recently first, untried next; one that failed within DOWN_FOR is skipped."""
         primary = _provider(llm)
-        now = time.monotonic()
         rest = [p for p in self.available_providers() if p != primary]
-        up = [p for p in rest if _HEALTH.get(p, (True, 0))[0] or now - _HEALTH[p][1] > DOWN_FOR]
+        up = [p for p in rest if not is_down(p)]
         up.sort(key=lambda p: not _HEALTH.get(p, (False,))[0])   # stable: answered last time first, then by key order
-        return [llm] + up                           # bare provider name -> its default model
+        return [llm] + [self._model_for(p) for p in up]
+
+    def _model_for(self, provider: str) -> str:
+        """The chosen model when it is this provider's, else the bare name (its default model):
+        a fallback to OpenRouter means the user's qwen, not OpenRouter's free list."""
+        for m in (self.preferred, os.getenv("DEFAULT_LLM", "")):
+            if m and _provider(m) == provider:
+                return m
+        return provider
 
     async def complete(
         self,
@@ -706,9 +720,9 @@ class LLMRouter:
         """First configured provider — used when no model is explicitly selected.
         Honors 'use the one model the user has' instead of hardcoding gemini."""
         avail = self.available_providers()
-        pref = os.getenv("DEFAULT_LLM", "")   # e.g. "openrouter:qwen/qwen3.8-27b" on a hosted instance
-        if pref and pref.split(":", 1)[0] in avail:
-            return pref
+        for pref in (self.preferred, os.getenv("DEFAULT_LLM", "")):   # env: e.g. "openrouter:qwen/qwen3.8-27b" hosted
+            if pref and _provider(pref) in avail:
+                return pref
         for p in ("gemini", "claude", "groq", "openrouter", "together", "nvidia", "local"):
             if p in avail:
                 return p

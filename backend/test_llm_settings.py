@@ -72,6 +72,11 @@ def test_fallback_by_key_and_health():
     llm_router._HEALTH["gemini"] = (False, llm_router.time.monotonic() - llm_router.DOWN_FOR - 1)
     assert r._fallback_chain("openrouter:qwen/x") == ["openrouter:qwen/x", "nvidia", "gemini"]   # retried later
     assert LLMRouter(keys={"nvidia": "n"}, allow_env=False)._fallback_chain("nvidia") == ["nvidia"]
+    llm_router._HEALTH.clear()
+    r.preferred = "openrouter:qwen/x"
+    assert r._fallback_chain("nvidia") == ["nvidia", "gemini", "openrouter:qwen/x"], \
+        "falling back to OpenRouter means the chosen model, not OpenRouter's default list"
+    r.preferred = None
     called.clear()
     asyncio.run(r.complete("hi"))                                  # no model named: the router's default, not "gemini"
     assert called[0] == r.default_llm().split(":")[0] or called[0] == r.default_llm(), called
@@ -98,6 +103,13 @@ def test_one_model_per_user():
     assert main.resolve_llm(db, u.id) == "openrouter:qwen/qwen3.8-27b"
     assert main.resolve_llm(db, u.id, "gemini-2.5-pro") == "gemini-2.5-pro"        # an explicit choice still wins
     assert main.resolve_llm(db, u.id, "local") == "openrouter:qwen/qwen3.8-27b"    # no local model here: the user's
+    import llm_router
+    main._put_setting(db, u.id, "local_llm_url", "http://pc:8080/v1")             # saved, but unreachable
+    db.commit()
+    assert main.resolve_llm(db, u.id, "local") == "local"
+    llm_router._HEALTH["local"] = (False, llm_router.time.monotonic())             # it just failed
+    assert main.resolve_llm(db, u.id, "local") == "openrouter:qwen/qwen3.8-27b"
+    llm_router._HEALTH.clear()
     main._put_setting(db, u.id, main.DEFAULT_LLM_KEY, "nvidia:some/model")       # no NVIDIA key: ignored
     db.commit()
     assert main.resolve_llm(db, u.id) == "gemini"
