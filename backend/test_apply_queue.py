@@ -561,8 +561,10 @@ def test_second_job_at_same_company_is_held():
     assert second.status == "pending"
     # naming the job is the user's override
     second.status, second.meta = "approved", {}
+    second.notes = "[careers: https://wsp.example/careers]"            # found by discovery
     db.commit()
-    assert main.apply_next({"job_id": second.id}, db=db, current_user=u)["job_id"] == second.id
+    got = main.apply_next({"job_id": second.id}, db=db, current_user=u)
+    assert got["job_id"] == second.id and got["careers_url"] == "https://wsp.example/careers", got
 
 
 def test_waiting_job_is_never_handed_out_again():

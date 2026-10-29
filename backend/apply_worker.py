@@ -388,8 +388,11 @@ def watch(headless: bool):
         try:
             run_job(job["job_id"], headless, live=True, claimed=True, auto_submit=bool(job.get("auto_submit")))
         except (Unsupported, SystemExit) as e:   # a site the worker can't fill: the user applies
+            where = job.get("url")
+            if job.get("careers_url"):    # discovery found the company's own careers site
+                where = f"{job['careers_url']} (company careers site; the posting: {job.get('url')})"
             api.post(f"/apply/{job['job_id']}/result", {"outcome": "needs_human", "notes":
-                     f"{e}. Apply yourself: {job.get('url')} — your tailored resume is on the card above."})
+                     f"{e}. Apply yourself: {where} — your tailored resume is on the card above."})
         except Exception as e:   # never let one job stop the service
             print(f"watch: #{job['job_id']} crashed: {e!r}", file=sys.stderr, flush=True)
             try:

@@ -18,7 +18,7 @@ if [ -n "$TS_AUTHKEY" ]; then
   tailscale up --authkey="$TS_AUTHKEY" --hostname="${TS_HOSTNAME:-hireos-worker}"
   tailscale serve --bg 6080
   [ -n "$WORKER_SCREEN_URL" ] || export WORKER_SCREEN_URL="https://$(tailscale status --json \
-    | python3 -c 'import json, sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')/vnc.html?autoconnect=true&resize=scale"
 fi
 echo "screen: ${WORKER_SCREEN_URL:-local only (no TS_AUTHKEY)}"
 exec /usr/local/bin/python apply_worker.py ${WORKER_ARGS:---watch}   # WORKER_ARGS="--dry-run 69" to test
