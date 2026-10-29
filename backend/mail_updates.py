@@ -4,8 +4,8 @@ application", rejections, interview / assessment invitations, offers.
 
 Privacy: headers are fetched first, and a body is downloaded only when the mail comes from
 an application system / job board or names a company+title the user has a job for.
-Untrusted text: the body only goes to one model, MAIL_LLM (the local one unless a hosted
-instance sets it, e.g. "openrouter:qwen/qwen3.8-27b"), with no fallback to others. It may answer
+Untrusted text: the body only goes to one model, with no fallback to others: MAIL_LLM when set
+(MAIL_LLM=local keeps mail on the local model), else the user's chosen model. It may answer
 only with one of KINDS; nothing in an email can make HireOS do anything else.
 """
 import email
@@ -142,11 +142,11 @@ def fetch(days: int, seen: set, jobs: List[Dict], max_mail: int = 40) -> List[Di
 RECEIVED_SUBJECT = re.compile(r"application (was|has been) (viewed|sent|received|submitted)|we('ve| have) received your application", re.I)
 
 
-async def classify(router, mail: Dict, loads=json.loads) -> str:
+async def classify(router, mail: Dict, loads=json.loads, llm: str = None) -> str:
     if RECEIVED_SUBJECT.search(mail["subject"]):
         return "received"
     raw = await router.complete(PROMPT.format(sender=mail["from"], subject=mail["subject"], body=mail["body"][:2500]),
-                                llm=os.getenv("MAIL_LLM", "local"), fallback=False, temperature=0, max_tokens=60)
+                                llm=llm or os.getenv("MAIL_LLM", "local"), fallback=False, temperature=0, max_tokens=60)
     kind = str(loads(raw).get("kind", "")).lower().strip()
     return kind if kind in KINDS else "other"
 

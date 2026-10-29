@@ -671,7 +671,19 @@ def resolve_llm(db: Session, user_id: int, requested=None) -> str:
         return platform_llm(db)
     if requested:
         return requested
-    return get_llm_router(db, user_id).default_llm()
+    router = get_llm_router(db, user_id)
+    mine = _setting(db, user_id, DEFAULT_LLM_KEY)   # the one model the user picked (Settings / top bar)
+    if mine and llm_provider(mine) in router.available_providers():
+        return mine
+    return router.default_llm()
+
+
+DEFAULT_LLM_KEY = "default_llm"
+
+
+def llm_provider(llm: str) -> str:
+    """'openrouter:qwen/x' -> openrouter, 'gemini-2.5-flash' -> gemini (as the router routes it)."""
+    return (llm.split(":", 1)[0] if ":" in llm else llm.split("-")[0]).lower()
 
 
 def get_owned_job(db: Session, job_id: int, user) -> Job:
@@ -2441,10 +2453,11 @@ async def scan_mail_updates(db: Session, user_id: int, days: int) -> Dict[str, A
             for j in db.query(Job).filter(Job.user_id == user_id, Job.status != "withdrawn").all()]
     mails = await asyncio.to_thread(mu.fetch, days, set(seen), jobs)
     router = get_llm_router(db, user_id)
+    llm = os.getenv("MAIL_LLM") or resolve_llm(db, user_id)   # MAIL_LLM=local keeps mail on the local model
     updates = []
     for m in reversed(mails):                             # oldest first, so statuses move in order
         try:
-            kind = await mu.classify(router, m, loads=_parse_llm_json)
+            kind = await mu.classify(router, m, loads=_parse_llm_json, llm=llm)
         except Exception as e:                            # local model down: keep it unseen, retry next scan
             logger.warning(f"[mail-updates] classify failed, will retry: {e}")
             break
@@ -4608,8 +4621,14 @@ def export_csv(db: Session = Depends(get_db), current_user: User = Depends(get_c
 
 @app.get("/api/llm/providers")
 def get_providers(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """What the model pickers show: providers with a key, the model in use, the user's added models."""
     router = get_llm_router(db, current_user.id)
-    return {"available": router.available_providers()}
+    try:
+        custom = json.loads(_setting(db, current_user.id, "custom_nvidia_models") or "[]")
+    except ValueError:
+        custom = []
+    return {"available": router.available_providers(), "model": resolve_llm(db, current_user.id),
+            "custom": custom}
 
 
 @app.get("/api/llm/models")

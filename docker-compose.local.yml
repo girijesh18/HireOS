@@ -21,6 +21,7 @@ services:
       - LOCAL_LLM_URL=http://127.0.0.1:8080/v1
       # Background jobs (backend/scheduler.py): alerts, Gmail status scan. This instance only, never Fly.
       - SCHEDULER=on
+      - MAIL_LLM=local   # job emails are read only by the local model on this machine
       - GMAIL_USER_ID=1                # the HireOS user the Gmail mailbox in .env belongs to
       - OPS_DIR=/data/output/ops       # scripts/backup_db.sh writes backup.ok / backup.alert here
     volumes:

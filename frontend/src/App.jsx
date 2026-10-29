@@ -12,7 +12,7 @@ import Insights from './views/Insights'
 import Activity from './views/Activity'
 import Onboarding from './views/Onboarding'
 import Admin from './views/Admin'
-import { usePreferredLlm, setPreferredLlm, getLlmOptions, getPreferredLlm } from './model'
+import { usePreferredLlm, setPreferredLlm, getPreferredLlm, loadModelState, modelOptions } from './model'
 
 // ── Theme (cream default, persisted; 'dark' = navy mode) ───────────────────────────────────────────
 // v2: the Navy & Cream redesign starts everyone on cream, whatever the old dark/light choice was.
@@ -43,16 +43,12 @@ function ThemeToggle() {
 function ModelSelector() {
   const llm = usePreferredLlm()
   const [providers, setProviders] = useState([])
-  useEffect(() => { api.getProviders().then(r => setProviders(r.available || [])).catch(() => {}) }, [])
-  const isAvail = v => providers.some(p => v === p || v.startsWith(p + '-') || v.startsWith(p + ':'))
-  // Hide models the user has no key for instead of listing them greyed out --
-  // with one provider configured that was 5 real choices buried in 9 dead ones.
-  // Before the providers call lands (or if it fails) show everything.
-  const all = getLlmOptions()
-  const options = providers.length ? all.filter(o => isAvail(o.value) || o.value === llm) : all
+  // Also copies the server's choice into this browser, so every page sends the same model.
+  useEffect(() => { loadModelState().then(r => setProviders(r.available || [])).catch(() => {}) }, [])
+  const options = modelOptions(providers, llm)
   return (
     <select className="btn btn-outline btn-sm" style={{ maxWidth: 220 }} value={llm}
-      onChange={e => setPreferredLlm(e.target.value)} title="Model used across the whole platform">
+      onChange={e => setPreferredLlm(e.target.value)} title="The model HireOS uses everywhere (same as Settings › AI Model)">
       {options.map(o => (
         <option key={o.value} value={o.value}>{o.label}</option>
       ))}

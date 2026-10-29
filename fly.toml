@@ -15,9 +15,9 @@ primary_region = "iad"
   # pushes). Exactly one machine: two would double every alert and fight over the bot tokens.
   SCHEDULER = "on"
   GMAIL_USER_ID = "1"
-  # No local model here: background work and email reading use this one (with the user's key)
+  # No local model here: the model until a user picks one in Settings › AI Model (it then
+  # applies everywhere for them, Gmail reading included)
   DEFAULT_LLM = "openrouter:qwen/qwen3.8-27b"
-  MAIL_LLM = "openrouter:qwen/qwen3.8-27b"
 
 [[mounts]]
   source = "hireos_data"

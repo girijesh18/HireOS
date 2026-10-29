@@ -1,20 +1,62 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../api/client'
 import { setCustomNvidiaModels } from '../llmOptions'
+import { usePreferredLlm, setPreferredLlm, loadModelState, modelOptions } from '../model'
 import BillingPanel from '../components/BillingPanel'
 import AutoApplyPanel from '../components/AutoApplyPanel'
 import DiscoveryPanel from '../components/DiscoveryPanel'
 import ApplicationProfileForm from '../components/ApplicationProfileForm'
 
-const LLM_PROVIDERS = [
-  { key:'gemini_api_key', label:'Gemini API Key', provider:'Google Gemini', placeholder:'AIza...' },
-  { key:'groq_api_key', label:'Groq API Key', provider:'Groq (Free Tier)', placeholder:'gsk_...' },
-  { key:'openrouter_api_key', label:'OpenRouter API Key', provider:'OpenRouter (Free Models)', placeholder:'sk-or-...' },
-  { key:'together_api_key', label:'Together AI Key', provider:'Together AI', placeholder:'...' },
-  { key:'nvidia_api_key', label:'NVIDIA API Key', provider:'NVIDIA (MiniMax-M3)', placeholder:'nvapi-...' },
-  { key:'ollama_base_url', label:'Ollama Base URL', provider:'Local Ollama', placeholder:'http://localhost:11434' },
-  { key:'local_llm_url', label:'Local LLM URL (OpenAI-compatible)', provider:'llama.cpp / vLLM / LM Studio', placeholder:'http://localhost:8080/v1' },
+// API keys on Settings › AI Model: the providers in use first, the rest folded away.
+const MAIN_KEYS = [
+  { key:'openrouter_api_key', label:'OpenRouter', placeholder:'sk-or-...' },
+  { key:'gemini_api_key', label:'Gemini', placeholder:'AIza...' },
+  { key:'nvidia_api_key', label:'NVIDIA', placeholder:'nvapi-...' },
 ]
+const MORE_KEYS = [
+  { key:'groq_api_key', label:'Groq', placeholder:'gsk_...' },
+  { key:'together_api_key', label:'Together AI', placeholder:'...' },
+  { key:'ollama_base_url', label:'Ollama URL', placeholder:'http://localhost:11434' },
+  { key:'local_llm_url', label:'Local model URL (OpenAI-compatible)', placeholder:'http://localhost:8080/v1' },
+]
+
+// One key: connected or not, edited only on "Change", saved on its own.
+function KeyRow({ f, isSet, onSaved }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const save = async (v) => {
+    setBusy(true)
+    try {
+      await api.saveSettings([{ key: f.key, value: v }])
+      setEditing(false); setValue('')
+      onSaved()
+    } catch (err) { alert(err.message) }
+    setBusy(false)
+  }
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', flexWrap:'wrap', padding:'0.6rem 0', borderBottom:'1px solid var(--border)' }}>
+      <span style={{ width:220, fontWeight:600, fontSize:'0.875rem' }}>{f.label}</span>
+      {editing ? (
+        <>
+          <input type={f.key.endsWith('_key') ? 'password' : 'text'} value={value} placeholder={f.placeholder}
+            onChange={e => setValue(e.target.value)} style={{ flex:1, minWidth:200 }} autoFocus />
+          <button className="btn btn-primary btn-sm" disabled={busy || !value.trim()} onClick={() => save(value.trim())}>Save</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(false); setValue('') }}>Cancel</button>
+        </>
+      ) : (
+        <>
+          <span style={{ flex:1, fontSize:'0.8rem', color: isSet ? 'var(--success)' : 'var(--fg-muted)' }}>
+            {isSet ? '✓ Connected' : 'Not set'}
+          </span>
+          <button className="btn btn-outline btn-sm" onClick={() => setEditing(true)}>{isSet ? 'Change' : 'Add'}</button>
+          {isSet && <button className="btn btn-ghost btn-sm" disabled={busy}
+            onClick={() => confirm(`Remove the ${f.label} key?`) && save('')}>Remove</button>}
+        </>
+      )}
+    </div>
+  )
+}
 // Catalogue entry -> picker label. `extra` is the provider's own note: an
 // OpenRouter price ("free", "$0.20 in / $0.60 out per M") or a context window.
 const modelLabel = (m) => (m.extra ? `${m.label} · ${m.extra}` : m.label)
@@ -65,6 +107,12 @@ export default function Settings() {
   const [mcpToken, setMcpToken] = useState(null)      // full token, only right after creation
   const [mcpExists, setMcpExists] = useState(false)
   const [mcpBusy, setMcpBusy] = useState(false)
+  const llm = usePreferredLlm()
+  // After a key changes: which providers now have one, and the model in use.
+  const refreshKeys = () => {
+    api.getSettings().then(setValues).catch(() => {})
+    loadModelState().then(r => setProviders(r.available || [])).catch(() => {})
+  }
 
   useEffect(() => {
     Promise.all([
@@ -271,7 +319,7 @@ export default function Settings() {
           </p>
         </div>
         {/* Only the tabs built from `values` save here; the others have their own Save button */}
-        {['resume', 'models'].includes(activeCategory) && (
+        {activeCategory === 'resume' && (
           <button className="btn btn-primary" onClick={save}>
             {saved ? 'Configuration Saved' : 'Save Changes'}
           </button>
@@ -511,32 +559,35 @@ export default function Settings() {
 
           {activeCategory === 'models' && (
             <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-              <Section
-                title="Google Gemini"
-                description="Google's most capable models. Recommendation: Use 'gemini-1.5-pro' for complex tailoring."
-                fields={[LLM_PROVIDERS[0]]}
-              />
-              <Section
-                title="Groq & OpenRouter"
-                description="Fast and versatile providers. Perfect for quick job analysis."
-                fields={[LLM_PROVIDERS[1], LLM_PROVIDERS[2]]}
-              />
-              <Section
-                title="Self-Hosted & Others"
-                description="Connect to your local Ollama instance or Together AI."
-                fields={[LLM_PROVIDERS[3], LLM_PROVIDERS[4]]}
-              />
+              <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'0.75rem' }}>
+                <h3 style={{ fontSize:'1rem' }}>Model HireOS uses</h3>
+                <select value={llm} onChange={e => setPreferredLlm(e.target.value)} style={{ maxWidth:440 }}>
+                  {modelOptions(providers, llm).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                <p style={{ fontSize:'0.8rem', color:'var(--fg-muted)' }}>
+                  Used everywhere: the web app, Telegram and Discord, job discovery, the apply agent's answers and
+                  reading your job emails. The picker in the top bar is the same setting. Saved as soon as you choose.
+                </p>
+              </div>
 
-              <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem' }}>
-                <div>
-                  <h3 style={{ fontSize:'1rem' }}>Custom Models</h3>
-                  <p style={{ fontSize:'0.8rem', color:'var(--fg-subtle)', marginTop:4 }}>
-                    Add any model id from <strong>build.nvidia.com</strong> (e.g. <code>meta/llama-3.1-405b-instruct</code>)
-                    or <strong>openrouter.ai/models</strong> (e.g. <code>meta-llama/llama-3.3-70b-instruct:free</code>).
-                    Uses the matching API key above. They appear in the model dropdowns; click <strong>Save Settings</strong> to persist.
-                  </p>
-                </div>
+              <div className="panel" style={{ padding:'1.5rem' }}>
+                <h3 style={{ fontSize:'1rem' }}>API keys</h3>
+                <p style={{ fontSize:'0.8rem', color:'var(--fg-muted)', margin:'4px 0 0.5rem' }}>
+                  Only providers with a key show up in the model list.
+                </p>
+                {MAIN_KEYS.map(f => <KeyRow key={f.key} f={f} isSet={!!values[f.key]} onSaved={refreshKeys} />)}
+                <details style={{ marginTop:'0.75rem' }}>
+                  <summary style={{ cursor:'pointer', fontSize:'0.85rem' }}>More providers (Groq, Together, Ollama, a local model)</summary>
+                  {MORE_KEYS.map(f => <KeyRow key={f.key} f={f} isSet={!!values[f.key]} onSaved={refreshKeys} />)}
+                </details>
+              </div>
 
+              <details className="panel" style={{ padding:'1.5rem' }}>
+                <summary style={{ cursor:'pointer' }}>
+                  <strong>Add another model to the list</strong>
+                  <span style={{ fontSize:'0.8rem', color:'var(--fg-muted)' }}> — any model from OpenRouter or NVIDIA, using the key above</span>
+                </summary>
+                <div style={{ display:'flex', flexDirection:'column', gap:'1rem', marginTop:'1rem' }}>
                 {nvModels.length > 0 && (
                   <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
                     {nvModels.map(m => (
@@ -609,13 +660,13 @@ export default function Settings() {
                     </button>
                   )}
                   <span style={{ fontSize:'0.75rem', color:'var(--fg-muted)' }}>
-                    Free models first, then cheapest. Click <strong>Save Changes</strong> to persist.
+                    Free models first, then cheapest. Added models appear in the model list right away.
                   </span>
                 </div>
-              </div>
+                </div>
+              </details>
             </div>
           )}
-
           {activeCategory === 'strategy' && <DiscoveryPanel />}
 
           {activeCategory === 'access' && (
