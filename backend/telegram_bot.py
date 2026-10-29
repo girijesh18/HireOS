@@ -231,19 +231,32 @@ def username() -> str:
     return httpx.get(f"{API}/getMe", timeout=10).json()["result"]["username"]
 
 
-def send(db, user_id: int, text: str, markup: dict = None):
+def send(db, user_id: int, text: str, markup: dict = None, silent: bool = False):
     """Message from sync code (endpoints run in a thread pool). Returns the message id, or
-    None when the bot is off, the user has no linked chat, or Telegram failed."""
+    None when the bot is off, the user has no linked chat, or Telegram failed. silent: no sound."""
     chat = _m()._setting(db, user_id, CHAT_KEY) if TOKEN else None
     if not chat:
         return None
     try:
         body = httpx.post(f"{API}/sendMessage", timeout=10, json={
-            "chat_id": chat, "text": text[:4000], **({"reply_markup": markup} if markup else {})}).json()
+            "chat_id": chat, "text": text[:4000], **({"reply_markup": markup} if markup else {}),
+            **({"disable_notification": True} if silent else {})}).json()
         return (body.get("result") or {}).get("message_id")
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(f"[telegram] send failed: {e}")
         return None
+
+
+def edit(db, user_id: int, message_id, text: str):
+    """Replace a message's text (a progress line updating in place). Errors are only logged."""
+    chat = _m()._setting(db, user_id, CHAT_KEY) if TOKEN else None
+    if not (chat and message_id):
+        return
+    try:
+        httpx.post(f"{API}/editMessageText", timeout=10,
+                   json={"chat_id": chat, "message_id": message_id, "text": text[:4000]})
+    except httpx.HTTPError as e:
+        logger.warning(f"[telegram] edit failed: {e}")
 
 
 def send_photo(db, user_id: int, png: bytes, caption: str, markup: dict = None):

@@ -70,7 +70,7 @@ def test_tick():
 
     sent = []
     real = (tg.send, main.scan_mail_updates)
-    tg.send = lambda db, uid, text, markup=None: sent.append((uid, text, markup))
+    tg.send = lambda db, uid, text, markup=None, silent=False: sent.append((uid, text, markup))
     calls = []
 
     async def fake_scan(db, uid, days):
@@ -188,9 +188,6 @@ def test_discovery_run_reports_errors():
         asyncio.run(go(clean))
     finally:
         discovery.run, discovery.score = real
-    started = [t for _, t in sent if t.startswith("🔎 Discovery run started")]
-    assert len(started) == 3, started                                    # every run says it started
-    sent[:] = [x for x in sent if not x[1].startswith("🔎 Discovery run started")]
     assert sent[0] == (7, "🟠 Discovery done: 2 new, 2 scored — 1 resume(s) ready to review, 1 below your min score, "
                           "3 still unscored (next run, or ask me to score them).\n10 problem(s):\n• e0\n• e1\n• e2\n• e3\n"
                           "• e4\n• e5\n• e6\n• e7\n… and 2 more"), sent[0]
@@ -200,25 +197,30 @@ def test_discovery_run_reports_errors():
 
 
 def test_scoring_progress_updates():
-    """A long scoring run reports every PROGRESS_EVERY: done/total, fits so far, time left; and status shows it."""
+    """One silent progress message, edited in place as jobs and steps go by (at most every
+    PROGRESS_EDIT_EVERY s), closed with a done line; status shows the same line meanwhile."""
     clock = [1000.0]
-    sent = []
+    sent, edits, posted = [], [], []
     s = scheduler.Scheduler(main, now=lambda: clock[0])
     s._send = lambda uid, t, r: sent.append(t)
+    s._post_silent = lambda uid, t: posted.append(t) or {"msg": 11, "dmsg": "22"}
+    s._edit = lambda uid, ids, t: edits.append((ids["msg"], t))
     import discovery
     real = discovery.score
-    seen_status = []
+    status = []
 
     async def score(m, uid, ids, progress=None):
-        for i, outcome in enumerate(["resume ready", "below min score", "resume ready", "below min score"], 1):
-            clock[0] += 240                                  # 4 min a job
-            progress(i, 4, outcome)
-            seen_status.append(scheduler.progress_line(uid))
-        return {"prepared": [], "errors": []}
+        for i, outcome in enumerate(["resume ready", "below min score", "resume ready"], 1):
+            clock[0] += 5
+            progress(i - 1, 3, None, f"#{i} Acme: scoring the fit")      # 5 s after the last edit: no edit
+            clock[0] += 115
+            progress(i, 3, outcome, None)                                 # 2 min a job: edited
+            status.append(scheduler.progress_line(uid))
+        return {"prepared": [(1, "a"), (2, "b"), (3, "c")], "errors": []}
 
     async def go():
         scheduler.CURRENT = s
-        assert s.start_scoring(7, [1, 2, 3, 4], lambda db: "results") == "started"
+        assert s.start_scoring(7, [1, 2, 3], lambda db: "results") == "started"
         for _ in range(300):
             await asyncio.sleep(0.01)
             if 7 not in s.discovering:
@@ -228,10 +230,14 @@ def test_scoring_progress_updates():
         asyncio.run(go())
     finally:
         discovery.score, scheduler.CURRENT = real, None
-    # 4 min, 8 min (no update yet), 12 min -> update; the 4th is the last job: the results follow instead
-    assert sent == ["⏳ Scoring: 3/4 jobs done, 2 good fit(s) so far (resume ready) — about 4 min left.", "results"], sent
-    assert seen_status[0] == "⏳ Scoring: 1/4 jobs done, 1 good fit(s) so far (resume ready) — about 12 min left."
-    assert scheduler.progress_line(7) == "" and 7 not in s.progress           # gone when it ends
+    assert posted == ["⏳ Scoring · 1 min in\nNow: starting"], posted                         # silent, once
+    assert [t for _, t in edits][0] == ("⏳ Scoring 1/3 · 1 good fit(s) so far · about 4 min left · 2 min in"
+                                         "\nNow: #1 Acme: scoring the fit"), edits
+    assert len(edits) == 4 and all(i == 11 for i, _ in edits)                                # 3 jobs + the done line
+    assert edits[-1][1] == "✅ Scoring done: 3/3 · 2 good fit(s) · took 6 min. Results below.", edits[-1]
+    assert sent == ["results"], sent                                                          # no other messages
+    assert status[1].startswith("⏳ Scoring 2/3 · 1 good fit(s) so far · about 2 min left")
+    assert scheduler.progress_line(7) == "" and 7 not in s.progress
     assert scheduler.minutes_text(48 * scheduler.JOB_SECONDS) == "2h 48m"
 
 

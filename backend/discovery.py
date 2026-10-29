@@ -380,13 +380,15 @@ async def _run_endpoint(endpoint, job_id: int, payload: dict, db, user) -> None:
     await bt()
 
 
-async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict) -> str:
+async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict, step=None) -> str:
     """One job: find its own posting (LinkedIn), score it, tailor a resume when it clears min_score.
     Returns a short outcome for the run summary."""
     job = m.get_owned_job(db, job_id, user)
+    step = step or (lambda text: None)          # what it's doing now, for the progress message
     payload = {}                     # the user's model
     route = None
     if re.search(r"linkedin\.com/jobs/view|glassdoor\.|indeed\.", job.url or ""):
+        step(f"#{job.id} {job.company}: finding where to apply")
         route = await find_ats(c, job, t)
         if route["route"] == "closed":
             _note(job, "[find-ats: LinkedIn says no longer accepting applications]")
@@ -408,6 +410,7 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict) -> st
             _note(job, f"[careers: {route['careers_url']}]")
         db.commit()
     if job.match_score is None:
+        step(f"#{job.id} {job.company}: scoring the fit")
         await _run_endpoint(m.analyze_job, job_id, payload, db, user)
         db.expire_all()
         task = db.query(m.LLMTaskStatus).filter_by(job_id=job_id, task_type="analyze").first()
@@ -419,6 +422,7 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict) -> st
     if route and route["route"] == "easy_apply":
         return "Easy Apply only"
     if not db.query(m.ResumeVersion).filter_by(job_id=job_id).first():
+        step(f"#{job.id} {job.company}: scored {job.match_score:g}, writing the resume (then review + ATS score)")
         await _run_endpoint(m.start_generate_resume, job_id, payload, db, user)
         db.expire_all()
         task = db.query(m.LLMTaskStatus).filter_by(job_id=job_id, task_type="resume").first()
@@ -428,17 +432,19 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict) -> st
 
 
 async def _prepare_all(m, c, db, user, job_ids: List[int], t: dict, out: dict, progress=None, label=""):
-    """prepare() each job; one failing never stops the rest. progress(done, total, outcome) after each."""
+    """prepare() each job; one failing never stops the rest. progress(done, total, outcome, now) as it
+    goes: now = the step under way, outcome = how the job ended (after each job)."""
     for i, jid in enumerate(job_ids, 1):
+        step = (lambda text, i=i: progress(i - 1, len(job_ids), None, text)) if progress else None
         try:
-            outcome = await prepare(m, c, db, user, jid, t)
+            outcome = await prepare(m, c, db, user, jid, t, step)
             out["prepared"].append((jid, outcome))
         except Exception as e:
             db.rollback()
             outcome = "error"
             out["errors"].append(f"{label}#{jid}: {str(e)[:200]}")
         if progress:
-            progress(i, len(job_ids), outcome)
+            progress(i, len(job_ids), outcome, None)
 
 
 async def score(m, user_id: int, job_ids: List[int], progress=None) -> Dict[str, Any]:
@@ -468,13 +474,16 @@ async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None, progr
         cfg = m._apply_config(db, user_id)
         max_age = cfg["max_posting_age_hours"]
         async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=12, transport=transport) as c:
+            say = (lambda text: progress(0, 0, None, text)) if progress else (lambda text: None)
             # 1. job-alert emails (fresh as the posting-age window)
+            say("reading job-alert emails")
             try:
                 r = await m.scan_mail({"days": math.ceil(max_age / 24), "limit": 10}, db=db, current_user=user)
                 summary["added"] += len(r.get("added") or [])
             except HTTPException as e:
                 summary["errors"].append(f"alert emails: {e.detail}")
             # 2. ATS feeds + LinkedIn searches
+            say(f"checking company job boards ({summary['added']} new so far)")
             feeds = await scan_feeds(c, t, max_age, datetime.now(timezone.utc))
             summary["errors"] += feeds["errors"]
             for j in feeds["found"]:
@@ -486,6 +495,7 @@ async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None, progr
                 except HTTPException as e:
                     summary["errors"].append(f"{j['url']}: {e.detail}")
             for s in t.get("linkedin_searches") or []:
+                say(f"LinkedIn search: {s.get('keywords')} ({summary['added']} new so far)")
                 try:
                     r = await m.linkedin_search({"limit": 5, **s, "posted_within": f"{int(max_age)}h"}, db=db, current_user=user)
                     summary["added"] += len(r["added"])

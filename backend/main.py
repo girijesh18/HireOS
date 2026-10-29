@@ -1188,12 +1188,21 @@ def discord_link(db: Session = Depends(get_db), current_user: User = Depends(get
     return {"code": code, "say": f"link {code}"}
 
 
-def _chat_send(db: Session, user_id: int, text: str, markup: dict = None, photo: bytes = None) -> dict:
+def _chat_send(db: Session, user_id: int, text: str, markup: dict = None, photo: bytes = None,
+               silent: bool = False) -> dict:
     """One message to every chat the user linked (Telegram, Discord). {"msg": telegram id, "dmsg": discord id}."""
     if photo:
         return {"msg": telegram_bot.send_photo(db, user_id, photo, text, markup),
                 "dmsg": discord_bot.send_photo(db, user_id, photo, text, markup)}
-    return {"msg": telegram_bot.send(db, user_id, text, markup), "dmsg": discord_bot.send(db, user_id, text, markup)}
+    quiet = {"silent": True} if silent else {}         # ordinary sends call exactly as before
+    return {"msg": telegram_bot.send(db, user_id, text, markup, **quiet),
+            "dmsg": discord_bot.send(db, user_id, text, markup, **quiet)}
+
+
+def _chat_edit(db: Session, user_id: int, ids: dict, text: str):
+    """Edit a message _chat_send sent, in every chat it reached."""
+    telegram_bot.edit(db, user_id, ids.get("msg"), text)
+    discord_bot.edit(db, user_id, ids.get("dmsg"), text)
 
 
 @app.on_event("startup")
@@ -4563,8 +4572,7 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
             elif scheduler.CURRENT.start_scoring(uid, ids, lambda d: _chat_jobs(d, uid, show)) == "started":
                 reply = (f"Scoring {len(ids)} jobs from the last {hours:g}h, newest first, and tailoring resumes for "
                          f"good fits. That's about {scheduler.minutes_text(len(ids) * scheduler.JOB_SECONDS)}: "
-                         f"progress here every {scheduler.PROGRESS_EVERY // 60} min, the results at the end. "
-                         "Say status any time.")
+                         "a live progress line below updates as it goes (silently), the results at the end.")
             else:
                 reply = (f"A discovery run is going right now. I'll score the {len(ids)} jobs from the last {hours:g}h "
                          "right after it and send the results here — no need to ask again.")

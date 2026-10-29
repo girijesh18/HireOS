@@ -142,10 +142,13 @@ def _request(method: str, path: str, **kw):
     return None
 
 
-def post(channel_id: str, text: str, markup: dict = None, file: tuple = None):
+SUPPRESS_NOTIFICATIONS = 1 << 12     # message flag: delivered without a push or sound
+
+
+def post(channel_id: str, text: str, markup: dict = None, file: tuple = None, silent: bool = False):
     """A message (optionally with buttons and one file: (name, bytes, mime)). Returns its id or None."""
     body = {"content": text_for(text, markup), "components": components(markup),
-            "allowed_mentions": {"parse": []}}
+            "allowed_mentions": {"parse": []}, **({"flags": SUPPRESS_NOTIFICATIONS} if silent else {})}
     if file:
         body["attachments"] = [{"id": 0, "filename": file[0]}]
         r = _request("POST", f"/channels/{channel_id}/messages", data={"payload_json": json.dumps(body)},
@@ -161,10 +164,17 @@ def close_message(channel_id: str, message_id: str, text: str):
              json={"content": text[:LIMIT], "components": []})
 
 
-def send(db, user_id: int, text: str, markup: dict = None):
+def send(db, user_id: int, text: str, markup: dict = None, silent: bool = False):
     """Same contract as telegram_bot.send: the message id, or None when the bot is off or not linked."""
     ch = channel_of(db, user_id)
-    return post(ch, text, markup) if ch else None
+    return post(ch, text, markup, silent=silent) if ch else None
+
+
+def edit(db, user_id: int, message_id, text: str):
+    """Replace a message's text (a progress line updating in place)."""
+    ch = channel_of(db, user_id)
+    if ch and message_id:
+        _request("PATCH", f"/channels/{ch}/messages/{message_id}", json={"content": text[:LIMIT]})
 
 
 def send_photo(db, user_id: int, png: bytes, caption: str, markup: dict = None):

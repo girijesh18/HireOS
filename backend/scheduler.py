@@ -27,7 +27,8 @@ from loguru import logger
 TICK = 120
 MAIL_EVERY = 15 * 60
 HOUR = 3600
-PROGRESS_EVERY = 600       # seconds between "still working" messages during a scoring or discovery run
+PROGRESS_EDIT_EVERY = 10   # seconds between edits of a run's live progress message (one silent message)
+PROGRESS_BEAT = 15         # ...and at least this often while a long step runs, so it visibly moves
 JOB_SECONDS = 210          # one job scored + resume + review + ATS on OpenRouter qwen (measured ~3-4 min)
 DISCOVERY_HOURS = (8, 16)
 DISCOVERY_LAST_KEY = "discovery_last_run"     # "YYYY-MM-DD HH" local: one run per slot, across restarts
@@ -95,12 +96,14 @@ def minutes_text(seconds: float) -> str:
 
 
 def progress_text(p: dict, now: float) -> str:
-    """One line on a run in progress: how far, how many good fits, roughly how long is left."""
-    if not p["total"]:
-        return f"⏳ {p['what']}: finding new jobs (started {minutes_text(now - p['started'])} ago)."
-    left = (now - p["started"]) / max(p["done"], 1) * (p["total"] - p["done"])
-    return (f"⏳ {p['what']}: {p['done']}/{p['total']} jobs done, {p['fits']} good fit(s) so far "
-            f"(resume ready) — about {minutes_text(left)} left.")
+    """A run in progress: how far, good fits so far, roughly how long is left, and the step under way."""
+    if p["total"]:
+        left = ((now - p["job_started"]) / p["done"] if p["done"] else JOB_SECONDS) * (p["total"] - p["done"])
+        head = (f"⏳ {p['what']} {p['done']}/{p['total']} · {p['fits']} good fit(s) so far · "
+                f"about {minutes_text(left)} left · {minutes_text(now - p['started'])} in")
+    else:
+        head = f"⏳ {p['what']} · {minutes_text(now - p['started'])} in"
+    return head + (f"\nNow: {p['now']}" if p.get("now") else "")
 
 
 def progress_line(uid: int) -> str:
@@ -293,23 +296,69 @@ class Scheduler:
         asyncio.get_running_loop().create_task(self._score(uid, job_ids, then))
         return "started"
 
-    def _tracker(self, uid: int, what: str):
-        """progress(done, total, outcome) for a run: keeps self.progress current and sends an update
-        every PROGRESS_EVERY seconds (not after the last job: the results message follows)."""
-        p = self.progress[uid] = {"what": what, "done": 0, "total": 0, "fits": 0,
-                                  "started": self.now(), "sent": self.now()}
+    async def _tracker(self, uid: int, what: str):
+        """progress(done, total, outcome, now) for a run. Posts one silent message and edits it in place
+        (at most every PROGRESS_EDIT_EVERY seconds) with the count, good fits, time left and current step;
+        also what status shows."""
+        p = self.progress[uid] = {"what": what, "done": 0, "total": 0, "fits": 0, "now": "starting",
+                                  "started": self.now(), "job_started": None, "edited": self.now(), "ids": {}}
+        p["ids"] = await asyncio.get_running_loop().run_in_executor(
+            self.outbox, self._post_silent, uid, progress_text(p, self.now())) or {}
 
-        def update(done, total, outcome):
+        def update(done, total, outcome, now):
+            if total and p["job_started"] is None:
+                p["job_started"] = self.now()            # time left is measured on jobs, not on fetching postings
             p.update(done=done, total=total, fits=p["fits"] + (outcome == "resume ready"))
-            if done < total and self.now() - p["sent"] >= PROGRESS_EVERY:
-                p["sent"] = self.now()
-                self._send(uid, progress_text(p, self.now()), None)
+            if now is not None:
+                p["now"] = now
+            if self.now() - p["edited"] >= PROGRESS_EDIT_EVERY:
+                p["edited"] = self.now()
+                self._edit(uid, p["ids"], progress_text(p, self.now()))
+
+        async def beat():                              # a long step (a resume: ~1 min) still shows time passing
+            while self.progress.get(uid) is p and not p.get("closed"):
+                await asyncio.sleep(PROGRESS_BEAT)
+                if self.progress.get(uid) is p and not p.get("closed") and self.now() - p["edited"] >= PROGRESS_BEAT:
+                    p["edited"] = self.now()
+                    self._edit(uid, p["ids"], progress_text(p, self.now()))
+        asyncio.get_running_loop().create_task(beat())
         return update
+
+    def _close_progress(self, uid: int, text: str):
+        p = self.progress.get(uid)
+        if p:
+            p["closed"] = True                         # the heartbeat must not overwrite the final text
+            self._edit(uid, p["ids"], text)
+
+    def _post_silent(self, uid: int, text: str) -> dict:
+        db = self.m.SessionLocal()
+        try:
+            return self.m._chat_send(db, uid, text, silent=True)
+        except Exception as e:                     # progress must never stop the run
+            logger.warning(f"[scheduler] progress message failed: {e}")
+            return {}
+        finally:
+            db.close()
+
+    def _edit(self, uid: int, ids: dict, text: str):
+        def go():
+            db = self.m.SessionLocal()
+            try:
+                self.m._chat_edit(db, uid, ids, text)
+            except Exception as e:
+                logger.warning(f"[scheduler] progress edit failed: {e}")
+            finally:
+                db.close()
+        if ids:
+            self.sending.append(asyncio.get_running_loop().run_in_executor(self.outbox, go))
 
     async def _score(self, uid: int, job_ids: list, then):
         import discovery
         try:
-            s = await discovery.score(self.m, uid, job_ids, self._tracker(uid, "Scoring"))
+            s = await discovery.score(self.m, uid, job_ids, await self._tracker(uid, "Scoring"))
+            p = self.progress[uid]
+            self._close_progress(uid, f"✅ Scoring done: {len(s['prepared'])}/{len(job_ids)} · {p['fits']} good fit(s) · "
+                                      f"took {minutes_text(self.now() - p['started'])}. Results below.")
             db = self.m.SessionLocal()
             try:
                 text = then(db)
@@ -320,6 +369,7 @@ class Scheduler:
             self._send(uid, text, None)
         except Exception as e:
             logger.warning(f"[scheduler] scoring user {uid} failed: {e!r}")
+            self._close_progress(uid, "🔴 Scoring stopped (see below).")
             self._send(uid, f"🔴 Scoring failed: {str(e)[:300]}", None)
         finally:
             self._finished(uid)
@@ -333,14 +383,15 @@ class Scheduler:
     async def _discover(self, uid: int):
         import discovery
         try:
-            self._send(uid, "🔎 Discovery run started: new postings first, then scoring. "
-                            f"Progress here every {PROGRESS_EVERY // 60} min; say status any time.", None)
-            s = await discovery.run(self.m, uid, progress=self._tracker(uid, "Discovery"))
+            s = await discovery.run(self.m, uid, progress=await self._tracker(uid, "Discovery"))
+            self._close_progress(uid, f"✅ Discovery done in {minutes_text(self.now() - self.progress[uid]['started'])}. "
+                                      "Summary below.")
             logger.info(f"[scheduler] discovery user {uid}: added {s['added']}, prepared {s['prepared']}, "
                         f"waiting {s['waiting']}, errors {len(s['errors'])}")
             self._send(uid, discovery_done_text(s), None)
         except Exception as e:
             logger.warning(f"[scheduler] discovery user {uid} failed: {e!r}")
+            self._close_progress(uid, "🔴 Discovery stopped (see below).")
             self._user(uid).send(f"🔴 Discovery run failed: {str(e)[:300]}", None)
         finally:
             self._finished(uid)
