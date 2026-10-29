@@ -669,9 +669,11 @@ def resolve_llm(db: Session, user_id: int, requested=None) -> str:
     the most expensive model available on our account."""
     if on_platform_key(db, user_id):
         return platform_llm(db)
-    if requested:
-        return requested
     router = get_llm_router(db, user_id)
+    # A stored choice (a job or target saved on the PC with "local") is skipped where that provider
+    # has no key or URL, so it falls to the user's model rather than the router's fallback chain.
+    if requested and llm_provider(requested) in router.available_providers():
+        return requested
     mine = _setting(db, user_id, DEFAULT_LLM_KEY)   # the one model the user picked (Settings / top bar)
     if mine and llm_provider(mine) in router.available_providers():
         return mine

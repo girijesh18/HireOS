@@ -64,6 +64,7 @@ def test_one_model_per_user():
     db.commit()
     assert main.resolve_llm(db, u.id) == "openrouter:qwen/qwen3.8-27b"
     assert main.resolve_llm(db, u.id, "gemini-2.5-pro") == "gemini-2.5-pro"        # an explicit choice still wins
+    assert main.resolve_llm(db, u.id, "local") == "openrouter:qwen/qwen3.8-27b"    # no local model here: the user's
     main._put_setting(db, u.id, main.DEFAULT_LLM_KEY, "nvidia:some/model")       # no NVIDIA key: ignored
     db.commit()
     assert main.resolve_llm(db, u.id) == "gemini"
