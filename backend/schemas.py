@@ -146,7 +146,7 @@ class CoverLetterVersionOut(BaseModel):
 
 class ChatMessage(BaseModel):
     message: str
-    llm: Optional[str] = "gemini"
+    llm: Optional[str] = None      # None: the user's model (Settings › AI Models)
     context: Optional[dict] = None
 
 

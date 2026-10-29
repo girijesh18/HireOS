@@ -157,23 +157,23 @@ export const api = {
   getProviderModels: (provider, refresh = false) => req('GET', `/llm/models?provider=${provider}&refresh=${refresh}`),
 
   // Agent: Track a job from a URL (AI auto-extracts)
-  trackUrl: (url, llm = 'gemini') => req('POST', '/agent/track-url', { url, llm }),
+  trackUrl: (url, llm = '') => req('POST', '/agent/track-url', { url, llm }),
 
   // Agent: Import LinkedIn search results via the public guest API
   linkedinSearch: (body) => req('POST', '/agent/linkedin-search', body),
 
   // Agent: Track from pasted JD text (works for LinkedIn and login-walled sites)
-  trackJdText: (text, llm = 'gemini') => req('POST', '/agent/track-jd', { text, llm }),
+  trackJdText: (text, llm = '') => req('POST', '/agent/track-jd', { text, llm }),
 
   // Agent: Run fit assessment / gap analysis
-  analyzeJob: (jobId, llm = 'gemini') => req('POST', `/agent/analyze/${jobId}`, { llm }),
+  analyzeJob: (jobId, llm = '') => req('POST', `/agent/analyze/${jobId}`, { llm }),
 
   // Agent: Generate a tailored resume
-  generateResume: (jobId, { llm = 'gemini-2.5-flash', feedback = '' } = {}) =>
+  generateResume: (jobId, { llm = '', feedback = '' } = {}) =>
     req('POST', `/agent/resume/${jobId}`, { llm, feedback }),
 
   // Agent: Generate a cover letter
-  generateCoverLetter: (jobId, { llm = 'gemini-2.5-flash', feedback = '', resumeVersion = null } = {}) =>
+  generateCoverLetter: (jobId, { llm = '', feedback = '', resumeVersion = null } = {}) =>
     req('POST', `/agent/cover-letter/${jobId}`, { llm, feedback, resume_version: resumeVersion }),
 
   // Agent: Fan-out LLM comparison
@@ -197,7 +197,7 @@ export const api = {
   getTrending: () => req('GET', '/search/trending'),
 
   // Chat (floating assistant)
-  chat: (message, llm = 'gemini', context = null) =>
+  chat: (message, llm = '', context = null) =>
     req('POST', '/chat', { message, llm, context }),
 
   // Export (token-authenticated blob download)
@@ -210,7 +210,7 @@ export const api = {
   // ── Career-Ops Enhanced Agent Endpoints ──────────────────────────────────
 
   // Full A-G Structured Evaluation
-  evaluateJob: (jobId, llm = 'gemini-2.5-flash') =>
+  evaluateJob: (jobId, llm = '') =>
     req('POST', `/agent/evaluate/${jobId}?llm=${llm}`),
 
   // Get evaluation reports for a job
@@ -218,19 +218,19 @@ export const api = {
     req('GET', `/evaluations/${jobId}`),
 
   // LinkedIn outreach generator
-  generateLinkedIn: (jobId, contactType = 'hiring_manager', llm = 'gemini-2.5-flash') =>
+  generateLinkedIn: (jobId, contactType = 'hiring_manager', llm = '') =>
     req('POST', `/agent/linkedin/${jobId}`, { contact_type: contactType, llm }),
   getLinkedIn: (jobId) =>
     req('GET', `/agent/linkedin/${jobId}`),
 
   // Deep company research
-  deepResearch: (jobId, llm = 'gemini-2.5-flash') =>
+  deepResearch: (jobId, llm = '') =>
     req('POST', `/agent/deep-research/${jobId}`, { llm }),
   getDeepResearch: (jobId) =>
     req('GET', `/agent/deep-research/${jobId}`),
 
   // Interview prep (STAR stories)
-  interviewPrep: (jobId, llm = 'gemini-2.5-flash') =>
+  interviewPrep: (jobId, llm = '') =>
     req('POST', `/agent/interview-prep/${jobId}`, { llm }),
   getInterviewPrep: (jobId) =>
     req('GET', `/agent/interview-prep/${jobId}`),

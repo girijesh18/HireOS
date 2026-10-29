@@ -4419,7 +4419,7 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
     """
     Global floating chat — routes natural language to agents (scoped to the current user).
     """
-    llm = getattr(msg, "llm", "gemini") or "gemini"
+    llm = resolve_llm(db, current_user.id, msg.llm)
     context = getattr(msg, "context", None)
     uid = current_user.id
 
@@ -4466,7 +4466,7 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
                     "Upgrade to Pro in Settings → Billing for unlimited generations."
                 )
             elif _owned(job_id):
-                asyncio.create_task(_bg_resume(job_id, llm, "", uid, "claude"))
+                asyncio.create_task(_bg_resume(job_id, llm, "", uid, llm))
                 reply = f"📄 Resume generation started for job #{job_id} — check the Resumes tab shortly."
             elif job_id:
                 reply = "I couldn't find that job in your pipeline."

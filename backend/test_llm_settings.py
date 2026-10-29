@@ -75,6 +75,18 @@ def test_one_model_per_user():
     assert p["model"] == "gemini-2.5-pro" and p["custom"][0]["id"] == "qwen/qwen3.8-27b"
     assert set(p["available"]) >= {"gemini", "openrouter"}
     assert main.llm_provider("openrouter:qwen/x") == "openrouter" and main.llm_provider("gemini-2.5-flash") == "gemini"
+    seen = []
+
+    class Dispatcher:
+        async def dispatch(self, message, context=None, llm=None):
+            seen.append(llm)
+            return {"action": "general_reply", "text": "hi"}
+    real, main.get_agent = main.get_agent, (lambda *a: Dispatcher())
+    try:
+        asyncio.run(main.chat(main.ChatMessage(message="x"), db, u))    # web chat / Discord: no model named
+    finally:
+        main.get_agent = real
+    assert seen == ["gemini-2.5-pro"], seen                                     # the saved choice, not "gemini"
     db.close()
 
 

@@ -8,7 +8,7 @@ import { getLlmOptions, setCustomNvidiaModels } from './llmOptions'
 
 const KEY = 'preferredLlm'
 const EVENT = 'preferred-llm-change'
-const DEFAULT = 'gemini-2.5-flash'
+const DEFAULT = ''   // until the server's choice loads; '' lets the server pick the user's model
 const PROVIDER_NAMES = { openrouter: 'OpenRouter', nvidia: 'NVIDIA', gemini: 'Gemini', groq: 'Groq',
   together: 'Together', claude: 'Claude', ollama: 'Ollama', local: 'Local' }
 
