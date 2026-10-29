@@ -6,6 +6,7 @@ import asyncio
 import os
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_llm_settings.db"
+os.environ["CHROMA_PATH"] = "./test_chroma"           # chat() logs to a store; never the real one
 os.environ["LOG_DIR"] = "./logs"
 
 import mail_updates  # noqa: E402
@@ -43,6 +44,38 @@ def test_mail_llm():
     asyncio.run(mail_updates.classify(R(), mail, llm="gemini-2.5-pro"))           # the user's model, from the caller
     assert [(c["llm"], c["fallback"]) for c in calls] == \
         [("local", False), ("openrouter:qwen/qwen3.8-27b", False), ("gemini-2.5-pro", False)]
+
+
+def test_fallback_by_key_and_health():
+    """Fallbacks: only providers with a key; one that just failed is skipped, one that answered goes first."""
+    import llm_router
+    llm_router._HEALTH.clear()
+    r = LLMRouter(keys={"gemini": "g", "openrouter": "o", "nvidia": "n"}, allow_env=False)
+    assert r._fallback_chain("openrouter:qwen/x") == ["openrouter:qwen/x", "gemini", "nvidia"]   # key order
+    called = []
+
+    async def gemini(prompt, **kw):
+        called.append("gemini")
+        raise RuntimeError("429")
+
+    async def nvidia(prompt, **kw):
+        called.append("nvidia")
+        return "ok"
+
+    async def openrouter(prompt, **kw):
+        called.append("openrouter")
+        raise RuntimeError("timeout")
+    r._call_gemini, r._call_nvidia, r._call_openrouter = gemini, nvidia, openrouter
+    assert asyncio.run(r.complete("hi", llm="openrouter:qwen/x")) == "ok"
+    assert called == ["openrouter", "gemini", "nvidia"]
+    assert r._fallback_chain("openrouter:qwen/x") == ["openrouter:qwen/x", "nvidia"]   # gemini down for a while
+    llm_router._HEALTH["gemini"] = (False, llm_router.time.monotonic() - llm_router.DOWN_FOR - 1)
+    assert r._fallback_chain("openrouter:qwen/x") == ["openrouter:qwen/x", "nvidia", "gemini"]   # retried later
+    assert LLMRouter(keys={"nvidia": "n"}, allow_env=False)._fallback_chain("nvidia") == ["nvidia"]
+    called.clear()
+    asyncio.run(r.complete("hi"))                                  # no model named: the router's default, not "gemini"
+    assert called[0] == r.default_llm().split(":")[0] or called[0] == r.default_llm(), called
+    llm_router._HEALTH.clear()
 
 
 def test_one_model_per_user():

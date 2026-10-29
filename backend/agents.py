@@ -282,7 +282,7 @@ class JobDiscoveryAgent:
     def __init__(self, router: LLMRouter):
         self.router = router
 
-    async def analyze_text(self, jd_text: str, url: str = "", llm: str = "gemini") -> Dict:
+    async def analyze_text(self, jd_text: str, url: str = "", llm: Optional[str] = None) -> Dict:
         """Extract structured job data from raw JD text (fallback if no url)."""
         # If url is provided, use the CrewAI Tool-calling implementation
         if url:
@@ -316,7 +316,7 @@ Return JSON with these exact fields:
             data["url"] = url
         return data
 
-    async def analyze_url(self, url: str, llm: str = "gemini") -> Dict:
+    async def analyze_url(self, url: str, llm: Optional[str] = None) -> Dict:
         """Fetch a job posting URL and extract structured data using CrewAI and Native Tools."""
         # LinkedIn: public guest API returns the JD directly — no login wall, no crew needed.
         li_id = linkedin_guest.job_id_from_url(url)
@@ -355,7 +355,7 @@ Return JSON with these exact fields:
         if self.router.gemini_key:
             os.environ["GEMINI_API_KEY"] = self.router.gemini_key
             
-        crew_llm = "gemini/gemini-1.5-pro" if "gemini" in llm else "gpt-4o-mini"
+        crew_llm = "gemini/gemini-1.5-pro" if "gemini" in (llm or "") else "gpt-4o-mini"
 
         # 3. Create the Autonomous Agent
         hunter_agent = Agent(
@@ -475,7 +475,7 @@ class FitAssessmentAgent:
         master_resume: str,
         company: str = "",
         title: str = "",
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> Dict:
         prompt = f"""Perform a comprehensive A-G evaluation of this job offer against the candidate's resume.
 
@@ -627,7 +627,7 @@ class ResumeTailoringAgent:
         github_context: str = "",
         feedback: str = "",
         design_rules: str = "",
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> str:
         gaps_text    = "\n".join(f"- {g}" for g in (gaps or []))
         actions_text = "\n".join(f"- {a}" for a in (action_items or []))
@@ -761,7 +761,7 @@ Rules:
         design_rules: str = "",
         history: Optional[List[Dict]] = None,
         contact_facts: Optional[Dict] = None,
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> str:
         """Applies a human instruction to an existing generated resume (Live Chat Editor).
 
@@ -820,7 +820,7 @@ CRITICAL RULES:
         self,
         resume_md: str,
         design_rules: str,
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> str:
         """Apply user style rules to an already-generated resume. Runs only when user has a style guide."""
         if not design_rules.strip():
@@ -914,7 +914,7 @@ class CoverLetterAgent:
         company: str = "",
         title: str = "",
         feedback: str = "",
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> str:
         feedback_section = "\n== REFINEMENT FEEDBACK ==\n" + feedback if feedback else ""
         prompt = f"""Write a cover letter for this job application.
@@ -954,7 +954,7 @@ class ChatDispatcherAgent:
         self,
         message: str,
         context: Optional[Dict] = None,
-        llm: str = "gemini",
+        llm: Optional[str] = None,
         conversation_history: Optional[List[Dict]] = None,
     ) -> Dict:
         """Parse user intent and return an action dict using Pydantic Self-Healing outputs."""
@@ -997,7 +997,7 @@ Determine the user's intent and return the appropriate action."""
             logger.warning(f"[ChatDispatcher] Structured parsing failed: {e}")
             return {"action": "general_reply", "text": "I'm not sure what you meant — could you rephrase?"}
 
-    async def generate_reply(self, action_result: Any, original_message: str, llm: str = "gemini") -> str:
+    async def generate_reply(self, action_result: Any, original_message: str, llm: Optional[str] = None) -> str:
         """Turn an action result into a human-readable reply."""
         prompt = f"""The user said: "{original_message}"
 The system performed an action and returned: {json.dumps(action_result, default=str)[:1500]}
@@ -1036,7 +1036,7 @@ class LinkedInOutreachAgent:
         company: str = "",
         title: str = "",
         contact_type: str = "hiring_manager",
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> Dict:
         prompt = f"""Generate LinkedIn outreach messages for a job application.
 
@@ -1112,7 +1112,7 @@ class DeepResearchAgent:
         title: str = "",
         job_description: str = "",
         master_resume: str = "",
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> Dict:
         prompt = f"""Conduct deep research on {company} for a candidate applying to: {title}.
 
@@ -1196,7 +1196,7 @@ class InterviewPrepAgent:
         company: str = "",
         title: str = "",
         existing_stories: Optional[List[Dict]] = None,
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> Dict:
         existing_stories_text = ""
         if existing_stories:
@@ -1276,7 +1276,7 @@ class ResumeCriticAgent:
         company: str = "",
         title: str = "",
         master_resume: str = "",
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> Dict:
         """Critique the tailored resume against BOTH the JD and the master resume.
 
@@ -1397,7 +1397,7 @@ class InsightsAgent:
         self,
         stats: Dict,
         recent_samples: List[str],
-        llm: str = "gemini",
+        llm: Optional[str] = None,
     ) -> Dict:
         samples_text = "\n".join(f"- {s}" for s in recent_samples[:15])
 

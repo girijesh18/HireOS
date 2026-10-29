@@ -14,6 +14,7 @@ venv/
 backend/swarm.db
 # Scratch DBs the standalone test scripts create next to themselves.
 backend/test_*.db
+backend/test_chroma/
 backend/tmp_*.db
 backend/test_*_output/
 # Snapshots taken before a migration -- these hold real user rows and, because

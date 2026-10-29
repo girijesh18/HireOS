@@ -474,7 +474,7 @@ SYSTEM = ("You tailor resumes. You only choose and reword the candidate's own fa
 
 async def tailor(router, p: Profile, job_description: str, company: str = "", title: str = "",
                  feedback: str = "", style_notes: str = "", banned: Optional[List[str]] = None,
-                 llm: str = "gemini") -> str:
+                 llm: Optional[str] = None) -> str:
     """Tailored resume markdown for one job. Facts, order and layout come from
     the profile; the LLM only picks and rewords bullets and writes the summary."""
     banned = [b.strip() for b in (banned or []) if b.strip()]

@@ -6,6 +6,7 @@ Run: cd backend && python test_discord_bot.py
 import os
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_discord.db"
+os.environ["CHROMA_PATH"] = "./test_chroma"           # chat() logs to a store; never the real one
 os.environ["LOG_DIR"] = "./logs"
 
 from datetime import datetime

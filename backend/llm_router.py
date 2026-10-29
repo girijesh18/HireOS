@@ -3,7 +3,7 @@ LLM Router — unified wrapper for all configured LLM providers.
 
 Agents call:
     router = LLMRouter()
-    text = await router.complete("Your prompt", llm="gemini")
+    text = await router.complete("Your prompt")   # the user's model; llm="gemini" names one
 
 Fan-out comparison:
     results = await router.compare("Your prompt", providers=["gemini","groq"])
@@ -17,6 +17,18 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
+
+
+# Which providers answer, for the fallback order. Process-wide because a router is built per request.
+# ponytail: keyed by provider, not by key -- right for one user per instance; key it by (provider, key)
+# if several users with their own keys share a server.
+_HEALTH: Dict[str, tuple] = {}     # provider -> (answered, time.monotonic() of the last call)
+DOWN_FOR = 600                     # seconds a failed provider is left out of fallbacks
+
+
+def _provider(llm: str) -> str:
+    """'openrouter:qwen/x' -> openrouter, 'gemini-2.5-flash' -> gemini."""
+    return (llm.split(":", 1)[0] if ":" in llm else llm.split("-")[0]).lower()
 
 
 class OutputTruncated(RuntimeError):
@@ -204,26 +216,20 @@ class LLMRouter:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    # Quality-ish preference order for graceful fallback. Only providers the user
-    # has keys for are tried. Ollama is excluded — it's local and usually offline,
-    # so auto-falling to it just adds a slow, confusing failure.
-    FALLBACK_ORDER = ["gemini", "claude", "openai", "nvidia", "openrouter", "together", "groq", "local"]
-
     def _fallback_chain(self, llm: str) -> List[str]:
-        """The requested model first, then the user's other providers so a
-        failing model gracefully degrades to the next best available one."""
-        primary = (llm.split(":", 1)[0] if ":" in llm else llm.split("-")[0]).lower()
-        avail = set(self.available_providers())
-        chain = [llm]
-        for p in self.FALLBACK_ORDER:
-            if p in avail and p != primary:
-                chain.append(p)  # bare provider name → its default model
-        return chain
+        """The requested model first, then the user's other providers with a key: ones that answered
+        recently first, untried next; one that failed within DOWN_FOR is skipped."""
+        primary = _provider(llm)
+        now = time.monotonic()
+        rest = [p for p in self.available_providers() if p != primary]
+        up = [p for p in rest if _HEALTH.get(p, (True, 0))[0] or now - _HEALTH[p][1] > DOWN_FOR]
+        up.sort(key=lambda p: not _HEALTH.get(p, (False,))[0])   # stable: answered last time first, then by key order
+        return [llm] + up                           # bare provider name -> its default model
 
     async def complete(
         self,
         prompt: str,
-        llm: str = "gemini",
+        llm: Optional[str] = None,
         system: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
@@ -238,6 +244,7 @@ class LLMRouter:
         models spend thinking tokens out of this same budget, so a caller's
         nominal limit can be consumed before a single output token is written.
         """
+        llm = llm or self.default_llm()
         try:
             return await self._complete_chain(prompt, llm, system, max_tokens, temperature, fallback, json_schema)
         except OutputTruncated as e:
@@ -285,8 +292,15 @@ class LLMRouter:
         logger.info(f"[LLMRouter] → {llm}")
         t0 = time.monotonic()
         self._last_usage = None
-        result = await method(prompt, system=system, model=model, max_tokens=max_tokens, temperature=temperature,
-                              **({"json_schema": json_schema} if json_schema else {}))
+        try:
+            result = await method(prompt, system=system, model=model, max_tokens=max_tokens, temperature=temperature,
+                                  **({"json_schema": json_schema} if json_schema else {}))
+        except OutputTruncated:
+            raise                                   # it answered; the budget was short
+        except Exception:
+            _HEALTH[provider] = (False, time.monotonic())
+            raise
+        _HEALTH[provider] = (True, time.monotonic())
         elapsed = round(time.monotonic() - t0, 2)
 
         # Single metering point for every agent in the app. Truncation and
@@ -341,7 +355,7 @@ class LLMRouter:
         self,
         prompt: str,
         response_model: Any,
-        llm: str = "gemini",
+        llm: Optional[str] = None,
         system: Optional[str] = None,
         max_retries: int = 2,
         temperature: float = 0.1

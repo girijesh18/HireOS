@@ -616,7 +616,7 @@ def get_llm_router(db: Session = None, user_id: int = None):
         provider, _ = platform_selection(db)
         key = platform_key_for(db, provider)
         if key:
-            # Only the selected provider's key is loaded, so FALLBACK_ORDER has
+            # Only the selected provider's key is loaded, so the fallback chain has
             # nowhere else to go -- a free user cannot spend the platform's money
             # on a model the admin didn't pick.
             slot = connectors.ROUTER_KEY_SLOT.get(provider, provider)
