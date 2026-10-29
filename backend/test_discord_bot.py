@@ -220,7 +220,11 @@ def test_chat_actions():
             main.get_agent = real
 
     today = ask({"action": "list_jobs", "params": {"since_hours": 24, "sort": "score", "limit": 20}})
-    assert today.splitlines()[0] == "Top 3 jobs from the last 24h:", today
+    assert today.splitlines()[0] == "3 jobs from the last 24h:", today
+    assert "· not scored yet" in today.splitlines()[3]
+    good = ask({"action": "list_jobs", "params": {"since_hours": 24, "min_score": 50, "sort": "score", "limit": 1}})
+    assert good.splitlines()[0] == "2 jobs from the last 24h scoring 50+ — top 1:", good    # Hi, Lo; not unscored
+    assert f"#{hi.id} Hi — DS · pending · score 90 · " in good, good
     assert [l.split()[1] for l in today.splitlines()[1:]] == [f"#{hi.id}", f"#{lo.id}", f"#{nocv.id}"]   # best first, unscored last
     assert ask({"action": "list_jobs", "params": {"status": "pending"}}).count("•") == 2
     top = ask({"action": "list_jobs", "params": {"sort": "score"}})

@@ -62,8 +62,8 @@ Available actions:
 - generate_resume: { "action": "generate_resume", "job_id": 123, "llm": "gemini" }
 - generate_cover_letter: { "action": "generate_cover_letter", "job_id": 123, "llm": "gemini" }
 - compare_llms: { "action": "compare_llms", "job_id": 123, "task": "resume" }
-- list_jobs: { "action": "list_jobs", "params": {"status": "pending", "since_hours": 24, "sort": "score", "limit": 20} }
-  every param optional. status: found|pending|approved|applying|waiting_human|needs_human|applied|interview|rejected.
+- list_jobs: { "action": "list_jobs", "params": {"status": "pending", "since_hours": 24, "min_score": 85, "sort": "score", "limit": 20} }
+  every param optional. Also for "how many jobs ..." (the reply starts with the total). min_score: "score above 85" = 85. status: found|pending|approved|applying|waiting_human|needs_human|applied|interview|rejected.
   since_hours: "today" = 24, "this week" = 168. sort: "score" for best/top matches, else "recent". limit: "top 20" = 20 (max 25).
 - approve_jobs: { "action": "approve_jobs", "params": {"job_ids": [154, 155]} }  only job numbers the user named.
 - run_discovery: { "action": "run_discovery" }  look for new jobs now.

@@ -4341,7 +4341,8 @@ Return cover letter markdown only."""
 # ── Agent: Floating Chat ───────────────────────────────────────────────────────
 
 def _chat_jobs(db: Session, uid: int, p: dict) -> str:
-    """list_jobs for the chat: status / last N hours / best score first, up to 25."""
+    """list_jobs for the chat: status / last N hours / min score / best score first, up to 25,
+    with the total that matched (so "how many" is answered even past the limit)."""
     q = db.query(Job).filter(Job.user_id == uid)
     if p.get("status"):
         q = q.filter(Job.status == p["status"])
@@ -4350,17 +4351,24 @@ def _chat_jobs(db: Session, uid: int, p: dict) -> str:
     hours = p.get("since_hours")
     if isinstance(hours, (int, float)) and hours > 0:
         q = q.filter(Job.created_at >= datetime.utcnow() - timedelta(hours=hours))
+    min_score = p.get("min_score")
+    if isinstance(min_score, (int, float)):
+        q = q.filter(Job.match_score >= min_score)
     q = q.order_by(Job.match_score.desc().nullslast(), Job.id.desc()) if p.get("sort") == "score" \
         else q.order_by(Job.id.desc())
+    total = q.count()
     limit = max(1, min(int(p.get("limit") or 10), 25))
     jobs = q.limit(limit).all()
     if not jobs:
         return "No jobs match that."
     when = f" from the last {hours:g}h" if isinstance(hours, (int, float)) and hours > 0 else ""
-    head = f"{'Top' if p.get('sort') == 'score' else 'Latest'} {len(jobs)} jobs{when}" + \
-        (f" ({p['status']})" if p.get("status") else "") + ":"
+    head = f"{total} jobs{when}" + (f" scoring {min_score:g}+" if isinstance(min_score, (int, float)) else "") + \
+        (f" ({p['status']})" if p.get("status") else "") + \
+        (f" — {'top' if p.get('sort') == 'score' else 'latest'} {len(jobs)}:" if total > len(jobs) else ":")
     return head + "\n" + "\n".join(
-        f"• #{j.id} {j.company} — {j.title} · {j.status}" + (f" · score {j.match_score:g}" if j.match_score is not None else "")
+        f"• #{j.id} {j.company} — {j.title} · {j.status}"
+        + (f" · score {j.match_score:g}" if j.match_score is not None else " · not scored yet")
+        + (f" · {j.created_at:%b %d}" if j.created_at else "")
         for j in jobs)
 
 
