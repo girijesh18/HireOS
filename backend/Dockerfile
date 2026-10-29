@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browser for stealth scraping
+# Chromium for apply_worker.py when it runs from this image (the hosted worker has its own: backend/worker/)
 RUN playwright install chromium --with-deps
 
 COPY . .

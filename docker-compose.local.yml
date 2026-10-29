@@ -9,7 +9,7 @@ services:
     network_mode: host
     # Docker bridge address only: reachable from the host and from containers, not from the LAN.
     command: ["uvicorn", "main:app", "--host", "172.17.0.1", "--port", "8011", "--workers", "1"]
-    # ponytail: runs as your uid so DB/output files stay yours; Playwright's Chromium (installed under /root) is then unusable — only the StealthScraper fallback needs it
+    # ponytail: runs as your uid so DB/output files stay yours; Playwright's Chromium (installed under /root) is then unusable here
     user: "1000:1000"
     environment:
       - HOME=/tmp

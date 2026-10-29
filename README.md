@@ -24,8 +24,8 @@
 | AI / Agents | Gemini 2.5, Claude Sonnet, Groq, OpenAI |
 | Vector store | ChromaDB (embedded, local) |
 | Frontend | React + Vite |
-| PDF generation | Playwright (Chromium) |
-| Web scraping | Playwright Stealth |
+| PDF generation | WeasyPrint |
+| Job pages | httpx (plain fetch; blocked sites → paste the JD) |
 
 ## Project structure
 

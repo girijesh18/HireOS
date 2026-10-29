@@ -2205,17 +2205,8 @@ async def track_url(payload: Dict[str, Any], db: Session = Depends(get_db), curr
         }}
 
     try:
-        # Retrieve additional settings for scraping (per-user)
-        captcha_key = db.query(Settings).filter(Settings.key == "twocaptcha_api_key", Settings.user_id == current_user.id).first()
-        proxy_url = db.query(Settings).filter(Settings.key == "proxy_url", Settings.user_id == current_user.id).first()
-
         agent = get_agent("discovery", db, current_user.id)
-        data = await agent.analyze_url(
-            url, 
-            llm=llm, 
-            captcha_key=captcha_key.value if captcha_key else None,
-            proxy_url=proxy_url.value if proxy_url else None
-        )
+        data = await agent.analyze_url(url, llm=llm)
     except ValueError as e:
         # Known scraping/validation error (e.g. login wall, bot check)
         raise HTTPException(status_code=400, detail=str(e))

@@ -26,16 +26,6 @@ const sortModels = (models) => [...models].sort((a, b) => {
   return cost(a) - cost(b) || (a.label || a.id).localeCompare(b.label || b.id)
 })
 
-const GITHUB = [
-  { key:'github_token', label:'GitHub Token', placeholder:'ghp_...' },
-  { key:'github_username', label:'GitHub Username', placeholder:'your-username' },
-]
-const CAPTCHA = [
-  { key:'twocaptcha_api_key', label:'2Captcha API Key', placeholder:'...' },
-]
-const STEALTH = [
-  { key:'proxy_url', label:'Residential Proxy URL', placeholder:'http://user:pass@host:port' },
-]
 const DEFAULT_PDF_STYLE = {
   fontFamily: 'Cambria, Georgia, serif',
   fontSize: '10.5',
@@ -264,7 +254,7 @@ export default function Settings() {
     { id: 'strategy', label: 'Job Discovery' },
     { id: 'autoapply', label: 'Auto-Apply' },
     { id: 'appprofile', label: 'Application Profile' },
-    { id: 'stealth', label: 'Stealth & Integrations' },
+    { id: 'access', label: 'Access Token' },
     { id: 'billing', label: 'Plan & Billing' },
   ]
 
@@ -281,7 +271,7 @@ export default function Settings() {
           </p>
         </div>
         {/* Only the tabs built from `values` save here; the others have their own Save button */}
-        {['resume', 'models', 'stealth'].includes(activeCategory) && (
+        {['resume', 'models'].includes(activeCategory) && (
           <button className="btn btn-primary" onClick={save}>
             {saved ? 'Configuration Saved' : 'Save Changes'}
           </button>
@@ -628,18 +618,8 @@ export default function Settings() {
 
           {activeCategory === 'strategy' && <DiscoveryPanel />}
 
-          {activeCategory === 'stealth' && (
+          {activeCategory === 'access' && (
             <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-              <Section
-                title="Infrastructure"
-                description="Avoid bot detection and scale up your automation capability."
-                fields={[...STEALTH, ...CAPTCHA]}
-              />
-              <Section
-                title="Portfolio Connections"
-                description="Link your GitHub to allow agents to 'read' your code and projects."
-                fields={GITHUB}
-              />
 
               <div className="panel" style={{ padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem' }}>
                 <div>
@@ -648,6 +628,10 @@ export default function Settings() {
                     For MCP clients that can't open a browser to sign in. Paste it as
                     <code style={{ margin:'0 4px' }}>Authorization: Bearer &lt;token&gt;</code>.
                     Valid for one year. Generating a new one immediately stops the old one working.
+                  </p>
+                  <p style={{ fontSize:'0.8rem', color:'var(--warning)', marginTop:6 }}>
+                    The apply worker signs in with this token. Regenerating or revoking it disconnects
+                    the worker until its HIREOS_TOKEN secret is updated.
                   </p>
                 </div>
 
@@ -674,11 +658,6 @@ export default function Settings() {
                     {mcpExists ? 'A token is active.' : 'No token issued.'}
                   </span>
                 </div>
-              </div>
-              <div className="alert alert-warning" style={{ padding:'1rem 1.5rem' }}>
-                <p style={{ fontSize:'0.8rem' }}>
-                  <strong>Security First:</strong> Keys are stored locally in your SQLite database. Never expose port 8000 externally.
-                </p>
               </div>
             </div>
           )}

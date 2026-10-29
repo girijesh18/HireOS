@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 import httpx
 from loguru import logger
 from database import Job, EvaluationReport, StoryBankEntry, FollowUpLog
-from scraper import StealthScraper
 import linkedin_guest
 
 from llm_router import LLMRouter
@@ -317,7 +316,7 @@ Return JSON with these exact fields:
             data["url"] = url
         return data
 
-    async def analyze_url(self, url: str, llm: str = "gemini", captcha_key: str = None, proxy_url: str = None) -> Dict:
+    async def analyze_url(self, url: str, llm: str = "gemini") -> Dict:
         """Fetch a job posting URL and extract structured data using CrewAI and Native Tools."""
         # LinkedIn: public guest API returns the JD directly — no login wall, no crew needed.
         li_id = linkedin_guest.job_id_from_url(url)
@@ -344,7 +343,7 @@ Return JSON with these exact fields:
                 new_loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(new_loop)
                 # Call our robust existing fetch logic
-                res = new_loop.run_until_complete(self._fetch_page(target_url, captcha_key, proxy_url))
+                res = new_loop.run_until_complete(self._fetch_page(target_url))
                 result[0] = res[:15000] # Cap to prevent context blowouts
                 new_loop.close()
             t = threading.Thread(target=_fetch)
@@ -413,8 +412,11 @@ Return JSON with these exact fields:
         data["url"] = url
         return data
 
-    async def _fetch_page(self, url: str, captcha_key: str = None, proxy_url: str = None) -> str:
-        """Fetch page text, stripping HTML tags. Falls back to StealthScraper for bot-protected sites."""
+    async def _fetch_page(self, url: str) -> str:
+        """Fetch page text, stripping HTML tags. A site that blocks plain reading (login wall,
+        bot check, near-empty page) is reported, never worked around: the user pastes the JD."""
+        blocked = ValueError("This site blocks automated reading (login wall or bot check). "
+                             "Use 'Paste JD' mode with the job description text.")
         try:
             async with httpx.AsyncClient(
                 timeout=15.0,
@@ -422,64 +424,21 @@ Return JSON with these exact fields:
                 headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
             ) as client:
                 resp = await client.get(url)
-                text = resp.text
-
-                # Detect login walls or bot challenges
-                login_signals = [
-                    'authwall', 'login', 'sign-in', 'signin',
-                    'session_redirect', 'uas/login', 'checkpoint',
-                    'captcha', 'perfdrive', 'stormcaster', 'bot-check'
-                ]
-                
-                needs_stealth = False
-                if any(s in str(resp.url).lower() for s in login_signals):
-                    needs_stealth = True
-                
-                if not needs_stealth:
-                    # Basic HTML stripping to check content
-                    temp_text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.DOTALL)
-                    temp_text = re.sub(r"<style[^>]*>.*?</style>", " ", temp_text, flags=re.DOTALL)
-                    temp_text = re.sub(r"<[^>]+>", " ", temp_text)
-                    temp_text = re.sub(r"\s+", " ", temp_text).strip()
-                    
-                    bot_signatures = ["behavior on this site made us think", "solve this CAPTCHA", "Radware Captcha", "unblock to the website"]
-                    if any(sig in temp_text for sig in bot_signatures) or len(temp_text) < 500:
-                        needs_stealth = True
-
-                if needs_stealth:
-                    logger.info(f"[JobDiscovery] Bot wall detected on {url}. Falling back to StealthScraper...")
-                    stealth_text = await StealthScraper.fetch(url, captcha_key=captcha_key, proxy_url=proxy_url)
-                    
-                    # Safety check
-                    bot_signals = ["behavior on this site made us think", "solve this CAPTCHA", "unblock to the website", "Anomaly Detected"]
-                    if any(sig in stealth_text for sig in bot_signals) or len(stealth_text) < 500:
-                        logger.error(f"[JobDiscovery] Stealth bypass failed for {url}")
-                        raise ValueError(f"Site is protected by a strong bot-wall. Use 'Paste JD' mode.")
-                    
-                    return stealth_text[:8000]
-
-                # If no stealth needed, finish processing HTTP response
-                text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.DOTALL)
-                text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL)
-                text = re.sub(r"<[^>]+>", " ", text)
-                text = re.sub(r"\s+", " ", text).strip()
-                return text[:8000]
-
-        except ValueError as ve:
-            # Re-raise explicit validation errors
-            raise ve
-        except Exception as e:
-            logger.warning(f"[JobDiscovery] HTTP fetch failed for {url}, trying Stealth fallback: {e}")
-            try:
-                stealth_text = await StealthScraper.fetch(url, captcha_key=captcha_key, proxy_url=proxy_url)
-                # Apply same safety check on fallback
-                bot_signals = ["behavior on this site made us think", "solve this CAPTCHA", "unblock to the website", "Anomaly Detected"]
-                if any(sig in stealth_text for sig in bot_signals) or len(stealth_text) < 500:
-                   raise ValueError("Site is protected by a strong bot-wall. Use 'Paste JD'.")
-                return stealth_text[:8000]
-            except Exception as se:
-                logger.error(f"[JobDiscovery] Both HTTP and Stealth fetch failed: {se}")
-                raise ValueError(f"Could not access website: {url}. Error: {se}")
+        except httpx.HTTPError as e:
+            raise ValueError(f"Could not access website: {url}. Error: {e}")
+        login_signals = ['authwall', 'login', 'sign-in', 'signin', 'session_redirect', 'uas/login',
+                         'checkpoint', 'captcha', 'perfdrive', 'stormcaster', 'bot-check']
+        if any(s in str(resp.url).lower() for s in login_signals):
+            raise blocked
+        text = re.sub(r"<script[^>]*>.*?</script>", " ", resp.text, flags=re.DOTALL)
+        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        bot_signatures = ["behavior on this site made us think", "solve this CAPTCHA", "Radware Captcha",
+                          "unblock to the website", "Anomaly Detected"]
+        if any(sig in text for sig in bot_signatures) or len(text) < 500:
+            raise blocked
+        return text[:8000]
 
 
 # ── Agent 2: Fit Assessment & Gap Analysis ─────────────────────────────────────
