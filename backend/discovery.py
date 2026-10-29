@@ -23,7 +23,7 @@ from fastapi import BackgroundTasks, HTTPException
 from loguru import logger
 
 TARGETS_KEY = "discovery_targets"
-PREPARE_MAX = 12
+PREPARE_MAX = 30      # a run adds ~20; 12 let the backlog grow
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"}
 ATS_HOSTS = ["myworkdayjobs.com", "avature.net", "successfactors", "icims.com", "taleo.net", "greenhouse.io",
              "lever.co", "ashbyhq.com", "smartrecruiters.com", "oraclecloud.com", "jobvite.com", "bamboohr.com",
@@ -477,9 +477,10 @@ async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None) -> Di
                         summary["errors"].append("linkedin rate-limited — skipped the rest this run")
                         break
                     summary["errors"].append(f"linkedin {s.get('keywords')!r}: {e.detail}")
-            # 3. prepare unscored jobs, oldest first
+            # 3. prepare unscored jobs, newest first: oldest first starved new postings behind a
+            # backlog that grew faster than PREPARE_MAX a run (the chat's score_jobs reaches older ones)
             todo = [j.id for j in db.query(m.Job).filter(m.Job.user_id == user_id, m.Job.status == "found",
-                                                         m.Job.match_score.is_(None)).order_by(m.Job.id)]
+                                                         m.Job.match_score.is_(None)).order_by(m.Job.id.desc())]
             summary["waiting"] = max(0, len(todo) - PREPARE_MAX)
             for jid in todo[:PREPARE_MAX]:
                 try:

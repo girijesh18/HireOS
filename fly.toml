@@ -7,6 +7,7 @@ primary_region = "iad"
 [env]
   CHROMA_PATH = "/app/data/chroma"
   OUTPUT_DIR = "/app/data/output"
+  LOG_DIR = "/app/data/logs"     # on the volume: a deploy replaces the machine and its disk
   DATABASE_URL = "sqlite:////app/data/swarm.db"
   # Exact URLs allowed to receive an auth token after SSO, for clients that
   # aren't the web app. Exact match only — see _allowed_return_to.

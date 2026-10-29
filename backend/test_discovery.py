@@ -246,7 +246,7 @@ def test_run():
     assert seen["tracked"][0]["url"] == "https://gh/new" and seen["tracked"][0]["text"].startswith("Data Scientist\nacme\nToronto")
     assert len(seen["li"]) == 1 and seen["li"][0]["posted_within"] == "72h"         # 429: rest of LinkedIn skipped
     assert s["added"] == 1
-    assert s["prepared"] == [(old.id, "resume ready"), (old.id + 1, "below min score")]   # oldest first
+    assert s["prepared"] == [(old.id + 1, "below min score"), (old.id, "resume ready")]   # newest first
     assert s["errors"] == ["alert emails: Gmail not configured", "linkedin rate-limited — skipped the rest this run"]
     assert asyncio.run(d.run(main, 999))["errors"] == ["no discovery targets"]
     db.close()
