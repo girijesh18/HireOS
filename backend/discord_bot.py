@@ -245,7 +245,9 @@ def on_message(db, d: dict) -> None:
             post(channel, "Nothing waiting for review.")
     elif cmd and cmd[0] == "status":
         counts = dict(db.query(m.Job.status, m.func.count()).filter(m.Job.user_id == user.id).group_by(m.Job.status).all())
-        post(channel, "\n".join(f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])) or "No jobs.")
+        import scheduler
+        lines = [f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])] or ["No jobs."]
+        post(channel, "\n".join(lines + [scheduler.progress_line(user.id)]).strip())
     elif cmd and cmd[0] == "done":
         tg._edit_waiting.pop(key, None)
         post(channel, "Edit mode closed.")

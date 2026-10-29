@@ -27,6 +27,8 @@ from loguru import logger
 TICK = 120
 MAIL_EVERY = 15 * 60
 HOUR = 3600
+PROGRESS_EVERY = 600       # seconds between "still working" messages during a scoring or discovery run
+JOB_SECONDS = 210          # one job scored + resume + review + ATS on OpenRouter qwen (measured ~3-4 min)
 DISCOVERY_HOURS = (8, 16)
 DISCOVERY_LAST_KEY = "discovery_last_run"     # "YYYY-MM-DD HH" local: one run per slot, across restarts
 MAIL_ICON = {"received": "📨", "rejected": "❌", "interview": "🎤", "assessment": "📝", "offer": "🎉"}
@@ -87,6 +89,26 @@ def discovery_slot(now_utc: datetime, tz: str) -> Optional[str]:
     return local.strftime("%Y-%m-%d %H") if local.weekday() < 5 and local.hour in DISCOVERY_HOURS else None
 
 
+def minutes_text(seconds: float) -> str:
+    m = max(1, round(seconds / 60))
+    return f"{m} min" if m < 60 else f"{m // 60}h {m % 60:02d}m"
+
+
+def progress_text(p: dict, now: float) -> str:
+    """One line on a run in progress: how far, how many good fits, roughly how long is left."""
+    if not p["total"]:
+        return f"⏳ {p['what']}: finding new jobs (started {minutes_text(now - p['started'])} ago)."
+    left = (now - p["started"]) / max(p["done"], 1) * (p["total"] - p["done"])
+    return (f"⏳ {p['what']}: {p['done']}/{p['total']} jobs done, {p['fits']} good fit(s) so far "
+            f"(resume ready) — about {minutes_text(left)} left.")
+
+
+def progress_line(uid: int) -> str:
+    """The user's run in progress as one line, or "" (no run, or no scheduler on this instance)."""
+    s = CURRENT
+    return progress_text(s.progress[uid], s.now()) if s and uid in s.progress else ""
+
+
 def discovery_done_text(summary: dict) -> str:
     """Sent after every run: what it found and scored, what is left, what went wrong."""
     outcomes = [o for _, o in summary["prepared"]]
@@ -128,6 +150,7 @@ class Scheduler:
         self.user_alerts: Dict[int, Alerts] = {}
         self.discovering: set = set()
         self.queued_scoring: dict = {}     # user -> (job ids, then): a score request made during a run
+        self.progress: dict = {}           # user -> the run in progress (progress_text), for updates and "status"
         # Telegram/Discord calls are blocking HTTP (10 s timeouts): they go to one thread, in order,
         # so a slow chat service never stalls the API's event loop. tick() waits for them, off the loop.
         self.outbox = ThreadPoolExecutor(1, thread_name_prefix="scheduler-send")
@@ -270,10 +293,23 @@ class Scheduler:
         asyncio.get_running_loop().create_task(self._score(uid, job_ids, then))
         return "started"
 
+    def _tracker(self, uid: int, what: str):
+        """progress(done, total, outcome) for a run: keeps self.progress current and sends an update
+        every PROGRESS_EVERY seconds (not after the last job: the results message follows)."""
+        p = self.progress[uid] = {"what": what, "done": 0, "total": 0, "fits": 0,
+                                  "started": self.now(), "sent": self.now()}
+
+        def update(done, total, outcome):
+            p.update(done=done, total=total, fits=p["fits"] + (outcome == "resume ready"))
+            if done < total and self.now() - p["sent"] >= PROGRESS_EVERY:
+                p["sent"] = self.now()
+                self._send(uid, progress_text(p, self.now()), None)
+        return update
+
     async def _score(self, uid: int, job_ids: list, then):
         import discovery
         try:
-            s = await discovery.score(self.m, uid, job_ids)
+            s = await discovery.score(self.m, uid, job_ids, self._tracker(uid, "Scoring"))
             db = self.m.SessionLocal()
             try:
                 text = then(db)
@@ -290,13 +326,16 @@ class Scheduler:
 
     def _finished(self, uid: int):
         self.discovering.discard(uid)
+        self.progress.pop(uid, None)
         if uid in self.queued_scoring:
             self.start_scoring(uid, *self.queued_scoring.pop(uid))
 
     async def _discover(self, uid: int):
         import discovery
         try:
-            s = await discovery.run(self.m, uid)
+            self._send(uid, "🔎 Discovery run started: new postings first, then scoring. "
+                            f"Progress here every {PROGRESS_EVERY // 60} min; say status any time.", None)
+            s = await discovery.run(self.m, uid, progress=self._tracker(uid, "Discovery"))
             logger.info(f"[scheduler] discovery user {uid}: added {s['added']}, prepared {s['prepared']}, "
                         f"waiting {s['waiting']}, errors {len(s['errors'])}")
             self._send(uid, discovery_done_text(s), None)

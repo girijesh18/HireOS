@@ -427,7 +427,21 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict) -> st
     return "resume ready"
 
 
-async def score(m, user_id: int, job_ids: List[int]) -> Dict[str, Any]:
+async def _prepare_all(m, c, db, user, job_ids: List[int], t: dict, out: dict, progress=None, label=""):
+    """prepare() each job; one failing never stops the rest. progress(done, total, outcome) after each."""
+    for i, jid in enumerate(job_ids, 1):
+        try:
+            outcome = await prepare(m, c, db, user, jid, t)
+            out["prepared"].append((jid, outcome))
+        except Exception as e:
+            db.rollback()
+            outcome = "error"
+            out["errors"].append(f"{label}#{jid}: {str(e)[:200]}")
+        if progress:
+            progress(i, len(job_ids), outcome)
+
+
+async def score(m, user_id: int, job_ids: List[int], progress=None) -> Dict[str, Any]:
     """prepare() the named jobs now, outside a run (the chat's "score my jobs")."""
     db = m.SessionLocal()
     out: Dict[str, Any] = {"prepared": [], "errors": []}
@@ -435,18 +449,13 @@ async def score(m, user_id: int, job_ids: List[int]) -> Dict[str, Any]:
         user = db.get(m.User, user_id)
         t = targets(m, db, user_id) or {}
         async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=12) as c:
-            for jid in job_ids:
-                try:
-                    out["prepared"].append((jid, await prepare(m, c, db, user, jid, t)))
-                except Exception as e:                       # one job must not stop the rest
-                    db.rollback()
-                    out["errors"].append(f"#{jid}: {str(e)[:200]}")
+            await _prepare_all(m, c, db, user, job_ids, t, out, progress)
         return out
     finally:
         db.close()
 
 
-async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None) -> Dict[str, Any]:
+async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None, progress=None) -> Dict[str, Any]:
     """A discovery run for one user. Never raises for one source failing: errors are collected."""
     db = m.SessionLocal()
     summary: Dict[str, Any] = {"added": 0, "prepared": [], "waiting": 0, "errors": []}
@@ -491,12 +500,7 @@ async def run(m, user_id: int, transport: httpx.AsyncBaseTransport = None) -> Di
             todo = [j.id for j in db.query(m.Job).filter(m.Job.user_id == user_id, m.Job.status == "found",
                                                          m.Job.match_score.is_(None)).order_by(m.Job.id.desc())]
             summary["waiting"] = max(0, len(todo) - PREPARE_MAX)
-            for jid in todo[:PREPARE_MAX]:
-                try:
-                    summary["prepared"].append((jid, await prepare(m, c, db, user, jid, t)))
-                except Exception as e:                       # one job must not stop the rest
-                    db.rollback()
-                    summary["errors"].append(f"prepare #{jid}: {str(e)[:200]}")
+            await _prepare_all(m, c, db, user, todo[:PREPARE_MAX], t, summary, progress, "prepare ")
         return summary
     finally:
         db.close()

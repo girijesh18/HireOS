@@ -159,19 +159,19 @@ def test_discovery_run_reports_errors():
     import discovery
     real = discovery.run, discovery.score
 
-    async def fake(m, uid):
+    async def fake(m, uid, progress=None):
         assert s.start_scoring(uid, [5, 6], lambda db: "scored list") == "queued"   # asked during the run
         return {"added": 2, "prepared": [(1, "resume ready"), (2, "below min score")], "waiting": 3,
                 "errors": [f"e{i}" for i in range(10)]}
 
-    async def score(m, uid, ids):
+    async def score(m, uid, ids, progress=None):
         sent.append((uid, f"scoring {ids}"))
         return {"prepared": [], "errors": []}
 
-    async def clean(m, uid):
+    async def clean(m, uid, progress=None):
         return {"added": 0, "prepared": [], "waiting": 0, "errors": []}
 
-    async def boom(m, uid):
+    async def boom(m, uid, progress=None):
         raise RuntimeError("db locked")
 
     async def go(fn):
@@ -188,12 +188,51 @@ def test_discovery_run_reports_errors():
         asyncio.run(go(clean))
     finally:
         discovery.run, discovery.score = real
+    started = [t for _, t in sent if t.startswith("🔎 Discovery run started")]
+    assert len(started) == 3, started                                    # every run says it started
+    sent[:] = [x for x in sent if not x[1].startswith("🔎 Discovery run started")]
     assert sent[0] == (7, "🟠 Discovery done: 2 new, 2 scored — 1 resume(s) ready to review, 1 below your min score, "
                           "3 still unscored (next run, or ask me to score them).\n10 problem(s):\n• e0\n• e1\n• e2\n• e3\n"
                           "• e4\n• e5\n• e6\n• e7\n… and 2 more"), sent[0]
     assert sent[1:3] == [(7, "scoring [5, 6]"), (7, "scored list")], sent                 # the queued request ran after
     assert sent[3] == (7, "🔴 Discovery run failed: db locked")
     assert sent[4] == (7, "✅ Discovery done: 0 new, 0 scored — 0 resume(s) ready to review, 0 below your min score."), sent[4]
+
+
+def test_scoring_progress_updates():
+    """A long scoring run reports every PROGRESS_EVERY: done/total, fits so far, time left; and status shows it."""
+    clock = [1000.0]
+    sent = []
+    s = scheduler.Scheduler(main, now=lambda: clock[0])
+    s._send = lambda uid, t, r: sent.append(t)
+    import discovery
+    real = discovery.score
+    seen_status = []
+
+    async def score(m, uid, ids, progress=None):
+        for i, outcome in enumerate(["resume ready", "below min score", "resume ready", "below min score"], 1):
+            clock[0] += 240                                  # 4 min a job
+            progress(i, 4, outcome)
+            seen_status.append(scheduler.progress_line(uid))
+        return {"prepared": [], "errors": []}
+
+    async def go():
+        scheduler.CURRENT = s
+        assert s.start_scoring(7, [1, 2, 3, 4], lambda db: "results") == "started"
+        for _ in range(300):
+            await asyncio.sleep(0.01)
+            if 7 not in s.discovering:
+                break
+    discovery.score = score
+    try:
+        asyncio.run(go())
+    finally:
+        discovery.score, scheduler.CURRENT = real, None
+    # 4 min, 8 min (no update yet), 12 min -> update; the 4th is the last job: the results follow instead
+    assert sent == ["⏳ Scoring: 3/4 jobs done, 2 good fit(s) so far (resume ready) — about 4 min left.", "results"], sent
+    assert seen_status[0] == "⏳ Scoring: 1/4 jobs done, 1 good fit(s) so far (resume ready) — about 12 min left."
+    assert scheduler.progress_line(7) == "" and 7 not in s.progress           # gone when it ends
+    assert scheduler.minutes_text(48 * scheduler.JOB_SECONDS) == "2h 48m"
 
 
 def test_off_by_default():

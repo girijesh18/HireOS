@@ -4417,7 +4417,9 @@ def _chat_status(db: Session, uid: int, hours: float = 24) -> str:
     last = _setting(db, uid, "discovery_last_run")
     if last:
         lines.append(f"Last discovery run: {last}")
-    return "\n".join(lines)
+    import scheduler
+    lines.append(scheduler.progress_line(uid))                        # a run going right now, if any
+    return "\n".join(x for x in lines if x)
 
 
 @app.post("/api/chat")
@@ -4551,7 +4553,7 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
             hours = p.get("since_hours") if isinstance(p.get("since_hours"), (int, float)) and p["since_hours"] > 0 else 48
             ids = [j.id for j in db.query(Job).filter(
                 Job.user_id == uid, Job.status == "found", Job.match_score.is_(None),
-                Job.created_at >= datetime.utcnow() - timedelta(hours=hours)).order_by(Job.id).limit(50)]
+                Job.created_at >= datetime.utcnow() - timedelta(hours=hours)).order_by(Job.id.desc()).limit(50)]
             show = {"since_hours": hours, "sort": "score", "limit": 25,
                     **({"min_score": p["min_score"]} if isinstance(p.get("min_score"), (int, float)) else {})}
             if not ids:
@@ -4559,8 +4561,10 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
             elif not scheduler.CURRENT:
                 reply = "Scoring runs only on the instance with the scheduler on."
             elif scheduler.CURRENT.start_scoring(uid, ids, lambda d: _chat_jobs(d, uid, show)) == "started":
-                reply = (f"Scoring {len(ids)} jobs from the last {hours:g}h (and tailoring resumes for good fits). "
-                         "I'll send the results here when it's done — a few minutes.")
+                reply = (f"Scoring {len(ids)} jobs from the last {hours:g}h, newest first, and tailoring resumes for "
+                         f"good fits. That's about {scheduler.minutes_text(len(ids) * scheduler.JOB_SECONDS)}: "
+                         f"progress here every {scheduler.PROGRESS_EVERY // 60} min, the results at the end. "
+                         "Say status any time.")
             else:
                 reply = (f"A discovery run is going right now. I'll score the {len(ids)} jobs from the last {hours:g}h "
                          "right after it and send the results here — no need to ask again.")

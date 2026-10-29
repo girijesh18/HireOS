@@ -367,8 +367,10 @@ async def handle(c, upd: dict):
                 await _call(c, "sendMessage", chat_id=chat_id, text="Nothing waiting for review.")
         elif text == "/status":
             counts = dict(db.query(m.Job.status, m.func.count()).filter(m.Job.user_id == user.id).group_by(m.Job.status).all())
+            import scheduler
+            lines = [f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])] or ["No jobs."]
             await _call(c, "sendMessage", chat_id=chat_id,
-                        text="\n".join(f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])))
+                        text="\n".join(lines + [scheduler.progress_line(user.id)]).strip())
         elif text == "/done":
             _edit_waiting.pop(chat_id, None)
             await _call(c, "sendMessage", chat_id=chat_id, text="Edit mode closed.")
