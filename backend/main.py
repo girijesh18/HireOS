@@ -1189,19 +1189,20 @@ def discord_link(db: Session = Depends(get_db), current_user: User = Depends(get
 
 
 def _chat_send(db: Session, user_id: int, text: str, markup: dict = None, photo: bytes = None,
-               silent: bool = False) -> dict:
+               silent: bool = False, tg_html: str = None) -> dict:
     """One message to every chat the user linked (Telegram, Discord). {"msg": telegram id, "dmsg": discord id}."""
     if photo:
         return {"msg": telegram_bot.send_photo(db, user_id, photo, text, markup),
                 "dmsg": discord_bot.send_photo(db, user_id, photo, text, markup)}
     quiet = {"silent": True} if silent else {}         # ordinary sends call exactly as before
-    return {"msg": telegram_bot.send(db, user_id, text, markup, **quiet),
+    tg = (tg_html, {"html": True}) if tg_html else (text, {})     # tg_html: Telegram's own formatted version
+    return {"msg": telegram_bot.send(db, user_id, tg[0], markup, **quiet, **tg[1]),
             "dmsg": discord_bot.send(db, user_id, text, markup, **quiet)}
 
 
-def _chat_edit(db: Session, user_id: int, ids: dict, text: str):
+def _chat_edit(db: Session, user_id: int, ids: dict, text: str, tg_html: str = None):
     """Edit a message _chat_send sent, in every chat it reached."""
-    telegram_bot.edit(db, user_id, ids.get("msg"), text)
+    telegram_bot.edit(db, user_id, ids.get("msg"), tg_html or text, html=bool(tg_html))
     discord_bot.edit(db, user_id, ids.get("dmsg"), text)
 
 

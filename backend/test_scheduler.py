@@ -198,25 +198,25 @@ def test_discovery_run_reports_errors():
 
 def test_scoring_progress_updates():
     """One silent progress message, edited in place as jobs and steps go by (at most every
-    PROGRESS_EDIT_EVERY s), closed with a done line; status shows the same line meanwhile."""
+    PROGRESS_EDIT_EVERY s), ending as a summary with the finished jobs kept (collapsed in Telegram)."""
     clock = [1000.0]
     sent, edits, posted = [], [], []
     s = scheduler.Scheduler(main, now=lambda: clock[0])
     s._send = lambda uid, t, r: sent.append(t)
-    s._post_silent = lambda uid, t: posted.append(t) or {"msg": 11, "dmsg": "22"}
-    s._edit = lambda uid, ids, t: edits.append((ids["msg"], t))
+    s._post_silent = lambda uid, p: posted.append(scheduler.progress_text(p, clock[0])) or {"msg": 11, "dmsg": "22"}
+    s._edit = lambda uid, p: edits.append((scheduler.progress_discord(p, clock[0]), scheduler.progress_telegram(p, clock[0])))
     import discovery
     real = discovery.score
     status = []
 
     async def score(m, uid, ids, progress=None):
-        for i, outcome in enumerate(["resume ready", "below min score", "resume ready"], 1):
+        for i, (outcome, sc) in enumerate([("resume ready", 88), ("below min score", 61), ("error", None)], 1):
             clock[0] += 5
-            progress(i - 1, 3, None, f"#{i} Acme: scoring the fit")      # 5 s after the last edit: no edit
+            progress(i - 1, 3, None, f"#{i} Acme & Co: scoring the fit")    # 5 s after the last edit: no edit
             clock[0] += 115
-            progress(i, 3, outcome, None)                                 # 2 min a job: edited
+            progress(i, 3, outcome, None, f"#{i} Acme & Co" + (f" — {sc}" if sc else ""))   # 2 min a job: edited
             status.append(scheduler.progress_line(uid))
-        return {"prepared": [(1, "a"), (2, "b"), (3, "c")], "errors": []}
+        return {"prepared": [(1, "a"), (2, "b")], "errors": ["#3: x"]}
 
     async def go():
         scheduler.CURRENT = s
@@ -230,13 +230,19 @@ def test_scoring_progress_updates():
         asyncio.run(go())
     finally:
         discovery.score, scheduler.CURRENT = real, None
-    assert posted == ["⏳ Scoring · 1 min in\nNow: starting"], posted                         # silent, once
-    assert [t for _, t in edits][0] == ("⏳ Scoring 1/3 · 1 good fit(s) so far · about 4 min left · 2 min in"
-                                         "\nNow: #1 Acme: scoring the fit"), edits
-    assert len(edits) == 4 and all(i == 11 for i, _ in edits)                                # 3 jobs + the done line
-    assert edits[-1][1] == "✅ Scoring done: 3/3 · 2 good fit(s) · took 6 min. Results below.", edits[-1]
-    assert sent == ["results"], sent                                                          # no other messages
-    assert status[1].startswith("⏳ Scoring 2/3 · 1 good fit(s) so far · about 2 min left")
+    assert posted == ["⏳ Scoring · 1 min in\nNow: starting"], posted                          # silent, once
+    dc, tg = edits[0]
+    assert dc == ("**⏳ Scoring ▰▰▰▱▱▱▱▱▱▱ 1/3 · 1 good fit(s) · about 4 min left · 2 min in**\n"
+                  "*Now: #1 Acme & Co: scoring the fit*\n-# ✓ #1 Acme & Co — 88 · resume ready"), dc
+    assert tg == ("<b>⏳ Scoring ▰▰▰▱▱▱▱▱▱▱ 1/3 · 1 good fit(s) · about 4 min left · 2 min in</b>\n"
+                  "<i>Now: #1 Acme &amp; Co: scoring the fit</i>\n"
+                  "<blockquote expandable>✓ #1 Acme &amp; Co — 88 · resume ready</blockquote>"), tg
+    assert len(edits) == 4                                                                    # 3 jobs + the summary
+    dc, tg = edits[-1]
+    assert dc.startswith("**✅ Scoring done: 2/3 · 1 good fit(s) · took 6 min. Results below.**\n-# ✓"), dc
+    assert "Now:" not in dc and "✗ #3 Acme & Co · couldn't be scored" in dc and "<blockquote expandable>" in tg
+    assert sent == ["results\n⚠️ 1 couldn't be scored: #3: x"], sent                          # no other messages
+    assert status[1].startswith("⏳ Scoring ▰▰▰▰▰▰▰▱▱▱ 2/3 · 1 good fit(s) · about 2 min left")
     assert scheduler.progress_line(7) == "" and 7 not in s.progress
     assert scheduler.minutes_text(48 * scheduler.JOB_SECONDS) == "2h 48m"
 

@@ -95,15 +95,55 @@ def minutes_text(seconds: float) -> str:
     return f"{m} min" if m < 60 else f"{m // 60}h {m % 60:02d}m"
 
 
-def progress_text(p: dict, now: float) -> str:
-    """A run in progress: how far, good fits so far, roughly how long is left, and the step under way."""
+# How a finished job reads in the progress log: (mark, words)
+_OUTCOMES = {"resume ready": ("✓", "resume ready"), "below min score": ("·", "below your min score"),
+             "closed": ("✗", "posting closed"), "Easy Apply only": ("·", "LinkedIn Easy Apply only"),
+             "error": ("✗", "couldn't be scored")}
+DISCORD_LOG_LINES = 10     # Discord can't collapse: the last few jobs, small and grey
+
+
+def progress_head(p: dict, now: float) -> str:
+    """The status line: a bar, count, good fits, time left, time in (or the final line when done)."""
+    if p.get("final"):
+        return p["final"]
     if p["total"]:
         left = ((now - p["job_started"]) / p["done"] if p["done"] else JOB_SECONDS) * (p["total"] - p["done"])
-        head = (f"⏳ {p['what']} {p['done']}/{p['total']} · {p['fits']} good fit(s) so far · "
-                f"about {minutes_text(left)} left · {minutes_text(now - p['started'])} in")
-    else:
-        head = f"⏳ {p['what']} · {minutes_text(now - p['started'])} in"
-    return head + (f"\nNow: {p['now']}" if p.get("now") else "")
+        filled = round(10 * p["done"] / p["total"])
+        return (f"⏳ {p['what']} {'▰' * filled}{'▱' * (10 - filled)} {p['done']}/{p['total']} · "
+                f"{p['fits']} good fit(s) · about {minutes_text(left)} left · {minutes_text(now - p['started'])} in")
+    return f"⏳ {p['what']} · {minutes_text(now - p['started'])} in"
+
+
+def progress_text(p: dict, now: float) -> str:
+    """Plain: the status line and the step under way (for status, and the start of the message)."""
+    return progress_head(p, now) + (f"\nNow: {p['now']}" if p.get("now") and not p.get("final") else "")
+
+
+def progress_discord(p: dict, now: float) -> str:
+    log = p.get("log") or []
+    more = [f"-# … {len(log) - DISCORD_LOG_LINES} earlier (all in the results)"] if len(log) > DISCORD_LOG_LINES else []
+    now_line = [f"*Now: {p['now']}*"] if p.get("now") and not p.get("final") else []
+    return "\n".join([f"**{progress_head(p, now)}**", *now_line, *more, *[f"-# {l}" for l in log[-DISCORD_LOG_LINES:]]])
+
+
+def progress_telegram(p: dict, now: float) -> str:
+    """HTML: the finished jobs sit in a collapsed quote, opened with a tap (like a chat app's steps)."""
+    from html import escape
+    log = p.get("log") or []
+    parts = [f"<b>{escape(progress_head(p, now))}</b>"]
+    if p.get("now") and not p.get("final"):
+        parts.append(f"<i>Now: {escape(p['now'])}</i>")
+    shown, size = [], 0
+    for line in reversed(log):                 # newest that fit: cut whole lines, never a tag (4096 limit)
+        size += len(escape(line)) + 1
+        if size > 3200:
+            break
+        shown.insert(0, escape(line))
+    if len(shown) < len(log):
+        shown.insert(0, f"… {len(log) - len(shown)} earlier (all in the results)")
+    if shown:
+        parts.append("<blockquote expandable>" + "\n".join(shown) + "</blockquote>")
+    return "\n".join(parts)
 
 
 def progress_line(uid: int) -> str:
@@ -300,51 +340,57 @@ class Scheduler:
         """progress(done, total, outcome, now) for a run. Posts one silent message and edits it in place
         (at most every PROGRESS_EDIT_EVERY seconds) with the count, good fits, time left and current step;
         also what status shows."""
-        p = self.progress[uid] = {"what": what, "done": 0, "total": 0, "fits": 0, "now": "starting",
+        p = self.progress[uid] = {"what": what, "done": 0, "total": 0, "fits": 0, "now": "starting", "log": [],
                                   "started": self.now(), "job_started": None, "edited": self.now(), "ids": {}}
-        p["ids"] = await asyncio.get_running_loop().run_in_executor(
-            self.outbox, self._post_silent, uid, progress_text(p, self.now())) or {}
+        p["ids"] = await asyncio.get_running_loop().run_in_executor(self.outbox, self._post_silent, uid, p) or {}
 
-        def update(done, total, outcome, now):
+        def update(done, total, outcome, now, detail=None):
             if total and p["job_started"] is None:
                 p["job_started"] = self.now()            # time left is measured on jobs, not on fetching postings
             p.update(done=done, total=total, fits=p["fits"] + (outcome == "resume ready"))
             if now is not None:
                 p["now"] = now
+            if outcome:
+                mark, words = _OUTCOMES.get(outcome, ("·", outcome))
+                p["log"].append(f"{mark} {detail or ''} · {words}")
             if self.now() - p["edited"] >= PROGRESS_EDIT_EVERY:
                 p["edited"] = self.now()
-                self._edit(uid, p["ids"], progress_text(p, self.now()))
+                self._edit(uid, p)
 
         async def beat():                              # a long step (a resume: ~1 min) still shows time passing
             while self.progress.get(uid) is p and not p.get("closed"):
                 await asyncio.sleep(PROGRESS_BEAT)
                 if self.progress.get(uid) is p and not p.get("closed") and self.now() - p["edited"] >= PROGRESS_BEAT:
                     p["edited"] = self.now()
-                    self._edit(uid, p["ids"], progress_text(p, self.now()))
+                    self._edit(uid, p)
         asyncio.get_running_loop().create_task(beat())
         return update
 
     def _close_progress(self, uid: int, text: str):
         p = self.progress.get(uid)
         if p:
-            p["closed"] = True                         # the heartbeat must not overwrite the final text
-            self._edit(uid, p["ids"], text)
+            p["closed"], p["final"] = True, text       # the heartbeat must not overwrite the final text
+            self._edit(uid, p)                         # the log stays, collapsed, under the summary
 
-    def _post_silent(self, uid: int, text: str) -> dict:
+    def _post_silent(self, uid: int, p: dict) -> dict:
         db = self.m.SessionLocal()
         try:
-            return self.m._chat_send(db, uid, text, silent=True)
+            now = self.now()
+            return self.m._chat_send(db, uid, progress_discord(p, now), silent=True, tg_html=progress_telegram(p, now))
         except Exception as e:                     # progress must never stop the run
             logger.warning(f"[scheduler] progress message failed: {e}")
             return {}
         finally:
             db.close()
 
-    def _edit(self, uid: int, ids: dict, text: str):
+    def _edit(self, uid: int, p: dict):
+        now = self.now()
+        ids, text, html = p["ids"], progress_discord(p, now), progress_telegram(p, now)   # rendered now, sent in order
+
         def go():
             db = self.m.SessionLocal()
             try:
-                self.m._chat_edit(db, uid, ids, text)
+                self.m._chat_edit(db, uid, ids, text, tg_html=html)
             except Exception as e:
                 logger.warning(f"[scheduler] progress edit failed: {e}")
             finally:

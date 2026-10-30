@@ -444,7 +444,10 @@ async def _prepare_all(m, c, db, user, job_ids: List[int], t: dict, out: dict, p
             outcome = "error"
             out["errors"].append(f"{label}#{jid}: {str(e)[:200]}")
         if progress:
-            progress(i, len(job_ids), outcome, None)
+            job = db.get(m.Job, jid)
+            detail = f"#{jid} {job.company if job else ''}" + (
+                f" — {job.match_score:g}" if job is not None and job.match_score is not None else "")
+            progress(i, len(job_ids), outcome, None, detail)
 
 
 async def score(m, user_id: int, job_ids: List[int], progress=None) -> Dict[str, Any]:
