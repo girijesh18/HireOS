@@ -155,7 +155,7 @@ def test_discovery_run_reports_errors():
     sent = []
     s = scheduler.Scheduler(main)
     s._user = lambda uid: type("A", (), {"send": lambda self, t, r: sent.append((uid, t))})()
-    s._send = lambda uid, t, r: sent.append((uid, t))
+    s._send = lambda uid, t, r, k=None: sent.append((uid, t))
     import discovery
     real = discovery.run, discovery.score
 
@@ -202,7 +202,7 @@ def test_scoring_progress_updates():
     clock = [1000.0]
     sent, edits, posted = [], [], []
     s = scheduler.Scheduler(main, now=lambda: clock[0])
-    s._send = lambda uid, t, r: sent.append(t)
+    s._send = lambda uid, t, r, k=None: sent.append(t)
     s._post_silent = lambda uid, p: posted.append(scheduler.progress_text(p, clock[0])) or {"msg": 11, "dmsg": "22"}
     s._edit = lambda uid, p: edits.append((scheduler.progress_discord(p, clock[0]), scheduler.progress_telegram(p, clock[0])))
     import discovery
@@ -282,7 +282,7 @@ def test_sends_never_block_the_event_loop():
     s = scheduler.Scheduler(main)
     loop_thread, send_threads = threading.get_ident(), []
 
-    def slow(user_id, text, retry_job_id):
+    def slow(user_id, text, retry_job_id, kind=None):
         send_threads.append(threading.get_ident())
         t.sleep(0.3)
     s._deliver = slow

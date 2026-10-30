@@ -277,6 +277,41 @@ def test_chat_actions():
     db.close()
 
 
+def test_routing_by_kind():
+    """`link approvals|alerts|new-jobs` in another channel routes that kind there; unlinked kinds stay in the main channel."""
+    db, u, rest = setup()
+    linked(db, u, rest)
+    dc.on_message(db, {**msg("link approvals", author=STRANGER), "channel_id": "910"})   # not the linked user
+    assert "expired" in rest.texts()[-1] and not main._setting(db, u.id, dc.ROUTE_KEY.format("approvals"))
+    dc.on_message(db, {**msg("link #approvals"), "channel_id": "910"})
+    dc.on_message(db, {**msg("link alerts"), "channel_id": "911"})
+    assert rest.texts()[-1].startswith("OK: hand-offs") and rest.calls[-1][1] == "/channels/911/messages"
+    rest.calls.clear()
+    job = Job(user_id=u.id, company="Gigi", title="AI Engineer", status="pending")
+    db.add(job)
+    db.commit()
+    main.approve_job(job.id, db, u)
+    assert rest.calls[-1][1] == "/channels/910/messages" and rest.texts()[-1].startswith(f"✅ Approved #{job.id} Gigi")
+    main.notify_user({"text": "Applying now"}, db, u)                     # the apply worker
+    assert rest.calls[-1][1] == "/channels/910/messages"
+    dc.notify_outcome(db, u.id, job, "submitted")
+    assert rest.calls[-1][1] == "/channels/910/messages"
+    dc.notify_outcome(db, u.id, job, "needs_human", "apply yourself")
+    assert rest.calls[-1][1] == "/channels/911/messages"
+    ids = main._chat_send(db, u.id, "Scoring 3 jobs", silent=True, kind="new-jobs")   # not linked: main channel
+    main._chat_edit(db, u.id, ids, "Scoring 1/3", kind="new-jobs")
+    assert [c[1] for c in rest.calls[-2:]] == [f"/channels/{CH}/messages", f"/channels/{CH}/messages/{ids['dmsg']}"]
+    rest.calls.clear()
+    job2 = Job(user_id=u.id, company="B", title="DS", status="pending")
+    db.add(job2)
+    db.commit()
+    main._put_setting(db, u.id, dc.ROUTE_KEY.format("approvals"), CH)      # approvals = main: no extra message
+    db.commit()
+    main.approve_job(job2.id, db, u)
+    assert rest.calls == [], rest.calls
+    db.close()
+
+
 def test_off_without_token():
     db, u, rest = setup()
     linked(db, u, rest)

@@ -1189,21 +1189,23 @@ def discord_link(db: Session = Depends(get_db), current_user: User = Depends(get
 
 
 def _chat_send(db: Session, user_id: int, text: str, markup: dict = None, photo: bytes = None,
-               silent: bool = False, tg_html: str = None) -> dict:
-    """One message to every chat the user linked (Telegram, Discord). {"msg": telegram id, "dmsg": discord id}."""
+               silent: bool = False, tg_html: str = None, kind: str = None) -> dict:
+    """One message to every chat the user linked (Telegram, Discord). {"msg": telegram id, "dmsg": discord id}.
+    kind (approvals | alerts | new-jobs): the Discord channel linked for it, if any; Telegram is one chat."""
+    dkind = {"kind": kind} if kind else {}
     if photo:
         return {"msg": telegram_bot.send_photo(db, user_id, photo, text, markup),
-                "dmsg": discord_bot.send_photo(db, user_id, photo, text, markup)}
+                "dmsg": discord_bot.send_photo(db, user_id, photo, text, markup, **dkind)}
     quiet = {"silent": True} if silent else {}         # ordinary sends call exactly as before
     tg = (tg_html, {"html": True}) if tg_html else (text, {})     # tg_html: Telegram's own formatted version
     return {"msg": telegram_bot.send(db, user_id, tg[0], markup, **quiet, **tg[1]),
-            "dmsg": discord_bot.send(db, user_id, text, markup, **quiet)}
+            "dmsg": discord_bot.send(db, user_id, text, markup, **quiet, **dkind)}
 
 
-def _chat_edit(db: Session, user_id: int, ids: dict, text: str, tg_html: str = None):
-    """Edit a message _chat_send sent, in every chat it reached."""
+def _chat_edit(db: Session, user_id: int, ids: dict, text: str, tg_html: str = None, kind: str = None):
+    """Edit a message _chat_send sent (with the same kind), in every chat it reached."""
     telegram_bot.edit(db, user_id, ids.get("msg"), tg_html or text, html=bool(tg_html))
-    discord_bot.edit(db, user_id, ids.get("dmsg"), text)
+    discord_bot.edit(db, user_id, ids.get("dmsg"), text, **({"kind": kind} if kind else {}))
 
 
 @app.on_event("startup")
@@ -3064,10 +3066,10 @@ def apply_wait(job_id: int, payload: Dict[str, Any] = {}, db: Session = Depends(
     kind = payload.get("kind") if payload.get("kind") in ("question", "code", "captcha", "submit") else "wait"
     deadline = datetime.utcnow() + timedelta(minutes=int(payload.get("minutes") or 15))
     text, markup = telegram_bot.ask_message(job, kind, reason, payload.get("url"))
-    _send_doc(db, current_user.id, payload)
+    _send_doc(db, current_user.id, payload, "approvals")
     import base64   # photo: e.g. the Review page, so he sees exactly what would be sent
     sent = _chat_send(db, current_user.id, text, markup,
-                      base64.b64decode(payload["photo_b64"]) if payload.get("photo_b64") else None)
+                      base64.b64decode(payload["photo_b64"]) if payload.get("photo_b64") else None, kind="approvals")
     job.status = "waiting_human"
     job.meta = {**(job.meta or {}), "waiting_since": datetime.utcnow().isoformat(), "waiting_reason": reason,
                 "ask": {"q": reason, "kind": kind, **sent, "deadline": deadline.isoformat()}}
@@ -3077,14 +3079,14 @@ def apply_wait(job_id: int, payload: Dict[str, Any] = {}, db: Session = Depends(
     return {"job_id": job.id, "status": job.status, "telegram": bool(sent["msg"]), "discord": bool(sent["dmsg"])}
 
 
-def _send_doc(db: Session, user_id: int, payload: Dict[str, Any]):
+def _send_doc(db: Session, user_id: int, payload: Dict[str, Any], kind: str):
     """An attached file (doc_b64 + doc_name), sent ahead of the message it belongs to."""
     if payload.get("doc_b64"):
         import base64
         name = re.sub(r"[^\w.-]+", "_", payload.get("doc_name") or "review.pdf")[:80]
         data = base64.b64decode(payload["doc_b64"])
         telegram_bot.send_document(db, user_id, data, name)
-        discord_bot.send_document(db, user_id, data, name)
+        discord_bot.send_document(db, user_id, data, name, kind=kind)
 
 
 @app.get("/api/apply/{job_id}/ask")
@@ -3097,16 +3099,18 @@ def apply_ask_status(job_id: int, db: Session = Depends(get_db), current_user: U
 
 @app.post("/api/notify")
 def notify_user(payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Body: {text, retry_job_id?, photo_b64?, doc_b64?, doc_name?}. A message (or screenshot + caption) to the user's linked Telegram chat."""
+    """Body: {text, retry_job_id?, photo_b64?, doc_b64?, doc_name?, kind?}. A message (or screenshot + caption) to the
+    user's linked chats. The apply worker is the caller, so it goes to the approvals channel unless kind says otherwise."""
     text = (payload.get("text") or "").strip()
     if not text:
         raise HTTPException(400, "text is required")
     rid = payload.get("retry_job_id")
     markup = telegram_bot.retry_button(int(rid)) if rid else None
-    _send_doc(db, current_user.id, payload)
+    kind = payload.get("kind") if payload.get("kind") in discord_bot.KINDS else "approvals"
+    _send_doc(db, current_user.id, payload, kind)
     import base64
     sent = _chat_send(db, current_user.id, text, markup,
-                      base64.b64decode(payload["photo_b64"]) if payload.get("photo_b64") else None)
+                      base64.b64decode(payload["photo_b64"]) if payload.get("photo_b64") else None, kind=kind)
     return {"sent": bool(sent["msg"] or sent["dmsg"])}
 
 
@@ -3144,6 +3148,9 @@ def approve_job(job_id: int, db: Session = Depends(get_db), current_user: User =
     note = "✅ Approved — queued for applying. Resume locked."
     telegram_bot.close_cards(db, current_user.id, job, note)
     discord_bot.close_cards(db, current_user.id, job, note)
+    if discord_bot.channel_of(db, current_user.id, "approvals") != discord_bot.channel_of(db, current_user.id):
+        discord_bot.send(db, current_user.id, f"✅ Approved #{job.id} {job.company} · {job.title} — queued for applying.",
+                         kind="approvals")      # the card it was approved on is in another channel
     return {"job_id": job.id, "status": job.status}
 
 

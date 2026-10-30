@@ -208,19 +208,20 @@ class Scheduler:
         users = db.query(self.m.User).filter(self.m.User.email.isnot(None)).all()
         return [u.id for u in users if self.m.is_admin(u) and self._linked(db, u.id)]
 
-    def _send(self, user_id: int, text: str, retry_job_id: Optional[int]):
-        logger.info(f"[scheduler] -> user {user_id}: {text[:120]!r}")
+    def _send(self, user_id: int, text: str, retry_job_id: Optional[int], kind: str = None):
+        """kind: the Discord channel it goes to (approvals | alerts | new-jobs), when the user linked one."""
+        logger.info(f"[scheduler] -> user {user_id} ({kind or 'main'}): {text[:120]!r}")
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:                       # already off the event loop
-            return self._deliver(user_id, text, retry_job_id)
-        self.sending.append(loop.run_in_executor(self.outbox, self._deliver, user_id, text, retry_job_id))
+            return self._deliver(user_id, text, retry_job_id, kind)
+        self.sending.append(loop.run_in_executor(self.outbox, self._deliver, user_id, text, retry_job_id, kind))
 
-    def _deliver(self, user_id: int, text: str, retry_job_id: Optional[int]):
+    def _deliver(self, user_id: int, text: str, retry_job_id: Optional[int], kind: str = None):
         db = self.m.SessionLocal()
         try:
             markup = self.m.telegram_bot.retry_button(retry_job_id) if retry_job_id else None
-            self.m._chat_send(db, user_id, text[:3900], markup)
+            self.m._chat_send(db, user_id, text[:3900], markup, **({"kind": kind} if kind else {}))
         finally:
             db.close()
 
@@ -233,11 +234,11 @@ class Scheduler:
         if not admins:
             logger.warning(f"[scheduler] no admin with Telegram linked; alert dropped: {text[:200]}")
         for uid in admins:
-            self._send(uid, text, retry_job_id)
+            self._send(uid, text, retry_job_id, "alerts")
 
     def _user(self, user_id: int) -> Alerts:
         if user_id not in self.user_alerts:
-            self.user_alerts[user_id] = Alerts(lambda t, r: self._send(user_id, t, r), self.now)
+            self.user_alerts[user_id] = Alerts(lambda t, r: self._send(user_id, t, r, "alerts"), self.now)
         return self.user_alerts[user_id]
 
     # ── checks ──
@@ -297,7 +298,7 @@ class Scheduler:
             self._user(uid).notify("mail-updates", f"🟠 Gmail status scan failed: {str(e)[:200]}", 6 * HOUR)
             return
         for u in out["updates"]:
-            self._user(uid).send(mail_update_text(u), None)
+            self._send(uid, mail_update_text(u), None)
         logger.info(f"[scheduler] mail scan: checked {out['checked']}, updates {len(out['updates'])}")
 
     def check_discovery(self, db, now_utc: datetime = None):
@@ -376,7 +377,8 @@ class Scheduler:
         db = self.m.SessionLocal()
         try:
             now = self.now()
-            return self.m._chat_send(db, uid, progress_discord(p, now), silent=True, tg_html=progress_telegram(p, now))
+            return self.m._chat_send(db, uid, progress_discord(p, now), silent=True, tg_html=progress_telegram(p, now),
+                                     kind="new-jobs")
         except Exception as e:                     # progress must never stop the run
             logger.warning(f"[scheduler] progress message failed: {e}")
             return {}
@@ -390,7 +392,7 @@ class Scheduler:
         def go():
             db = self.m.SessionLocal()
             try:
-                self.m._chat_edit(db, uid, ids, text, tg_html=html)
+                self.m._chat_edit(db, uid, ids, text, tg_html=html, kind="new-jobs")
             except Exception as e:
                 logger.warning(f"[scheduler] progress edit failed: {e}")
             finally:
@@ -412,11 +414,11 @@ class Scheduler:
                 db.close()
             if s["errors"]:
                 text += f"\n⚠️ {len(s['errors'])} couldn't be scored: " + "; ".join(s["errors"][:3])
-            self._send(uid, text, None)
+            self._send(uid, text, None, "new-jobs")
         except Exception as e:
             logger.warning(f"[scheduler] scoring user {uid} failed: {e!r}")
             self._close_progress(uid, "🔴 Scoring stopped (see below).")
-            self._send(uid, f"🔴 Scoring failed: {str(e)[:300]}", None)
+            self._send(uid, f"🔴 Scoring failed: {str(e)[:300]}", None, "alerts")
         finally:
             self._finished(uid)
 
@@ -434,7 +436,7 @@ class Scheduler:
                                       "Summary below.")
             logger.info(f"[scheduler] discovery user {uid}: added {s['added']}, prepared {s['prepared']}, "
                         f"waiting {s['waiting']}, errors {len(s['errors'])}")
-            self._send(uid, discovery_done_text(s), None)
+            self._send(uid, discovery_done_text(s), None, "new-jobs")
         except Exception as e:
             logger.warning(f"[scheduler] discovery user {uid} failed: {e!r}")
             self._close_progress(uid, "🔴 Discovery stopped (see below).")

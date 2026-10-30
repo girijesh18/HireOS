@@ -244,7 +244,9 @@ def send(db, user_id: int, text: str, markup: dict = None, silent: bool = False,
         body = httpx.post(f"{API}/sendMessage", timeout=10, json={
             "chat_id": chat, "text": text[:4000], **({"reply_markup": markup} if markup else {}),
             **({"disable_notification": True} if silent else {}), **({"parse_mode": "HTML"} if html else {})}).json()
-        return (body.get("result") or {}).get("message_id")
+        msg = (body.get("result") or {}).get("message_id")
+        logger.info(f"[telegram] -> user {user_id} msg {msg}: {text[:80]!r}")    # traceable from the Fly logs
+        return msg
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(f"[telegram] send failed: {e}")
         return None

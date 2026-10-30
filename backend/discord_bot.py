@@ -1,6 +1,11 @@
 """Discord front end: the same resume cards, buttons, questions and edits as the Telegram bot,
 in one Discord channel (a server channel or a DM with the bot).
 
+Routing: everything goes to the linked channel unless the user typed `link approvals`,
+`link alerts` or `link new-jobs` in another channel of the same server; from then on
+apply-stage messages (approved, applying, questions, CAPTCHA, submitted), problems
+(hand-offs, failures, errors) and discovery/scoring runs go to those channels.
+
 Linking: POST /api/discord/link returns a one-time code; typing `link <code>` in a channel
 binds that Discord user to the HireOS user. New resumes and alerts go to that channel; the user
 is answered in any channel of the same server (e.g. chat in #new-jobs, cards in #resume-review).
@@ -31,6 +36,8 @@ FATAL_CLOSE = {4004: "the bot token was rejected", 4013: "invalid intents",
                4014: "the Message Content intent is off (Developer Portal > Bot > Privileged Gateway Intents)"}
 CHANNEL_KEY, USER_KEY, GUILD_KEY, CODE_KEY, LINKED_AT_KEY = \
     "discord_channel_id", "discord_user_id", "discord_guild_id", "discord_link_code", "discord_linked_at"
+KINDS = ("approvals", "alerts", "new-jobs")      # `link <kind>` routes that kind of message to a channel
+ROUTE_KEY = "discord_channel_{}"
 SENT_META = "dc_sent_version"
 CARDS_META = "dc_card_msgs"     # [[message_id, card text]]: closed when the job is decided
 LIMIT = 2000                    # Discord's message length
@@ -41,6 +48,9 @@ HELP = ("Write anything to ask HireOS (e.g. \"what jobs came in today?\"). "
         "Buttons on each resume: Approve queues it for applying, Skip drops it, "
         "Edit lets you type a change (e.g. \"remove the Tableau line\").")
 
+
+ROUTE = {"approvals": "approvals and apply updates (applying, questions, CAPTCHA, submitted)",
+         "alerts": "hand-offs, failures and errors", "new-jobs": "discovery and scoring runs"}
 
 LOOP = None                     # the API's event loop: handlers run in threads, async work goes back to it
 
@@ -92,8 +102,12 @@ def command(text: str):
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
-def channel_of(db, user_id: int):
-    return _m()._setting(db, user_id, CHANNEL_KEY) if TOKEN else None
+def channel_of(db, user_id: int, kind: str = None):
+    """The channel for this kind of message: its own if linked, else the main linked channel."""
+    if not TOKEN:
+        return None
+    m = _m()
+    return (kind and m._setting(db, user_id, ROUTE_KEY.format(kind))) or m._setting(db, user_id, CHANNEL_KEY)
 
 
 def user_for(db, channel_id: str, author_id: str, guild_id: str = None):
@@ -155,7 +169,9 @@ def post(channel_id: str, text: str, markup: dict = None, file: tuple = None, si
                      files={"files[0]": file})
     else:
         r = _request("POST", f"/channels/{channel_id}/messages", json=body)
-    return (r or {}).get("id")
+    msg = (r or {}).get("id")
+    logger.info(f"[discord] -> {channel_id} msg {msg}: {text[:80]!r}")    # traceable from the Fly logs
+    return msg
 
 
 def close_message(channel_id: str, message_id: str, text: str):
@@ -164,26 +180,26 @@ def close_message(channel_id: str, message_id: str, text: str):
              json={"content": text[:LIMIT], "components": []})
 
 
-def send(db, user_id: int, text: str, markup: dict = None, silent: bool = False):
+def send(db, user_id: int, text: str, markup: dict = None, silent: bool = False, kind: str = None):
     """Same contract as telegram_bot.send: the message id, or None when the bot is off or not linked."""
-    ch = channel_of(db, user_id)
+    ch = channel_of(db, user_id, kind)
     return post(ch, text, markup, silent=silent) if ch else None
 
 
-def edit(db, user_id: int, message_id, text: str):
-    """Replace a message's text (a progress line updating in place)."""
-    ch = channel_of(db, user_id)
+def edit(db, user_id: int, message_id, text: str, kind: str = None):
+    """Replace a message's text (a progress line updating in place). kind: the one it was sent with."""
+    ch = channel_of(db, user_id, kind)
     if ch and message_id:
         _request("PATCH", f"/channels/{ch}/messages/{message_id}", json={"content": text[:LIMIT]})
 
 
-def send_photo(db, user_id: int, png: bytes, caption: str, markup: dict = None):
-    ch = channel_of(db, user_id)
+def send_photo(db, user_id: int, png: bytes, caption: str, markup: dict = None, kind: str = None):
+    ch = channel_of(db, user_id, kind)
     return post(ch, caption, markup, ("screen.png", png, "image/png")) if ch else None
 
 
-def send_document(db, user_id: int, data: bytes, filename: str, caption: str = ""):
-    ch = channel_of(db, user_id)
+def send_document(db, user_id: int, data: bytes, filename: str, caption: str = "", kind: str = None):
+    ch = channel_of(db, user_id, kind)
     mime = "application/pdf" if filename.endswith(".pdf") else "application/octet-stream"
     return post(ch, caption, None, (filename, data, mime)) if ch else None
 
@@ -202,7 +218,8 @@ def notify_outcome(db, user_id: int, job, outcome: str, notes: str = None):
     if outcome == "submitted":
         close_cards(db, user_id, job, "✅ Submitted")
     if outcome in tg.NOTIFY:
-        send(db, user_id, f"{tg.NOTIFY[outcome]}: #{job.id} {job.company} · {job.title}" + (f"\n{notes}" if notes else ""))
+        send(db, user_id, f"{tg.NOTIFY[outcome]}: #{job.id} {job.company} · {job.title}" + (f"\n{notes}" if notes else ""),
+             kind="approvals" if outcome == "submitted" else "alerts")
 
 
 def send_card(db, user, channel_id: str, job, rv):
@@ -226,6 +243,12 @@ def on_message(db, d: dict) -> None:
         return
     m = _m()
     channel, author, text = d["channel_id"], d["author"]["id"], (d.get("content") or "").strip()
+    if (km := re.fullmatch(r"!?link\s+#?(approvals|alerts|new-jobs)", text, re.I)) and \
+            (user := user_for(db, channel, author, d.get("guild_id"))):
+        _m()._put_setting(db, user.id, ROUTE_KEY.format(km.group(1).lower()), str(channel))
+        db.commit()
+        post(channel, f"OK: {ROUTE[km.group(1).lower()]} now come to this channel.")
+        return
     if lm := re.fullmatch(r"!?link\s+(\S+)", text, re.I):
         user = link(db, lm.group(1), channel, author, datetime.utcnow(), d.get("guild_id"))
         post(channel, f"Linked to HireOS ({user.email}). New resumes will arrive here.\n\n{HELP}" if user
