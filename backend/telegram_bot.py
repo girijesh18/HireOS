@@ -105,7 +105,10 @@ def card_text(job, version: int, changes: list) -> str:
                       *([""] + changes if changes else [])])
 
 
-def buttons(job_id: int) -> dict:
+def buttons(job_id: int, status: str = "pending") -> dict:
+    """Approve / Skip / Edit; none once approved (a re-sent card of an approved job is just the resume)."""
+    if status in ("approved", "applying", "waiting_human", "applied"):
+        return None
     return {"inline_keyboard": [[{"text": "Approve", "callback_data": f"a:{job_id}"},
                                  {"text": "Skip", "callback_data": f"s:{job_id}"},
                                  {"text": "Edit", "callback_data": f"e:{job_id}"}]]}
@@ -331,7 +334,8 @@ async def send_card(c, db, user, chat_id: int, job, rv):
             await c.post(f"{API}/sendDocument", data={"chat_id": chat_id},
                          files={"document": (m.resume_filename(job, rv), f, "application/pdf")})
     text = card_text(job, rv.version, changes)
-    sent = await _call(c, "sendMessage", chat_id=chat_id, text=text, reply_markup=buttons(job.id))
+    markup = buttons(job.id, job.status)
+    sent = await _call(c, "sendMessage", chat_id=chat_id, text=text, **({"reply_markup": markup} if markup else {}))
     cards = ((job.meta or {}).get(CARDS_META) or []) + [[(sent.get("result") or {}).get("message_id"), text]]
     job.meta = {**(job.meta or {}), SENT_META: rv.version, CARDS_META: [x for x in cards if x[0]][-10:]}
     db.commit()
@@ -433,6 +437,8 @@ def button_action(db, user, job, action: str, chat_key) -> tuple:
             return f"Retrying #{job.id} shortly.", None
         except HTTPException as e:
             return f"Can't retry: {e.detail}", None
+    if action == "e" and job.status in m.RESUME_LOCKED:
+        return f"#{job.id} is {job.status}: its resume is locked.", None
     if action == "e":
         _edit_waiting[chat_key] = (job.id, time.monotonic())
         return None, (f"What should change in the #{job.id} {job.company} resume? Send one change per "
@@ -485,6 +491,9 @@ async def _on_edit(c, db, user, chat_id: int, job_id: int, instruction: str):
     try:
         await m.edit_resume(job_id, {"instruction": instruction}, db, user)
     except HTTPException as e:
+        if e.status_code == 409:                   # approved meanwhile: edit mode ends
+            _edit_waiting.pop(chat_id, None)
+            return await _call(c, "sendMessage", chat_id=chat_id, text=f"Not changed: {e.detail}")
         return await _call(c, "sendMessage", chat_id=chat_id,
                            text=f"Not changed: {e.detail}\n\nSend another change, or /done.")
     job = m.get_owned_job(db, job_id, user)

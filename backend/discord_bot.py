@@ -211,7 +211,7 @@ def send_card(db, user, channel_id: str, job, rv):
     changes = tg.changes_summary(rv.content_md, m.get_master_resume(db, user.id), rv.critic_notes)
     text = tg.card_text(job, rv.version, changes)
     pdf = rv.pdf_path and os.path.exists(rv.pdf_path) and open(rv.pdf_path, "rb").read()
-    msg = post(channel_id, text, tg.buttons(job.id),
+    msg = post(channel_id, text, tg.buttons(job.id, job.status),
                (m.resume_filename(job, rv), pdf, "application/pdf") if pdf else None)
     cards = ((job.meta or {}).get(CARDS_META) or []) + ([[msg, text]] if msg else [])
     job.meta = {**(job.meta or {}), SENT_META: rv.version, CARDS_META: cards[-10:]}
@@ -281,6 +281,10 @@ def on_edit(db, user, channel: str, job_id: int, instruction: str):
     try:
         on_loop(m.edit_resume(job_id, {"instruction": instruction}, db, user))
     except HTTPException as e:
+        if e.status_code == 409:                   # approved meanwhile: edit mode ends
+            tg._edit_waiting.pop(f"dc:{channel}", None)
+            post(channel, f"Not changed: {e.detail}")
+            return
         post(channel, f"Not changed: {e.detail}\n\nSend another change, or done.")
         return
     job = m.get_owned_job(db, job_id, user)

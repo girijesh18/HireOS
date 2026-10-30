@@ -3140,6 +3140,10 @@ def approve_job(job_id: int, db: Session = Depends(get_db), current_user: User =
     db.commit()
     _log_event(db, job.id, "status_change", "Approved for applying", old_value=old, new_value="approved",
                source="user", user_id=current_user.id)
+    # every card for this job, in both chats: no Edit (or second Approve) on a resume being applied with
+    note = "✅ Approved — queued for applying. Resume locked."
+    telegram_bot.close_cards(db, current_user.id, job, note)
+    discord_bot.close_cards(db, current_user.id, job, note)
     return {"job_id": job.id, "status": job.status}
 
 
@@ -4151,12 +4155,19 @@ def _parse_llm_json(text: str) -> dict:
     return out
 
 
+# Approved onwards the apply worker may be using the resume: no edits (web, Telegram, Discord).
+RESUME_LOCKED = ("approved", "applying", "waiting_human", "applied")
+
+
 @app.post("/api/jobs/{job_id}/resume/edit")
 async def edit_resume(job_id: int, payload: Dict[str, Any], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Body: {instruction}. Applies one requested change to the latest resume version.
     422 with the reason when the change would alter or invent a fact; nothing is saved then."""
     import resume_edit
     job = get_owned_job(db, job_id, current_user)
+    if job.status in RESUME_LOCKED:
+        raise HTTPException(409, f"#{job.id} is {job.status.replace('_', ' ')}: its resume is locked, so the "
+                                 "application goes out with the one you approved.")
     instruction = (payload.get("instruction") or "").strip()
     if not instruction:
         raise HTTPException(400, "instruction is required")

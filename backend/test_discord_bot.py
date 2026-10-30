@@ -3,6 +3,7 @@ Discord's REST API is replaced by a recorder; nothing leaves the machine.
 
 Run: cd backend && python test_discord_bot.py
 """
+import asyncio
 import os
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_discord.db"
@@ -129,6 +130,18 @@ def test_cards_buttons_and_edit_mode():
     assert (method, path) == ("PATCH", f"/channels/{CH}/messages/m9")
     assert kw["json"] == {"content": "card\n\nApproved — queued for applying.", "components": []}
     assert db.get(Job, job.id).status == "approved"
+    # approving locks the resume: every card for the job loses its buttons, Edit is refused everywhere
+    closed = [kw["json"] for m_, p_, kw in rest.calls if m_ == "PATCH" and not p_.endswith("/m9")]
+    assert closed and closed[0]["components"] == [] and closed[0]["content"].endswith("Resume locked."), closed
+    dc.on_button(db, press)                                                      # Edit on an old card
+    assert rest.calls[-1][2]["json"]["content"].endswith("its resume is locked.") and f"dc:{CH}" not in tg._edit_waiting
+    try:
+        asyncio.run(main.edit_resume(job.id, {"instruction": "x"}, db, u))
+        assert False, "edited an approved resume"
+    except main.HTTPException as e:
+        assert e.status_code == 409 and "locked" in e.detail
+    dc.on_message(db, msg(f"review {job.id}"))                                   # re-sent card: no buttons
+    assert __import__("json").loads(rest.calls[-1][2]["data"]["payload_json"])["components"] == []
     db.get(Job, job.id).status = "applied"
     db.commit()
     dc.on_button(db, {**press, "data": {"custom_id": f"s:{job.id}"}})             # stale card: already decided
