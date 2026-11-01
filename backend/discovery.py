@@ -324,6 +324,22 @@ def same_job(posts: List[dict], title: str, location: str) -> Optional[dict]:
     return loose[0] if len(loose) == 1 else None
 
 
+def board_of(url: str):
+    """(platform, board) of an ATS posting URL: the Greenhouse/Lever/Ashby board slug, or the Workday
+    career site (origin + site). None for anything else."""
+    u = urlparse(url or "")
+    host, parts = u.hostname or "", [p for p in u.path.split("/") if p]
+    if "myworkdayjobs.com" in host:
+        site = next((p for p in parts if not re.fullmatch(r"[a-z]{2}-[A-Z]{2}", p)), None)
+        return ("workday", f"{u.scheme}://{u.netloc}/{site}") if site else None
+    for platform, h in (("greenhouse", "greenhouse.io"), ("lever", "lever.co"), ("ashby", "ashbyhq.com")):
+        if host.endswith(h):
+            q = parse_qs(u.query).get("for")      # boards.greenhouse.io/embed/job_board?for=<slug>
+            slug = q[0] if q else next((p for p in parts if p not in ("embed", "job_app", "v1", "boards")), None)
+            return (platform, slug) if slug else None
+    return None
+
+
 async def find_ats(c: httpx.AsyncClient, job, t: dict) -> Dict[str, Any]:
     """Where to apply for a LinkedIn job. Returns {route: closed|easy_apply|found|company_site,
     platform?, url?, careers_url?}; the caller updates the job."""
@@ -335,7 +351,17 @@ async def find_ats(c: httpx.AsyncClient, job, t: dict) -> Dict[str, Any]:
     if li and li["route"] in ("closed", "easy_apply"):
         return {"route": li["route"]}
     words = [w for w in COMPANY_NOISE.sub(" ", norm(job.company)).split() if w]
-    slugs = list(dict.fromkeys(s for s in ("".join(words), "-".join(words), words[0] if words else "") if s))
+    li_slug = re.search(r'linkedin\.com/company/([a-z0-9-]+)', (li or {}).get("html") or "")
+    slugs = list(dict.fromkeys(s for s in ("".join(words), "-".join(words), li_slug and li_slug.group(1).replace("-", ""),
+                                            words[0] if words else "") if s))
+    learned = board_of((t.get("learned") or {}).get(norm(job.company)) or "")   # from an apply link the user pasted
+    if learned and learned[0] in FEEDS:
+        try:
+            hit = same_job(await FEEDS[learned[0]](c, learned[1]), job.title, job.location)
+        except (httpx.HTTPError, ValueError, KeyError):
+            hit = None
+        if hit:
+            return {"route": "found", "platform": learned[0], "url": hit["url"], "text": hit.get("text") or ""}
     for slug in slugs:
         for platform in ("greenhouse", "lever", "ashby"):
             try:
@@ -349,6 +375,8 @@ async def find_ats(c: httpx.AsyncClient, job, t: dict) -> Dict[str, Any]:
     # then from the company's own website.
     boards = [b for name, b in (t.get("workday") or {}).items()
               if norm(name) and (norm(name) in norm(job.company) or norm(job.company) in norm(name))][:1]
+    if learned and learned[0] == "workday":
+        boards.insert(0, learned[1])
     site = None
     if li:
         try:
@@ -389,7 +417,7 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict, step=
     route = None
     if re.search(r"linkedin\.com/jobs/view|glassdoor\.|indeed\.", job.url or ""):
         step(f"#{job.id} {job.company}: finding where to apply")
-        route = await find_ats(c, job, t)
+        route = await find_ats(c, job, {**t, "learned": json.loads(m._setting(db, user.id, "ats_boards") or "{}")})
         if route["route"] == "closed":
             _note(job, "[find-ats: LinkedIn says no longer accepting applications]")
             old, job.status = job.status, "withdrawn"

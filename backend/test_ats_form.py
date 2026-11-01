@@ -73,6 +73,10 @@ class FakeRun:
         self._answers, self.asked = answers, []
         self.api, self.profile, self.screen = FakeApi(out), {}, ""
 
+    def ask_field(self, label, options=()):
+        self.asked_user = getattr(self, "asked_user", []) + [label]
+        return self._answers.get(("you", label))       # the user's reply, when the test gives one
+
     def answers(self, questions):
         self.asked += questions
         by_label = {q["label"]: q["id"] for q in questions}

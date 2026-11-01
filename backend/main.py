@@ -2701,6 +2701,16 @@ async def answer_questions(payload: Dict[str, Any], db: Session = Depends(get_db
     if not background and not qa_text and not profile_text:
         raise HTTPException(status_code=400, detail="No master resume configured — nothing to answer from.")
 
+    # The user's own answer to this exact question (saved when they were asked): used as is, no model.
+    norm = telegram_bot.apply_queue_norm
+    saved = {norm(x.get("q")): x.get("a") for x in profile.get("custom_qa") or [] if str(x.get("a") or "").strip()}
+    known = {q["id"]: telegram_bot.pick_option(q.get("options") or [], saved[norm(q["label"])])
+             for q in questions if norm(q["label"]) in saved}
+    known = {k: v for k, v in known.items() if v}
+    all_questions, questions = questions, [q for q in questions if q["id"] not in known]
+    if not questions:
+        return {"answers": [{"id": q["id"], "answer": known[q["id"]], "drafted": False} for q in all_questions]}
+
     llm = resolve_llm(db, current_user.id, payload.get("llm"))
     router = get_llm_router(db, current_user.id)
     guidance = payload.get("guidance", "")
@@ -2733,7 +2743,9 @@ Answer each question. Return null for any answer not grounded in the background.
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
 
-    answers = _validate_answers([a.model_dump() for a in result.answers], questions)
+    by_id = {a["id"]: a for a in _validate_answers([a.model_dump() for a in result.answers], questions)}
+    questions = all_questions
+    answers = [by_id.get(q["id"]) or {"id": q["id"], "answer": known.get(q["id"]), "drafted": False} for q in questions]
     drafted = [q["label"] for q, a in zip(questions, answers) if a["drafted"]]
     _log_event(db, job.id, "agent_action", "Application questions answered",
                f"{sum(1 for a in answers if a['answer'] and not a['drafted'])} of {len(answers)} fields grounded"
@@ -3065,14 +3077,16 @@ def apply_wait(job_id: int, payload: Dict[str, Any] = {}, db: Session = Depends(
     reason = (payload.get("reason") or "").strip() or "waiting for the user"
     kind = payload.get("kind") if payload.get("kind") in ("question", "code", "captcha", "submit") else "wait"
     deadline = datetime.utcnow() + timedelta(minutes=int(payload.get("minutes") or 15))
-    text, markup = telegram_bot.ask_message(job, kind, reason, payload.get("url"))
+    options = [str(o) for o in payload.get("options") or []][:30]
+    text, markup = telegram_bot.ask_message(job, kind, reason, payload.get("url"), options)
     _send_doc(db, current_user.id, payload, "approvals")
     import base64   # photo: e.g. the Review page, so he sees exactly what would be sent
     sent = _chat_send(db, current_user.id, text, markup,
                       base64.b64decode(payload["photo_b64"]) if payload.get("photo_b64") else None, kind="approvals")
     job.status = "waiting_human"
     job.meta = {**(job.meta or {}), "waiting_since": datetime.utcnow().isoformat(), "waiting_reason": reason,
-                "ask": {"q": reason, "kind": kind, **sent, "deadline": deadline.isoformat()}}
+                "ask": {"q": reason, "kind": kind, "label": payload.get("label") or reason, "options": options,
+                        **sent, "deadline": deadline.isoformat()}}
     db.commit()
     _log_event(db, job.id, "status_change", "Apply agent: waiting for you", reason,
                old_value="applying", new_value="waiting_human", source="agent", user_id=current_user.id)
@@ -3281,6 +3295,9 @@ def apply_result(job_id: int, payload: Dict[str, Any], db: Session = Depends(get
             logger.warning(f"[apply] screenshot not saved for job {job.id}: {e}")
     if payload.get("answers"):
         meta["apply_answers"] = payload["answers"]
+    # questions the run stopped on (no answer in time): asked again in the hand-off message
+    meta["pending_questions"] = [{"label": str(q.get("label"))[:300], "options": [str(o) for o in q.get("options") or []][:30]}
+                                 for q in payload.get("questions") or [] if q.get("label")][:6] if outcome == "needs_human" else []
 
     old = job.status
     if outcome == "submitted":
@@ -4380,14 +4397,16 @@ def _chat_jobs(db: Session, uid: int, p: dict) -> str:
     q = db.query(Job).filter(Job.user_id == uid)
     if p.get("status"):
         q = q.filter(Job.status == p["status"])
-    elif p.get("sort") == "score":   # "top matches" means ones still open, not applied or rejected ones
-        q = q.filter(Job.status.in_(("found", "pending", "approved", "needs_human")))
+    open_only = not p.get("status") and p.get("sort") == "score"
     hours = p.get("since_hours")
     if isinstance(hours, (int, float)) and hours > 0:
         q = q.filter(Job.created_at >= datetime.utcnow() - timedelta(hours=hours))
     min_score = p.get("min_score")
     if isinstance(min_score, (int, float)):
         q = q.filter(Job.match_score >= min_score)
+    every = q
+    if open_only:   # "top matches" means ones still open, not applied or rejected ones
+        q = q.filter(Job.status.in_(("found", "pending", "approved", "needs_human")))
     q = q.order_by(Job.match_score.desc().nullslast(), Job.id.desc()) if p.get("sort") == "score" \
         else q.order_by(Job.id.desc())
     total = q.count()
@@ -4396,14 +4415,17 @@ def _chat_jobs(db: Session, uid: int, p: dict) -> str:
     when = f" from the last {hours:g}h" if isinstance(hours, (int, float)) and hours > 0 else ""
     filt = when + (f" scoring {min_score:g}+" if isinstance(min_score, (int, float)) else "") + \
         (f" ({p['status']})" if p.get("status") else "")
+    kind = " open" if open_only else ""
+    decided = every.count() - total if open_only else 0
+    more = f"\n(+{decided} more already applied, rejected or withdrawn — ask for all jobs to see them)" if decided else ""
     if not jobs:
-        return f"No jobs{filt}."                                   # "No jobs from the last 24h scoring 75+."
-    head = f"{total} jobs{filt}" + (f" — {'top' if p.get('sort') == 'score' else 'latest'} {len(jobs)}:" if total > len(jobs) else ":")
+        return f"No{kind} jobs{filt}.{more}"                       # "No open jobs from the last 24h scoring 75+."
+    head = f"{total}{kind} jobs{filt}" + (f" — {'top' if p.get('sort') == 'score' else 'latest'} {len(jobs)}:" if total > len(jobs) else ":")
     return head + "\n" + "\n".join(
         f"• #{j.id} {j.company} — {j.title} · {j.status}"
         + (f" · score {j.match_score:g}" if j.match_score is not None else " · not scored yet")
         + (f" · {j.created_at:%b %d}" if j.created_at else "")
-        for j in jobs)
+        for j in jobs) + more
 
 
 def _chat_approve(db: Session, user: User, ids: list) -> str:
@@ -4424,6 +4446,22 @@ def _chat_approve(db: Session, user: User, ids: list) -> str:
             except HTTPException as e:
                 out.append(f"#{jid} {job.company}: {e.detail}")
     return "\n".join(out) or "Which jobs? Give me their numbers, e.g. approve 154 155."
+
+
+def _chat_answer(db: Session, user: User, job_id, answer: str) -> str:
+    """The user answered a job's form question in chat. Saved only when that job really asks one."""
+    q = telegram_bot.open_question(db, user.id)
+    job = (db.query(Job).filter(Job.id == int(job_id), Job.user_id == user.id).first() if str(job_id or "").isdigit()
+           else q if q and q != telegram_bot.AMBIGUOUS else telegram_bot.recent_handoff(db, user.id, datetime.utcnow()))
+    if not job:
+        return "Which job is that answer for? Give its number, e.g. \"#393: None\"."
+    if not answer.strip():
+        return f"What's the answer for #{job.id}?"
+    if job.status == "waiting_human" and ((job.meta or {}).get("ask") or {}).get("kind") in ("question", "code"):
+        return telegram_bot.answer(db, user, job, answer, datetime.utcnow())
+    if job.status == "needs_human" and (job.meta or {}).get("pending_questions"):
+        return telegram_bot.answer_handoff(db, user, job, answer)
+    return f"#{job.id} {job.company} has no open question ({job.status}) — nothing was saved."
 
 
 def _chat_status(db: Session, uid: int, hours: float = 24) -> str:
@@ -4461,7 +4499,8 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
 
     try:
         dispatcher = get_agent("chat", db, uid)
-        action = await dispatcher.dispatch(msg.message, context=context, llm=llm)
+        action = await dispatcher.dispatch(msg.message, context=context, llm=llm,
+                                           **({"conversation_history": msg.history} if msg.history else {}))
     except Exception as e:
         logger.warning(f"[Chat] Dispatch failed: {e}")
         return ChatResponse(reply=f"Sorry, I hit an error: {e}")
@@ -4570,6 +4609,9 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
         elif action_type == "approve_jobs":
             reply = _chat_approve(db, current_user, (action.get("params") or {}).get("job_ids") or
                                   ([action["job_id"]] if action.get("job_id") else []))
+
+        elif action_type == "answer_question":
+            reply = _chat_answer(db, current_user, action.get("job_id"), str((action.get("params") or {}).get("answer") or ""))
 
         elif action_type == "run_discovery":
             reply = "🔎 Discovery started — new resumes arrive here when it's done." \

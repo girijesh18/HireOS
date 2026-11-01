@@ -148,6 +148,7 @@ class ChatMessage(BaseModel):
     message: str
     llm: Optional[str] = None      # None: the user's model (Settings › AI Models)
     context: Optional[dict] = None
+    history: Optional[list] = None   # [{role, content}]: the chat's last turns (Telegram / Discord)
 
 
 class ChatResponse(BaseModel):

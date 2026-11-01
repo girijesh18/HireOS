@@ -71,9 +71,14 @@ Available actions:
 - status_summary: { "action": "status_summary", "params": {"since_hours": 168} }  "what's going on", progress,
   how many applied / found / interviews in a period (since_hours optional, default 24).
 - get_stats: { "action": "get_stats" }
+- answer_question: { "action": "answer_question", "job_id": 393, "params": {"answer": "None"} }  the user answers a
+  question an application asked (e.g. after "Needs you: #393 … French proficiency"): saved, and the job goes back
+  to the agent. Use it whenever the message, or the message it replies to, is about a job's form question.
 - general_reply: { "action": "general_reply", "text": "..." }
 
 If you cannot determine a structured action, return general_reply.
+A general_reply only talks: never say something was recorded, saved, approved, submitted, applied or updated,
+and never ask the user for an answer "so I can proceed" -- only the actions above do things.
 Always respond in valid JSON only."""
 
 

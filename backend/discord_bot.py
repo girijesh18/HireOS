@@ -38,6 +38,7 @@ CHANNEL_KEY, USER_KEY, GUILD_KEY, CODE_KEY, LINKED_AT_KEY = \
     "discord_channel_id", "discord_user_id", "discord_guild_id", "discord_link_code", "discord_linked_at"
 KINDS = ("approvals", "alerts", "new-jobs")      # `link <kind>` routes that kind of message to a channel
 ROUTE_KEY = "discord_channel_{}"
+AUTO_KEY = "discord_routes_found"     # the server's channels were looked up by name (reset when relinked)
 SENT_META = "dc_sent_version"
 CARDS_META = "dc_card_msgs"     # [[message_id, card text]]: closed when the job is decided
 LIMIT = 2000                    # Discord's message length
@@ -103,11 +104,35 @@ def command(text: str):
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def channel_of(db, user_id: int, kind: str = None):
-    """The channel for this kind of message: its own if linked, else the main linked channel."""
+    """The channel for this kind of message: its own (linked, or found by name), else the main one."""
     if not TOKEN:
         return None
     m = _m()
+    if kind and not m._setting(db, user_id, AUTO_KEY):
+        auto_routes(db, user_id)
     return (kind and m._setting(db, user_id, ROUTE_KEY.format(kind))) or m._setting(db, user_id, CHANNEL_KEY)
+
+
+def auto_routes(db, user_id: int):
+    """Once per link: the server's channels named approvals / alerts / new-jobs get those messages,
+    unless `link <kind>` already chose another channel."""
+    m = _m()
+    gid = m._setting(db, user_id, GUILD_KEY)
+    m._put_setting(db, user_id, AUTO_KEY, "1")
+    chans = _request("GET", f"/guilds/{gid}/channels") if gid else None
+    for c in chans if isinstance(chans, list) else []:
+        name = (c.get("name") or "").lower()
+        if c.get("type") == 0 and name in KINDS and not m._setting(db, user_id, ROUTE_KEY.format(name)):
+            m._put_setting(db, user_id, ROUTE_KEY.format(name), str(c["id"]))
+    db.commit()
+
+
+def routes_text(db, user_id: int) -> str:
+    channel_of(db, user_id, "approvals")      # finds them by name the first time
+    m = _m()
+    main = m._setting(db, user_id, CHANNEL_KEY)
+    where = lambda k: m._setting(db, user_id, ROUTE_KEY.format(k)) or main
+    return "Messages go to: " + " · ".join(f"{k} <#{where(k)}>" for k in KINDS) + f" · cards <#{main}>"
 
 
 def user_for(db, channel_id: str, author_id: str, guild_id: str = None):
@@ -130,6 +155,7 @@ def link(db, code: str, channel_id: str, author_id: str, now: datetime, guild_id
             m._put_setting(db, row.user_id, USER_KEY, str(author_id))
             m._put_setting(db, row.user_id, GUILD_KEY, str(guild_id or ""))   # a DM has no server
             m._put_setting(db, row.user_id, LINKED_AT_KEY, now.isoformat())
+            db.query(m.Settings).filter(m.Settings.user_id == row.user_id, m.Settings.key == AUTO_KEY).delete()
             db.delete(row)
             db.commit()
             return db.query(m.User).get(row.user_id)
@@ -218,8 +244,9 @@ def notify_outcome(db, user_id: int, job, outcome: str, notes: str = None):
     if outcome == "submitted":
         close_cards(db, user_id, job, "✅ Submitted")
     if outcome in tg.NOTIFY:
-        send(db, user_id, f"{tg.NOTIFY[outcome]}: #{job.id} {job.company} · {job.title}" + (f"\n{notes}" if notes else ""),
-             kind="approvals" if outcome == "submitted" else "alerts")
+        msg = send(db, user_id, tg.outcome_text(job, outcome, notes), kind="approvals" if outcome == "submitted" else "alerts")
+        if outcome == "needs_human":
+            tg.remember_handoff(db, job, "dmsg", msg)
 
 
 def send_card(db, user, channel_id: str, job, rv):
@@ -280,20 +307,24 @@ def on_message(db, d: dict) -> None:
         counts = dict(db.query(m.Job.status, m.func.count()).filter(m.Job.user_id == user.id).group_by(m.Job.status).all())
         import scheduler
         lines = [f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])] or ["No jobs."]
-        post(channel, "\n".join(lines + [scheduler.progress_line(user.id)]).strip())
+        post(channel, "\n".join(lines + [scheduler.progress_line(user.id), routes_text(db, user.id)]).strip())
     elif cmd and cmd[0] == "done":
         tg._edit_waiting.pop(key, None)
         post(channel, "Edit mode closed.")
     elif cmd and cmd[0] == "help":
         post(channel, HELP)
-    elif text and key not in tg._editing(key) and (job := tg.open_question(db, user.id, reply_to, key="dmsg")):
-        post(channel, job if job == tg.AMBIGUOUS else tg.answer(db, user, job, text, datetime.utcnow()))
+    elif text and key not in tg._editing(key) and \
+            (routed := tg.route_reply(db, user, text, reply_to, "dmsg", datetime.utcnow()))[0]:
+        sent = post(channel, routed[0])
+        if routed[1] and routed[1].status == "needs_human":      # the next question: its reply finds the job
+            tg.remember_handoff(db, routed[1], "dmsg", sent)
     elif text and key in tg._editing(key):
         tg._edit_waiting[key] = (tg._edit_waiting[key][0], time.monotonic())
         on_edit(db, user, channel, tg._edit_waiting[key][0], text)
     elif text:
         _request("POST", f"/channels/{channel}/typing")
-        post(channel, on_loop(tg.chat_reply(db, user, text)))
+        replied = (d.get("referenced_message") or {}).get("content")
+        post(channel, on_loop(tg.chat_reply(db, user, text, key, replied)))
     else:
         post(channel, HELP)
 

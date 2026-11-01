@@ -95,8 +95,9 @@ def test_link_and_allowlist():
     db.commit()
     dc.on_message(db, msg("status"))
     dc.on_message(db, {**msg("status"), "channel_id": "901"})            # another channel of the same server
-    assert rest.texts() == ["pending: 1", "pending: 1"]
-    assert rest.calls[1][1] == "/channels/901/messages"                  # answered where it was asked
+    assert [t.split("\n")[0] for t in rest.texts()] == ["pending: 1", "pending: 1"]
+    assert rest.texts()[0].endswith(f"cards <#{CH}>")                   # status says where messages go
+    assert [p for m_, p, _ in rest.calls if m_ == "POST"] == [f"/channels/{CH}/messages", "/channels/901/messages"]   # answered where asked
     db.close()
 
 
@@ -183,7 +184,7 @@ def test_free_text_goes_to_chat():
     linked(db, u, rest)
     asked, real = [], (tg.chat_reply, dc.on_loop)
 
-    async def fake_chat(db, user, text):
+    async def fake_chat(db, user, text, key=None, replied=None):
         asked.append((user.id, text))
         return "You have **3** new jobs."
     tg.chat_reply, dc.on_loop = fake_chat, (lambda coro: __import__("asyncio").run(coro))
@@ -234,15 +235,23 @@ def test_chat_actions():
             main.get_agent = real
 
     today = ask({"action": "list_jobs", "params": {"since_hours": 24, "sort": "score", "limit": 20}})
-    assert today.splitlines()[0] == "3 jobs from the last 24h:", today
+    assert today.splitlines()[0] == "3 open jobs from the last 24h:", today
     assert "· not scored yet" in today.splitlines()[3]
     good = ask({"action": "list_jobs", "params": {"since_hours": 24, "min_score": 50, "sort": "score", "limit": 1}})
-    assert good.splitlines()[0] == "2 jobs from the last 24h scoring 50+ — top 1:", good    # Hi, Lo; not unscored
+    assert good.splitlines()[0] == "2 open jobs from the last 24h scoring 50+ — top 1:", good    # Hi, Lo; not unscored
     assert f"#{hi.id} Hi — DS · pending · score 90 · " in good, good
     none = ask({"action": "list_jobs", "params": {"since_hours": 24, "min_score": 99}})
     assert none == "No jobs from the last 24h scoring 99+.", none
     assert [l.split()[1] for l in today.splitlines()[1:]] == [f"#{hi.id}", f"#{lo.id}", f"#{nocv.id}"]   # best first, unscored last
     assert ask({"action": "list_jobs", "params": {"status": "pending"}}).count("•") == 2
+    done = Job(user_id=u.id, company="Done", title="DS", status="applied", match_score=95)
+    db.add(done)
+    db.commit()
+    best = ask({"action": "list_jobs", "params": {"since_hours": 24, "min_score": 80, "sort": "score"}})
+    assert best.splitlines()[0] == "1 open jobs from the last 24h scoring 80+:" and \
+        best.endswith("(+1 more already applied, rejected or withdrawn — ask for all jobs to see them)"), best
+    db.delete(done)
+    db.commit()
     top = ask({"action": "list_jobs", "params": {"sort": "score"}})
     assert f"#{old.id}" in top and f"#{sent.id}" not in top                            # top = still open
     approved = ask({"action": "approve_jobs", "params": {"job_ids": [hi.id, nocv.id, theirs.id, sent.id]}})
@@ -268,7 +277,7 @@ def test_chat_actions():
     assert reply.startswith("Scoring 1 jobs from the last 48h"), reply
     assert started[0][:2] == (u.id, [nocv.id])                       # only unscored "found" jobs in the window
     sent = started[0][2](db)                                         # what the user gets when it's done
-    assert sent.splitlines()[0] == "2 jobs from the last 48h scoring 50+:", sent
+    assert sent.splitlines()[0] == "2 open jobs from the last 48h scoring 50+:", sent
     scheduler.CURRENT = Sched()
     try:
         assert "right after it" in ask({"action": "score_jobs", "params": {"since_hours": 48}})   # during a run

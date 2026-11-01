@@ -23,9 +23,9 @@ WD = "https://acme.wd3.myworkdayjobs.com/External"
 LI_OPEN = '<h2 class="topcard__title">Data Scientist</h2><a class="offsite-apply-icon"></a>'
 
 
-def gh_job(title, loc, days_old, url):
+def gh_job(title, loc, days_old, url, now=NOW):
     return {"absolute_url": url, "title": title, "location": {"name": loc}, "content": "&lt;p&gt;Build models&lt;/p&gt;",
-            "first_published": (NOW - timedelta(days=days_old)).isoformat()}
+            "first_published": (now - timedelta(days=days_old)).isoformat()}
 
 
 def transport(routes: dict, log: list = None):
@@ -236,7 +236,7 @@ def test_run():
     db.add(old)
     db.commit()
     routes = {("GET", "https://boards-api.greenhouse.io/v1/boards/acme/jobs"): (200, {"jobs": [
-        gh_job("Data Scientist", "Toronto", 0, "https://gh/new")]})}
+        gh_job("Data Scientist", "Toronto", 0, "https://gh/new", datetime.now(timezone.utc))]})}   # run() uses the real clock
     seen = {}
 
     async def scan_mail(payload, db, current_user):

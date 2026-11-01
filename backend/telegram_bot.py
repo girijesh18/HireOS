@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -100,7 +101,7 @@ def card_text(job, version: int, changes: list) -> str:
     score = f"score {job.match_score:g}" if job.match_score is not None else ""
     meta = " · ".join(x for x in (score, job.location or "", f"resume v{version}") if x)
     why = apply_queue.manual_reason(job)     # known before approving: approving won't get it applied for you
-    manual = [f"⚠️ You'll apply to this one yourself: {why}"] if why else []
+    manual = [f"⚠️ You'll apply to this one yourself: {why} Have its apply link? Reply to this card with it."] if why else []
     return "\n".join([f"#{job.id}  {job.company} · {job.title}", meta, *manual,
                       *([""] + changes if changes else [])])
 
@@ -114,12 +115,37 @@ def buttons(job_id: int, status: str = "pending") -> dict:
                                  {"text": "Edit", "callback_data": f"e:{job_id}"}]]}
 
 
-def ask_message(job, kind: str, text: str, url: str = None) -> tuple:
+def options_text(options: list) -> str:
+    return " · ".join(f"{i} {o}" for i, o in enumerate(options, 1))
+
+
+def pick_option(options: list, text: str):
+    """The option a reply means: its number, its words, or the one option containing them. No
+    options: the text itself. None: it matches no option (or more than one)."""
+    t = (text or "").strip()
+    if not options:
+        return t or None
+    if t.isdigit() and 1 <= int(t) <= len(options):
+        return options[int(t) - 1]
+    n = apply_queue_norm(t)
+    exact = [o for o in options if apply_queue_norm(o) == n]
+    if exact:
+        return exact[0]
+    part = [o for o in options if n and (n in apply_queue_norm(o) or apply_queue_norm(o) in n)]
+    return part[0] if len(part) == 1 else None
+
+
+def apply_queue_norm(x) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(x or "").lower()).strip()
+
+
+def ask_message(job, kind: str, text: str, url: str = None, options: list = None) -> tuple:
     """(text, reply_markup) for the applier needing the user mid-form.
     question / code: the user replies with it. captcha / wait: the user acts, then taps Done."""
     head = f"#{job.id} {job.company} · {job.title}"
     if kind == "question":
-        return (f"{head}\nThe form asks: {text}\n\nReply to this message with your answer "
+        pick = f"\nOptions: {options_text(options)}\nReply with the number or the words." if options else ""
+        return (f"{head}\nThe form asks: {text}{pick}\n\nReply to this message with your answer "
                 "(it's saved for future forms), or reply skip.",
                 {"force_reply": True, "input_field_placeholder": "Your answer, or skip"})
     if kind == "code":   # one-time code: typed into the form, never saved
@@ -215,9 +241,11 @@ def answer(db, user, job, text: str, now: datetime) -> str:
         m.apply_result(job.id, {"outcome": "skipped", "notes": "Skipped by you in Telegram"}, db, user)
         return f"Skipped #{job.id}."
     if ask.get("kind") == "question":
-        p = m._application_profile(db, user.id)
-        qa = [x for x in p.get("custom_qa") or [] if (x.get("q") or "").lower() != ask["q"].lower()]
-        m.put_application_profile({**p, "custom_qa": qa + [{"q": ask["q"], "a": text.strip()}]}, db, user)
+        picked = pick_option(ask.get("options") or [], text)
+        if picked is None:      # still waiting: nothing saved, the run keeps polling
+            return f"#{job.id}: that isn't one of the options. Options: {options_text(ask['options'])}"
+        save_answer(db, user, ask.get("label") or ask["q"], picked)
+        text = picked
     job.meta = {**(job.meta or {}), "ask": {**ask, "answer": text.strip()}}
     db.commit()
     if ask.get("deadline") and now < datetime.fromisoformat(ask["deadline"]):
@@ -225,6 +253,117 @@ def answer(db, user, job, text: str, now: datetime) -> str:
         return f"Submitting #{job.id} now." if ask.get("kind") == "submit" else f"Got it — #{job.id} is continuing."
     m.approve_job(job.id, db, user)
     return f"Got it — saved. #{job.id} will restart shortly."
+
+
+def save_answer(db, user, question: str, answer: str):
+    """The user's answer to a form question, in the Application Profile: every later form reuses it."""
+    m = _m()
+    p = m._application_profile(db, user.id)
+    qa = [x for x in p.get("custom_qa") or [] if apply_queue_norm(x.get("q")) != apply_queue_norm(question)]
+    m.put_application_profile({**p, "custom_qa": qa + [{"q": question, "a": answer}]}, db, user)
+
+
+HANDOFF_META = "handoff_msgs"      # {"msg": telegram id, "dmsg": discord id, "at": iso}: the hand-off message
+REPLY_WINDOW = timedelta(minutes=30)
+
+
+def message_job(db, user_id: int, msg_id, key: str = "msg"):
+    """The job a bot message was about: its card, its question or its hand-off."""
+    if not msg_id:
+        return None
+    m, cards = _m(), "dc_card_msgs" if key == "dmsg" else CARDS_META
+    for j in db.query(m.Job).filter(m.Job.user_id == user_id).order_by(m.Job.id.desc()).limit(500):
+        meta = j.meta or {}
+        ids = [c[0] for c in meta.get(cards) or []] + [(meta.get("ask") or {}).get(key)] + \
+            list((meta.get(HANDOFF_META) or {}).get(key + "s") or [])
+        if str(msg_id) in {str(i) for i in ids if i}:
+            return j
+    return None
+
+
+def recent_handoff(db, user_id: int, now: datetime):
+    """The last hand-off still missing answers, if it came in the last REPLY_WINDOW."""
+    m = _m()
+    for j in db.query(m.Job).filter(m.Job.user_id == user_id, m.Job.status == "needs_human").all():
+        h = (j.meta or {}).get(HANDOFF_META) or {}
+        if j.meta.get("pending_questions") and h.get("at") and now - datetime.fromisoformat(h["at"]) < REPLY_WINDOW:
+            return j
+    return None
+
+
+def pending_prompt(job) -> str:
+    q = ((job.meta or {}).get("pending_questions") or [{}])[0]
+    opts = f" Options: {options_text(q['options'])}." if q.get("options") else ""
+    return f"The form asks: {str(q.get('label') or '').rstrip(' ?')}?{opts} Reply to this message with your answer."
+
+
+def route_reply(db, user, text: str, reply_to, key: str, now: datetime) -> tuple:
+    """A message answering something the bot sent: (reply, job) -- or (None, None) for ordinary chat.
+    Covers an open question (the run is waiting), a hand-off's missing answer (saved, then the job
+    goes back to the agent), and an apply link pasted for a job the agent couldn't find one for."""
+    job = open_question(db, user.id, reply_to, key=key)
+    if job == AMBIGUOUS:
+        return AMBIGUOUS, None
+    if job:
+        return answer(db, user, job, text, now), job
+    job = message_job(db, user.id, reply_to, key) if reply_to else None
+    link = re.search(r"https?://\S+", text or "")
+    if job and link:
+        return set_apply_link(db, user, job, link.group(0).rstrip(").,>")), job
+    pending = bool(job and job.status == "needs_human" and (job.meta or {}).get("pending_questions"))
+    if not reply_to:      # no reply tag: only a valid option for the latest hand-off counts
+        job = recent_handoff(db, user.id, now)
+        q = ((job.meta or {}).get("pending_questions") or [{}])[0] if job else {}
+        pending = bool(job and q.get("options") and pick_option(q["options"], text) is not None)
+    if not pending:
+        return None, None
+    return answer_handoff(db, user, job, text), job
+
+
+def answer_handoff(db, user, job, text: str) -> str:
+    """The user answered a question the run had to stop on. Saved; the next one is asked; when
+    none are left the job is approved again and the agent starts it over with the answers."""
+    m = _m()
+    qs = list(job.meta.get("pending_questions") or [])
+    picked = pick_option(qs[0].get("options") or [], text)
+    if picked is None:
+        return f"#{job.id}: that isn't one of the options. {pending_prompt(job)}"
+    save_answer(db, user, qs[0]["label"], picked)
+    job.meta = {**job.meta, "pending_questions": qs[1:]}
+    db.commit()
+    if qs[1:]:
+        return f"Saved: {qs[0]['label']} = {picked}.\n#{job.id} {pending_prompt(job)}"
+    m.approve_job(job.id, db, user)
+    return f"Saved: {qs[0]['label']} = {picked}. #{job.id} goes back to the agent now; the form comes here for Submit."
+
+
+def set_apply_link(db, user, job, url: str) -> str:
+    """The user pasted where to apply (e.g. LinkedIn's apply link, opened while signed in). The job
+    moves there; the company's board is remembered so its next jobs are found without asking."""
+    m = _m()
+    platform = apply_queue.detect_platform(url)
+    if job.url != url:
+        job.notes = ((job.notes or "") + f"\n[apply link from you: was {job.url}]").strip()
+    job.url, job.platform = url, platform or job.platform
+    learn_board(db, user.id, job.company, url)
+    db.commit()
+    if platform not in apply_queue.WORKER_FILLS:
+        return f"Saved the link for #{job.id}, but you'll apply there yourself: {apply_queue.manual_reason(job)}"
+    name = platform.title()
+    if job.status == "needs_human":
+        m.approve_job(job.id, db, user)
+        return f"Got it: #{job.id} is on {name}. It goes back to the agent now; the form comes here for Submit."
+    return f"Got it: #{job.id} is on {name}, so the agent can fill it. Tap Approve on its card."
+
+
+BOARDS_KEY = "ats_boards"         # {company (normalized): apply URL}: where that company's jobs live
+
+
+def learn_board(db, user_id: int, company: str, url: str):
+    m = _m()
+    if apply_queue.detect_platform(url) in apply_queue.WORKER_FILLS and company:
+        boards = json.loads(m._setting(db, user_id, BOARDS_KEY) or "{}")
+        m._put_setting(db, user_id, BOARDS_KEY, json.dumps({**boards, apply_queue_norm(company): url}))
 
 
 # ── Telegram API ──────────────────────────────────────────────────────────────
@@ -312,11 +451,33 @@ def close_cards(db, user_id: int, job, note: str):
         db.commit()
 
 
+def outcome_text(job, outcome: str, notes: str = None) -> str:
+    """What the user is told about an apply outcome; a hand-off says what would unblock it."""
+    text = f"{NOTIFY[outcome]}: #{job.id} {job.company} · {job.title}" + (f"\n{notes}" if notes else "")
+    if outcome == "needs_human" and (job.meta or {}).get("pending_questions"):
+        text += f"\n\n{pending_prompt(job)} It's saved, and #{job.id} goes back to the agent."
+    elif outcome == "needs_human" and apply_queue.manual_reason(job):
+        text += "\n\nHave the apply link (e.g. from LinkedIn while signed in)? Reply to this message with it."
+    return text
+
+
+def remember_handoff(db, job, key: str, msg_id):
+    """A hand-off message's id, so a reply to it reaches its job."""
+    if msg_id:
+        h = dict((job.meta or {}).get(HANDOFF_META) or {})
+        h[key + "s"] = (h.get(key + "s") or [])[-9:] + [msg_id]
+        h["at"] = datetime.utcnow().isoformat()
+        job.meta = {**(job.meta or {}), HANDOFF_META: h}
+        db.commit()
+
+
 def notify_outcome(db, user_id: int, job, outcome: str, notes: str = None):
     if outcome == "submitted":
         close_cards(db, user_id, job, "✅ Submitted")
     if outcome in NOTIFY:
-        notify(db, user_id, f"{NOTIFY[outcome]}: #{job.id} {job.company} · {job.title}" + (f"\n{notes}" if notes else ""))
+        msg = send(db, user_id, outcome_text(job, outcome, notes))
+        if outcome == "needs_human":
+            remember_handoff(db, job, "msg", msg)
 
 
 async def _call(c: httpx.AsyncClient, method: str, **data):
@@ -395,15 +556,17 @@ async def handle(c, upd: dict):
             _edit_waiting.pop(chat_id, None)
             await _call(c, "sendMessage", chat_id=chat_id, text="Edit mode closed.")
         elif chat_id not in _editing(chat_id) and text and not text.startswith("/") and \
-                (job := open_question(db, user.id, (msg.get("reply_to_message") or {}).get("message_id"))):
-            await _call(c, "sendMessage", chat_id=chat_id,
-                        text=job if job == AMBIGUOUS else answer(db, user, job, text, datetime.utcnow()))
+                (routed := route_reply(db, user, text, (msg.get("reply_to_message") or {}).get("message_id"),
+                                       "msg", datetime.utcnow()))[0]:
+            sent = await _call(c, "sendMessage", chat_id=chat_id, text=routed[0])
+            if routed[1] and routed[1].status == "needs_human":      # the next question: its reply finds the job
+                remember_handoff(db, routed[1], "msg", ((sent or {}).get("result") or {}).get("message_id"))
         elif chat_id in _editing(chat_id) and text and not text.startswith("/"):
             _edit_waiting[chat_id] = (_edit_waiting[chat_id][0], time.monotonic())
             await _on_edit(c, db, user, chat_id, _edit_waiting[chat_id][0], text)
         elif text and not text.startswith("/"):
             await _call(c, "sendChatAction", chat_id=chat_id, action="typing")
-            reply = await chat_reply(db, user, text)
+            reply = await chat_reply(db, user, text, chat_id, (msg.get("reply_to_message") or {}).get("text"))
             await _call(c, "sendMessage", chat_id=chat_id, text=reply.replace("**", "")[:4000])
         else:
             await _call(c, "sendMessage", chat_id=chat_id, text=HELP)
@@ -472,11 +635,21 @@ async def _on_button(c, db, q: dict):
                         text=f"{q['message'].get('text', '')}\n\n{done}")
 
 
-async def chat_reply(db, user, text: str) -> str:
+# ponytail: in memory, per chat -- a restart forgets the last few turns, nothing else
+_history: dict = {}
+HISTORY_TURNS = 8
+
+
+async def chat_reply(db, user, text: str, key=None, replied: str = None) -> str:
     """Free text that isn't a command, an answer or an edit: HireOS's chat assistant (the web app's
-    floating chat), on the user's own default model."""
+    floating chat), on the user's own default model, with this chat's last few turns (and the bot
+    message it replies to) so a short follow-up keeps its meaning."""
     m = _m()
-    r = await m.chat(m.ChatMessage(message=text), db, user)     # the user's model (chat resolves it)
+    turns = _history.setdefault(key, deque(maxlen=HISTORY_TURNS))
+    history = list(turns) + ([{"role": "assistant", "content": f"(the message being replied to) {replied[:600]}"}]
+                             if replied else [])
+    r = await m.chat(m.ChatMessage(message=text, history=history or None), db, user)
+    turns.extend([{"role": "user", "content": text[:600]}, {"role": "assistant", "content": r.reply[:600]}])
     return r.reply
 
 

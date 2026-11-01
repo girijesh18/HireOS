@@ -355,7 +355,12 @@ def fill_form(run, contact: dict, resume: Path):
         if a:
             f["want"], f["source"] = a, ""
         elif f["required"] and not f["value"]:
-            run.record["unanswered"].append(f["label"] or f["id"])
+            a = run.ask_field(f["label"] or f["id"], f["options"])      # the user knows; nothing is invented
+            if a:
+                f["want"], f["source"] = a, " (you)"
+            else:
+                run.record["unanswered"].append(f["label"] or f["id"])
+                run.record.setdefault("pending", []).append({"label": f["label"] or f["id"], "options": f["options"]})
 
     # Re-scan before typing: the resume upload may have re-rendered the form (new ids).
     wanted = {(f["label"], f["type"]): f for f in fs if f.get("want")}
@@ -412,6 +417,9 @@ def check_form(run):
         run.record["errors"] += [f"not on the form: {m}" for m in missing]
         raise HandOff("review check", f"{len(missing)} value(s) didn't stick: " + "; ".join(missing[:4]))
     if empty:
+        pending = run.record.setdefault("pending", [])
+        pending += [{"label": e, "options": fs[e]["options"] if e in fs else []} for e in empty
+                    if e not in {p["label"] for p in pending}]
         raise HandOff("unanswered", "required with no grounded answer: " + "; ".join(empty[:6]))
     if files and not any("resume" in x.lower() or x.endswith(".pdf") for x in run.record["filled"]):
         raise HandOff("unanswered", "the resume wasn't attached")

@@ -35,6 +35,9 @@ SUPPORTED = {"myworkdayjobs.com": "workday", "greenhouse.io": "greenhouse", "lev
 # The noVNC screen (X display :99, see worker/): when it's up, the browser runs there so the user can
 # look at it, and act on it, from their phone (screen_url, e.g. Tailscale Serve, tailnet only).
 SCREEN_DISPLAY = os.getenv("WORKER_DISPLAY", ":99")
+ASK_MIN = float(os.getenv("APPLY_ASK_MIN", "15"))    # how long a form question waits for the user's answer
+POLL_S = float(os.getenv("APPLY_POLL_S", "10"))      # how often a waiting run checks for it
+MAX_ASKS = 6                                         # questions per run; the rest go in the hand-off
 BOT_WALL = re.compile(r"access denied|incapsula|attention required|request unsuccessful|are you a robot", re.I)
 
 
@@ -156,6 +159,23 @@ class Run:
         """Ask the user mid-form and wait: their answer ('done' for a Done tap), 'cancel' or 'timeout'."""
         return ask_and_wait(self.api, self, {"reason": reason, "kind": kind, "url": self.screen}, minutes)
 
+    def ask_field(self, label: str, options: list = ()) -> str:
+        """A required field nothing grounded answers: ask the user (their reply is saved for later forms).
+        Their answer (an option, when the field has options), or None when they didn't answer in time."""
+        asked = self.record.setdefault("asked", [])
+        if len(asked) >= MAX_ASKS:
+            return None
+        asked.append(label)
+        a = ask_and_wait(self.api, self, {"reason": label, "label": label, "kind": "question",
+                                          "options": list(options or []), "url": self.screen}, ASK_MIN)
+        if a == "cancel":
+            raise HandOff("cancelled", "you skipped it")
+        if a == "timeout":      # take the job back (it's waiting_human) and go on; the hand-off asks again
+            self.api.post(f"/apply/{self.job['id']}/continue", {})
+            return None
+        self.record.setdefault("from_you", []).append(f"{label} = {a}")
+        return a
+
     def answers(self, questions: list) -> dict:
         """HireOS answers from the profile / resume only; None = no grounded answer."""
         if not questions:
@@ -194,7 +214,7 @@ def ask_and_wait(api: HireOS, run, body: dict, minutes: int) -> str:
     api.post(f"/apply/{run.job['id']}/wait", {**body, "minutes": minutes})
     deadline = time.monotonic() + minutes * 60
     while time.monotonic() < deadline:
-        time.sleep(10)
+        time.sleep(POLL_S)
         st = api.get(f"/apply/{run.job['id']}/ask").json()
         if st["status"] == "applying":
             return st.get("answer") or ""
@@ -322,7 +342,8 @@ def run_job(job_id: int, headless: bool, live: bool, claimed: bool = False, auto
             except Exception:
                 pass
             result = None if h.kind == "cancelled" else \
-                {"outcome": "skipped" if h.kind == "closed" else "needs_human", "notes": run.record["outcome"]}
+                {"outcome": "skipped" if h.kind == "closed" else "needs_human", "notes": run.record["outcome"],
+                 "questions": run.record.get("pending") or []}   # asked again in the hand-off message
         except Exception as e:   # a crash still leaves its screenshot, trace and record
             outcome = "error"
             run.record["outcome"] = f"error: {type(e).__name__}: {e}"[:500]
@@ -380,26 +401,30 @@ def watch(headless: bool):
         if r.status_code != 200:
             time.sleep(IDLE_S)
             continue
-        job = r.json()
-        print(f"watch: #{job['job_id']} {job['company']}", flush=True)
-        if platform_of(job):
-            notify(api, f"Applying to #{job['job_id']} {job['company']} · {job['title']} now. "
-                        "The filled form comes here for Submit in about 10 minutes.")
+        apply_claimed(api, r.json(), headless)
+
+
+def apply_claimed(api: HireOS, job: dict, headless: bool):
+    """One job /apply/next handed out: fill it (review mode) or hand it to the user. Never raises."""
+    print(f"watch: #{job['job_id']} {job['company']}", flush=True)
+    if platform_of(job):
+        notify(api, f"Applying to #{job['job_id']} {job['company']} · {job['title']} now. "
+                    "The filled form comes here for Submit in about 10 minutes.")
+    try:
+        run_job(job["job_id"], headless, live=True, claimed=True, auto_submit=bool(job.get("auto_submit")))
+    except (Unsupported, SystemExit) as e:   # a site the worker can't fill: the user applies
+        where = job.get("url")
+        if job.get("careers_url"):    # discovery found the company's own careers site
+            where = f"{job['careers_url']} (company careers site; the posting: {job.get('url')})"
+        why = f"#{job['job_id']} can't be applied for you: {job['manual_reason']}" if job.get("manual_reason") else f"{e}."
+        api.post(f"/apply/{job['job_id']}/result", {"outcome": "needs_human", "notes":
+                 f"{why} Apply yourself: {where} — your tailored resume is on the card above."})
+    except Exception as e:   # never let one job stop the service
+        print(f"watch: #{job['job_id']} crashed: {e!r}", file=sys.stderr, flush=True)
         try:
-            run_job(job["job_id"], headless, live=True, claimed=True, auto_submit=bool(job.get("auto_submit")))
-        except (Unsupported, SystemExit) as e:   # a site the worker can't fill: the user applies
-            where = job.get("url")
-            if job.get("careers_url"):    # discovery found the company's own careers site
-                where = f"{job['careers_url']} (company careers site; the posting: {job.get('url')})"
-            why = f"#{job['job_id']} can't be applied for you: {job['manual_reason']}" if job.get("manual_reason") else f"{e}."
-            api.post(f"/apply/{job['job_id']}/result", {"outcome": "needs_human", "notes":
-                     f"{why} Apply yourself: {where} — your tailored resume is on the card above."})
-        except Exception as e:   # never let one job stop the service
-            print(f"watch: #{job['job_id']} crashed: {e!r}", file=sys.stderr, flush=True)
-            try:
-                api.post(f"/apply/{job['job_id']}/result", crash_outcome(job["job_id"], f"worker crashed: {e!r}"))
-            except httpx.HTTPError:
-                pass
+            api.post(f"/apply/{job['job_id']}/result", crash_outcome(job["job_id"], f"worker crashed: {e!r}"))
+        except httpx.HTTPError:
+            pass
 
 
 def dry_run(job_id: int, headless: bool) -> dict:

@@ -26,7 +26,7 @@ DECLINE = re.compile(r"prefer not|decline|not to (answer|say|disclose|self.?iden
 # and list every one in the Review report so he sees what was agreed before Submit.
 CONSENT = re.compile(r"\b(agree|accept|consent|acknowledge)\b.*\b(terms|conditions|policy|privacy|agreements?|statement)\b|\b(terms|conditions)\b.*\b(agree|accept)", re.I)
 OPT_IN = re.compile(r"preferred name|job alert|newsletter|marketing|text messages|sms|talent (community|network)", re.I)
-HONEYPOT = re.compile(r"robot|do not (enter|fill)|leave (this )?(field )?blank|if you('| a)re human", re.I)
+HONEYPOT = re.compile(r"\brobots?\b|do not (enter|fill)|leave (this )?(field )?blank|if you('| a)re human", re.I)
 MAX_PAGES = 10
 
 # My Information fields filled straight from HireOS contact facts, no model involved.
@@ -943,9 +943,12 @@ def fill_fields(run, fields: list, contact: dict, tried: set) -> int:
 
     for f in todo:
         a = answer_for(f)
+        if a is None and f["required"]:
+            a = run.ask_field(f["label"] or f["aid"], f["options"])     # the user knows; nothing is invented
         if a is None:
             if f["required"]:
                 run.record["unanswered"].append(f["label"] or f["aid"])
+                run.record.setdefault("pending", []).append({"label": f["label"] or f["aid"], "options": f["options"]})
             continue
         if f["type"] in ("select", "radio", "multiselect") and f["options"] and not pick(f["options"], a):
             a = closest(f["options"], a) or a
