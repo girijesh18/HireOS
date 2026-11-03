@@ -3,7 +3,8 @@ import { api } from '../api/client'
 
 // The apply agent answers form questions from this first, then the resume.
 // Keys are sent to the model as "key with spaces: value", so name them plainly.
-const SECTIONS = [
+// eslint-disable-next-line react-refresh/only-export-components -- Onboarding sends these keys to /prefill
+export const SECTIONS = [
   { title: 'Work eligibility', fields: [
     { key: 'current_location', label: 'Current city, province/state, country', placeholder: 'Toronto, ON, Canada' },
     { key: 'legally_authorized_to_work_in_canada', label: 'Authorized to work in Canada?', options: ['Yes', 'No'] },
@@ -54,7 +55,7 @@ const SECTIONS = [
   ]},
 ]
 
-export default function ApplicationProfileForm() {
+export default function ApplicationProfileForm({ onSaved }) {
   const [p, setP] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -78,6 +79,7 @@ export default function ApplicationProfileForm() {
       setError('')
       setNotice('Saved')
       setTimeout(() => setNotice(''), 2500)
+      onSaved?.()
     } catch (e) {
       setError(e.message)
     } finally {

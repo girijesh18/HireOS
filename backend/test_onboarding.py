@@ -144,6 +144,38 @@ def test_corrupt_profile_row_does_not_explode():
     db.close()
 
 
+def test_prefill_fills_blanks_only_and_respects_options():
+    import asyncio
+    db = fresh_db()
+    u = make_user(db)
+    db.add(MasterResumeComponent(name="Resume", type="text", content_text="Jane, +1 555 0100",
+                                 is_active=True, order=0, user_id=u.id))
+    db.commit()
+    main._put_setting(db, u.id, main.APPLICATION_PROFILE_KEY, json.dumps({"phone": "typed by user"}))
+    db.commit()
+
+    class Fake:
+        async def structured_complete(self, prompt, model_cls, **_):
+            return model_cls(values=[
+                {"key": "phone", "value": "+1 555 0100"},          # already set -> kept
+                {"key": "linkedin_url", "value": "linkedin.com/in/jane"},
+                {"key": "willing_to_relocate", "value": "Maybe"},  # not an option -> dropped
+                {"key": "not_on_the_form", "value": "x"},          # unknown key -> dropped
+            ])
+    orig = main.get_llm_router
+    main.get_llm_router = lambda *a, **k: Fake()
+    try:
+        fields = main.PrefillIn(fields=[{"key": "phone"}, {"key": "linkedin_url"},
+                                        {"key": "willing_to_relocate", "options": ["Yes", "No"]}])
+        out = asyncio.run(main.prefill_application_profile(fields, db, u))
+    finally:
+        main.get_llm_router = orig
+    assert out["filled"] == 1, out
+    p = main._application_profile(db, u.id)
+    assert p == {"phone": "typed by user", "linkedin_url": "linkedin.com/in/jane"}, p
+    db.close()
+
+
 # ── docx ingestion ────────────────────────────────────────────────────────────
 
 def test_docx_upload_extracts_text():

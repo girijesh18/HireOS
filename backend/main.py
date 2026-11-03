@@ -1758,10 +1758,9 @@ def delete_resume_component(id: int, db: Session = Depends(get_db), current_user
 
 
 # ── Onboarding ────────────────────────────────────────────────────────────────
-# Two independent ways in, not a forced sequence: upload documents, OR answer a
-# few questions. Uploading also unlocks a better version of the questions --
-# the documents are analysed first, so the follow-ups ask only about what the
-# documents did NOT already say.
+# One path: upload a resume, and /prefill copies what it says into the
+# application profile form, which the user reviews and saves. The facts/answers
+# helpers below remain for the Career Context component.
 #
 # The profile is a list of key/value facts with LLM-chosen keys, not a fixed
 # schema. A career-changer, a new grad and a staff engineer need different
@@ -1810,78 +1809,8 @@ class ProfileFact(_BaseModel):
     source: str = "answer"      # "answer" | "document"
 
 
-class OnboardingQuestion(_BaseModel):
-    key: str                 # the profile key this answer fills
-    label: str = ""          # human name for that key
-    question: str
-    prefix: str = ""         # opening words of the user's own answer
-    placeholder: str = ""
-
-
-class DocAnalysis(_BaseModel):
-    """What the uploaded documents already say, and what is still missing."""
-    extracted: List[ProfileFact] = []
-    questions: List[OnboardingQuestion] = []
-
-
-class QuestionSet(_BaseModel):
-    questions: List[OnboardingQuestion] = []
-
-
 class OnboardingAnswersIn(_BaseModel):
     facts: List[ProfileFact] = []
-
-
-# Used only when the model is unreachable. Deliberately short: it exists so the
-# flow never dead-ends, not to be a good interview.
-_FALLBACK_QUESTIONS = [
-    {"key": "target_role", "label": "Target role", "question": "What roles are you targeting right now?",
-     "prefix": "I'm targeting", "placeholder": "Senior ML Engineer roles at product companies"},
-    {"key": "experience", "label": "Experience", "question": "How many years of relevant experience, and at what level?",
-     "prefix": "I have", "placeholder": "8 years, currently senior"},
-    {"key": "strengths", "label": "Strengths", "question": "What are you genuinely best at?",
-     "prefix": "I'm strongest at", "placeholder": "production ML systems, Python, mentoring"},
-    {"key": "signature_win", "label": "Signature achievement", "question": "What achievement would you most want a hiring manager to see?",
-     "prefix": "My biggest win was", "placeholder": "cut inference cost 60% by rebuilding the serving layer"},
-    {"key": "tools", "label": "Tools", "question": "Which tools and technologies belong on the resume?",
-     "prefix": "I work with", "placeholder": "PyTorch, Kubernetes, GCP"},
-    {"key": "location", "label": "Location", "question": "Where are you looking to work?",
-     "prefix": "I'm looking for work", "placeholder": "remote in Canada, or hybrid in Toronto"},
-]
-
-_SCRATCH_PROMPT = """A new user has uploaded nothing. Write the 6-8 questions that would
-tell you the most about them for tailoring resumes.
-
-Rules:
-- Each question fills one profile fact. Invent a short snake_case `key` for it and a
-  human `label`. Choose keys that suit a general professional -- do not assume an industry.
-- Answers must be short: a phrase or one sentence. Never ask for a paragraph.
-- `prefix` is the opening words of the user's own answer ("I'm targeting"), so they
-  only type the ending. `placeholder` is a realistic example answer.
-- Cover positioning and target role first, then seniority, strengths, a signature
-  achievement, tools, and any constraint (location, authorization, things to omit).
-
-Return only the questions."""
-
-_ANALYSIS_PROMPT = """You are reading a new user's uploaded career documents so you can
-tailor resumes for them later.
-
-Do two things:
-
-1. `extracted` -- the facts the documents already establish. One entry per fact, with a
-   short snake_case `key`, a human `label`, and the `value` in the user's own terms.
-   Choose the keys that matter for THIS person; a career-changer, a new grad and a staff
-   engineer do not need the same fields. Do not invent anything the documents do not say.
-
-2. `questions` -- 4-7 questions covering only what the documents did NOT answer, ranked
-   by how much a resume would improve if you knew. Never ask something the documents
-   already state. Prefer intent and positioning (target role, seniority aim, constraints,
-   what to leave off) over restating history. Each question carries the `key` and `label`
-   of the fact it will fill, a `prefix` (the opening words of the user's own answer) and
-   a realistic `placeholder`. Answers must be short.
-
-THE USER'S DOCUMENTS:
-{material}"""
 
 
 def _profile_facts(db: Session, user_id: int) -> List[dict]:
@@ -1979,10 +1908,6 @@ def _set_user_setting(db: Session, user_id: int, key: str, value: str) -> None:
     db.commit()
 
 
-def _fallback_questions(exclude_keys=()) -> List[OnboardingQuestion]:
-    return [OnboardingQuestion(**q) for q in _FALLBACK_QUESTIONS if q["key"] not in set(exclude_keys)]
-
-
 @app.get("/api/onboarding/status")
 def onboarding_status(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     uploaded = _uploaded_components(db, current_user.id)
@@ -1998,68 +1923,85 @@ def onboarding_status(db: Session = Depends(get_db), current_user: User = Depend
     }
 
 
-@app.post("/api/onboarding/analyze", response_model=DocAnalysis)
-async def analyze_documents(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Read what was uploaded, then ask only about what it does not say.
+class PrefillField(_BaseModel):
+    key: str
+    label: str = ""
+    options: List[str] = []
 
-    This is the pay-off for uploading: the questions get sharper instead of the
-    user answering things their own resume already answered.
-    """
+
+class PrefillIn(_BaseModel):
+    fields: List[PrefillField] = []
+
+
+class PrefillValue(_BaseModel):
+    key: str
+    value: str = ""
+
+
+class PrefillOut(_BaseModel):
+    values: List[PrefillValue] = []
+
+
+_PREFILL_PROMPT = """Fill a job-application profile from the candidate's documents.
+
+For each field below, return its `key` and the `value` the documents state.
+If a field lists options, the value must be exactly one of them.
+Leave out any field the documents do not answer -- never guess eligibility,
+salary, dates or self-identification.
+
+FIELDS:
+{fields}
+
+THE CANDIDATE'S DOCUMENTS:
+{material}"""
+
+
+@app.post("/api/onboarding/prefill")
+async def prefill_application_profile(
+    payload: PrefillIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Uploaded resume -> application profile. Blanks only: never overwrites an
+    answer the user already gave. The form sends its own field list, so the two
+    cannot drift apart."""
     components = _uploaded_components(db, current_user.id)
     if not components:
-        raise HTTPException(status_code=400, detail="Upload a document first, or answer the questions instead.")
-
+        raise HTTPException(status_code=400, detail="Upload your resume first.")
     material = "\n\n".join(
         f"--- {c.name} ---\n{(c.content_text or '')}" for c in components
     )[:_ANALYSIS_CHAR_BUDGET]
+    fields = "\n".join(
+        f"- {f.key}: {f.label}" + (f" (one of: {', '.join(f.options)})" if f.options else "")
+        for f in payload.fields)
+    allowed = {f.key: f.options for f in payload.fields}
 
+    profile = _application_profile(db, current_user.id)
     try:
         router = get_llm_router(db, current_user.id)
         result = await asyncio.wait_for(router.structured_complete(
-            _ANALYSIS_PROMPT.format(material=material),
-            DocAnalysis,
+            _PREFILL_PROMPT.format(fields=fields, material=material), PrefillOut,
             llm=resolve_llm(db, current_user.id),
-            system="You extract structured facts from career documents and ask only what is missing.",
+            system="You copy facts from career documents into form fields. Never invent.",
         ), timeout=_ONBOARDING_ANALYSIS_TIMEOUT)
-        if result.questions or result.extracted:
-            # Remember what the documents told us, so answers merge on top of it
-            # rather than the two living in different places.
-            if result.extracted:
-                extracted = [{**f.model_dump(), "source": "document"} for f in result.extracted]
-                facts = _merge_facts(_profile_facts(db, current_user.id), extracted)
-                _set_user_setting(db, current_user.id, ONBOARDING_PROFILE_KEY,
-                                  json.dumps({"facts": facts}))
-            if not result.questions:
-                result.questions = _fallback_questions([f.key for f in result.extracted])
-            return result
-        logger.warning("[Onboarding] analysis returned nothing — using the fallback questions")
-    except asyncio.TimeoutError:
-        logger.warning(f"[Onboarding] analysis exceeded {_ONBOARDING_ANALYSIS_TIMEOUT}s — using fallback questions")
     except Exception as e:
-        # A dead provider key must not dead-end the one flow that earns the user
-        # a working profile. Degrade to the generic questions instead.
-        logger.warning(f"[Onboarding] document analysis failed, using fallback: {e}")
-    return DocAnalysis(extracted=[], questions=_fallback_questions())
+        # The user can still type the form by hand; a dead provider must not block signup.
+        logger.warning(f"[Onboarding] prefill failed: {e}")
+        return {"profile": profile, "filled": 0}
 
-
-@app.post("/api/onboarding/questions", response_model=QuestionSet)
-async def onboarding_questions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """The no-documents path: ask from scratch."""
-    try:
-        router = get_llm_router(db, current_user.id)
-        result = await asyncio.wait_for(router.structured_complete(
-            _SCRATCH_PROMPT, QuestionSet,
-            llm=resolve_llm(db, current_user.id),
-            system="You write short, high-signal onboarding questions. Never ask for an essay.",
-        ), timeout=_ONBOARDING_LLM_TIMEOUT)
-        if result.questions:
-            return result
-        logger.warning("[Onboarding] empty question set — using the fallback")
-    except asyncio.TimeoutError:
-        logger.warning(f"[Onboarding] question generation exceeded {_ONBOARDING_LLM_TIMEOUT}s — using fallback")
-    except Exception as e:
-        logger.warning(f"[Onboarding] question generation failed, using fallback: {e}")
-    return QuestionSet(questions=_fallback_questions())
+    filled = 0
+    for v in result.values:
+        value = (v.value or "").strip()
+        if v.key not in allowed or not value or str(profile.get(v.key) or "").strip():
+            continue
+        if allowed[v.key] and value not in allowed[v.key]:
+            continue
+        profile[v.key] = value
+        filled += 1
+    if filled:
+        _put_setting(db, current_user.id, APPLICATION_PROFILE_KEY, json.dumps(profile))
+        db.commit()
+    return {"profile": profile, "filled": filled}
 
 
 @app.post("/api/onboarding/answers")

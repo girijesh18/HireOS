@@ -273,9 +273,7 @@ export const api = {
 
   // Onboarding
   onboardingStatus: () => req('GET', '/onboarding/status'),
-  onboardingQuestions: () => req('POST', '/onboarding/questions'),
-  analyzeOnboardingDocs: () => req('POST', '/onboarding/analyze'),
-  saveOnboardingAnswers: (facts) => req('POST', '/onboarding/answers', { facts }),
+  prefillApplicationProfile: (fields) => req('POST', '/onboarding/prefill', { fields }),
   skipOnboarding: () => req('POST', '/onboarding/skip'),
 
   // Admin
