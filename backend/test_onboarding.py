@@ -170,7 +170,7 @@ def test_prefill_fills_blanks_only_and_respects_options():
         out = asyncio.run(main.prefill_application_profile(fields, db, u))
     finally:
         main.get_llm_router = orig
-    assert out["filled"] == 1, out
+    assert out["filled"] == 1 and not out.get("failed"), out
     p = main._application_profile(db, u.id)
     assert p == {"phone": "typed by user", "linkedin_url": "linkedin.com/in/jane"}, p
     db.close()

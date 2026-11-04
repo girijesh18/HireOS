@@ -10,7 +10,7 @@ const FIELDS = SECTIONS.flatMap(s => s.fields.map(({ key, label, options }) => (
 
 export default function Onboarding({ onFinish }) {
   const [stage, setStage] = useState('upload')   // upload | reading | form
-  const [filled, setFilled] = useState(0)
+  const [prefill, setPrefill] = useState({ filled: 0 })
   const [error, setError] = useState('')
 
   const finish = async () => {
@@ -23,7 +23,7 @@ export default function Onboarding({ onFinish }) {
     setStage('reading'); setError('')
     try {
       await api.uploadResumeFile(file.name.replace(/\.[^.]+$/, ''), file)
-      setFilled((await api.prefillApplicationProfile(FIELDS)).filled)
+      setPrefill(await api.prefillApplicationProfile(FIELDS))
       setStage('form')
     } catch (e) {
       setError(e.message); setStage('upload')
@@ -66,7 +66,9 @@ export default function Onboarding({ onFinish }) {
         <div>
           <h2 style={{ fontSize: '1.35rem', marginBottom: '0.4rem' }}>Check your details</h2>
           <p style={{ color: 'var(--fg-muted)', fontSize: '0.9rem' }}>
-            {filled ? `We filled ${filled} field${filled > 1 ? 's' : ''} from your resume.` : 'Your resume didn’t cover these — fill what you can.'}
+            {prefill.failed ? 'Your resume is saved, but we couldn’t read it automatically right now.'
+              : prefill.filled ? `We filled ${prefill.filled} field${prefill.filled > 1 ? 's' : ''} from your resume.`
+              : 'Your resume didn’t cover these fields.'}
             {' '}Fill the rest, then save. You can change it later in Settings.
           </p>
         </div>

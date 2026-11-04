@@ -1987,7 +1987,7 @@ async def prefill_application_profile(
     except Exception as e:
         # The user can still type the form by hand; a dead provider must not block signup.
         logger.warning(f"[Onboarding] prefill failed: {e}")
-        return {"profile": profile, "filled": 0}
+        return {"profile": profile, "filled": 0, "failed": True}
 
     filled = 0
     for v in result.values:
