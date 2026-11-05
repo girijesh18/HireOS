@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { useHashTab } from '../hashTab'
 import { api } from '../api/client'
 import { setCustomNvidiaModels } from '../llmOptions'
 import { usePreferredLlm, setPreferredLlm, loadModelState, modelOptions } from '../model'
@@ -87,7 +88,7 @@ const FONT_OPTIONS = [
 ]
 
 export default function Settings() {
-  const [activeCategory, setActiveCategory] = useState('resume')
+  const [activeCategory, setActiveCategory] = useHashTab('resume')
   const [values, setValues] = useState({})
   const [pdfStyle, setPdfStyle] = useState(DEFAULT_PDF_STYLE)
   const [saved, setSaved] = useState(false)

@@ -5,6 +5,7 @@
 // a hardcoded id table goes stale silently and fails at a user's request time
 // rather than ours.
 import { useEffect, useState } from 'react'
+import { useHashTab } from '../hashTab'
 import { api } from '../api/client'
 import AdminUsers from '../components/AdminUsers'
 
@@ -70,7 +71,7 @@ export default function Admin() {
   const [models, setModels] = useState([])
   const [model, setModel] = useState('')
   const [modelError, setModelError] = useState('')
-  const [tab, setTab] = useState('users')
+  const [tab, setTab] = useHashTab('users')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [loadingModels, setLoadingModels] = useState(false)
