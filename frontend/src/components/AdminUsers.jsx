@@ -1,6 +1,6 @@
 // Every account, and everything worth watching about one of them.
 // Deliberately shows no key material: only which providers a user configured.
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 
 const num = (n) => (n || 0).toLocaleString()
@@ -40,7 +40,7 @@ function Bar({ pct, exhausted }) {
 }
 
 const inputStyle = {
-  width: 130, padding: '0.4rem 0.55rem', fontSize: '0.85rem',
+  width: 165, padding: '0.4rem 0.55rem', fontSize: '0.85rem',
   borderRadius: 'var(--radius)', border: '1px solid var(--surface-border)',
   background: 'var(--bg)', color: 'var(--fg)',
 }
@@ -61,10 +61,10 @@ function DefaultLimits({ limits, onSaved }) {
   return (
     <div className="panel" style={{ padding: '1rem 1.25rem', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.6rem' }}>
       <strong style={{ fontSize: '0.9rem', marginRight: '0.5rem' }}>Default token budget per user</strong>
-      <label style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Input
+      <label style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Input tokens
         <input type="number" min="0" value={inp} onChange={e => setInp(e.target.value)} style={{ ...inputStyle, marginLeft: 6 }} />
       </label>
-      <label style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Output
+      <label style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Output tokens
         <input type="number" min="0" value={out} onChange={e => setOut(e.target.value)} style={{ ...inputStyle, marginLeft: 6 }} />
       </label>
       <button className="btn btn-primary btn-sm" onClick={save}>Save</button>
@@ -98,16 +98,20 @@ function Controls({ d, onChanged, onDeleted }) {
     <Section title="Controls">
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.6rem' }}>
         <span style={{ fontSize: '0.82rem', color: 'var(--fg-muted)' }}>Token budget</span>
-        <input type="number" min="0" placeholder={`default ${num(d.default_limits?.input ?? d.token_limits.input)}`} value={inp}
-          onChange={e => setInp(e.target.value)} style={inputStyle} aria-label="Input token limit" />
-        <input type="number" min="0" placeholder={`default ${num(d.default_limits?.output ?? d.token_limits.output)}`} value={out}
-          onChange={e => setOut(e.target.value)} style={inputStyle} aria-label="Output token limit" />
+        <label style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Input tokens
+          <input type="number" min="0" placeholder={`default ${num(d.default_limits?.input ?? d.token_limits.input)}`} value={inp}
+            onChange={e => setInp(e.target.value)} style={{ ...inputStyle, marginLeft: 6 }} aria-label="Input token limit" />
+        </label>
+        <label style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Output tokens
+          <input type="number" min="0" placeholder={`default ${num(d.default_limits?.output ?? d.token_limits.output)}`} value={out}
+            onChange={e => setOut(e.target.value)} style={{ ...inputStyle, marginLeft: 6 }} aria-label="Output token limit" />
+        </label>
         <button className="btn btn-outline btn-sm" disabled={busy} onClick={saveLimits}>Save limit</button>
         <button className="btn btn-ghost btn-sm" disabled={busy}
           onClick={() => run(() => api.adminUpdateUser(d.id, { reset_usage: true }), 'Usage reset to 0')}>Reset usage</button>
       </div>
       <div style={{ fontSize: '0.75rem', color: 'var(--fg-subtle)' }}>
-        Input / output. Leave both blank to use the default. Now: {num(d.token_limits.input)} / {num(d.token_limits.output)}{d.custom_limits ? ' (custom)' : ' (default)'}.
+        Input = what we send the model, output = what it writes. Leave both blank to use the default. Now: {num(d.token_limits.input)} / {num(d.token_limits.output)}{d.custom_limits ? ' (custom)' : ' (default)'}.
       </div>
       {!d.is_admin && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', marginTop: '0.4rem' }}>
@@ -331,7 +335,8 @@ export default function AdminUsers() {
           </thead>
           <tbody>
             {rows.map(u => (
-              <tr key={u.id} style={{ borderTop: '1px solid var(--surface-border)' }}>
+              <Fragment key={u.id}>
+              <tr style={{ borderTop: '1px solid var(--surface-border)' }}>
                 <td style={{ padding: '0.5rem 0.6rem' }}>
                   {u.email}
                   {u.is_admin && <span className="badge" style={{ marginLeft: 6, background: 'var(--surface-2)', color: 'var(--fg-muted)' }}>admin</span>}
@@ -366,6 +371,12 @@ export default function AdminUsers() {
                   </button>
                 </td>
               </tr>
+              {openId === u.id && (
+                <tr><td colSpan={10} style={{ padding: '0 0.6rem 0.8rem' }}>
+                  <UserDetail id={u.id} onClose={() => setOpenId(null)} onChanged={load} />
+                </td></tr>
+              )}
+              </Fragment>
             ))}
             {!rows.length && (
               <tr><td colSpan={10} style={{ padding: '1rem 0.6rem', color: 'var(--fg-muted)' }}>No accounts match.</td></tr>
@@ -374,7 +385,6 @@ export default function AdminUsers() {
         </table>
       </div>
 
-      {openId && <UserDetail id={openId} onClose={() => setOpenId(null)} onChanged={load} />}
     </div>
   )
 }
