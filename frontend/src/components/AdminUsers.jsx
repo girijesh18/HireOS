@@ -39,6 +39,91 @@ function Bar({ pct, exhausted }) {
   )
 }
 
+const inputStyle = {
+  width: 130, padding: '0.4rem 0.55rem', fontSize: '0.85rem',
+  borderRadius: 'var(--radius)', border: '1px solid var(--surface-border)',
+  background: 'var(--bg)', color: 'var(--fg)',
+}
+
+// Blank means "use the default"; anything else must be a whole number >= 0.
+const toLimit = (v) => (String(v).trim() === '' ? null : Math.max(0, parseInt(v, 10) || 0))
+
+function DefaultLimits({ limits, onSaved }) {
+  const [inp, setInp] = useState(limits.input)
+  const [out, setOut] = useState(limits.output)
+  const [msg, setMsg] = useState('')
+  const save = async () => {
+    try {
+      await api.adminSetDefaultLimits(toLimit(inp) ?? 0, toLimit(out) ?? 0)
+      setMsg('Saved'); onSaved()
+    } catch (e) { setMsg(e.message) }
+  }
+  return (
+    <div className="panel" style={{ padding: '1rem 1.25rem', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.6rem' }}>
+      <strong style={{ fontSize: '0.9rem', marginRight: '0.5rem' }}>Default token budget per user</strong>
+      <label style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Input
+        <input type="number" min="0" value={inp} onChange={e => setInp(e.target.value)} style={{ ...inputStyle, marginLeft: 6 }} />
+      </label>
+      <label style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Output
+        <input type="number" min="0" value={out} onChange={e => setOut(e.target.value)} style={{ ...inputStyle, marginLeft: 6 }} />
+      </label>
+      <button className="btn btn-primary btn-sm" onClick={save}>Save</button>
+      <span style={{ fontSize: '0.78rem', color: 'var(--fg-muted)' }}>{msg || 'Applies to everyone on the platform key without their own limit.'}</span>
+    </div>
+  )
+}
+
+function Controls({ d, onChanged, onDeleted }) {
+  const [inp, setInp] = useState(d.custom_limits ? d.token_limits.input : '')
+  const [out, setOut] = useState(d.custom_limits ? d.token_limits.output : '')
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const run = async (fn, done) => {
+    setBusy(true); setMsg('')
+    try { await fn(); setMsg(done); onChanged() } catch (e) { setMsg(e.message) } finally { setBusy(false) }
+  }
+  const saveLimits = () => {
+    const i = toLimit(inp), o = toLimit(out)
+    run(() => api.adminUpdateUser(d.id, { set_limits: true, token_limit_input: i, token_limit_output: o }),
+      i === null && o === null ? 'Back on the default budget' : 'Limit saved')
+  }
+  const remove = async () => {
+    if (window.prompt(`This permanently deletes ${d.email} and all their jobs, resumes and settings.\nType the email to confirm:`) !== d.email) return
+    setBusy(true)
+    try { await api.adminDeleteUser(d.id); onDeleted() } catch (e) { setMsg(e.message); setBusy(false) }
+  }
+
+  return (
+    <Section title="Controls">
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.6rem' }}>
+        <span style={{ fontSize: '0.82rem', color: 'var(--fg-muted)' }}>Token budget</span>
+        <input type="number" min="0" placeholder={`default ${num(d.default_limits?.input ?? d.token_limits.input)}`} value={inp}
+          onChange={e => setInp(e.target.value)} style={inputStyle} aria-label="Input token limit" />
+        <input type="number" min="0" placeholder={`default ${num(d.default_limits?.output ?? d.token_limits.output)}`} value={out}
+          onChange={e => setOut(e.target.value)} style={inputStyle} aria-label="Output token limit" />
+        <button className="btn btn-outline btn-sm" disabled={busy} onClick={saveLimits}>Save limit</button>
+        <button className="btn btn-ghost btn-sm" disabled={busy}
+          onClick={() => run(() => api.adminUpdateUser(d.id, { reset_usage: true }), 'Usage reset to 0')}>Reset usage</button>
+      </div>
+      <div style={{ fontSize: '0.75rem', color: 'var(--fg-subtle)' }}>
+        Input / output. Leave both blank to use the default. Now: {num(d.token_limits.input)} / {num(d.token_limits.output)}{d.custom_limits ? ' (custom)' : ' (default)'}.
+      </div>
+      {!d.is_admin && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', marginTop: '0.4rem' }}>
+          <button className="btn btn-outline btn-sm" disabled={busy}
+            onClick={() => run(() => api.adminUpdateUser(d.id, { blocked: !d.blocked }), d.blocked ? 'Unblocked' : 'Blocked')}>
+            {d.blocked ? 'Unblock user' : 'Block user'}
+          </button>
+          <button className="btn btn-sm" disabled={busy} onClick={remove}
+            style={{ background: 'var(--danger)', color: '#fff', border: '1px solid var(--danger)' }}>Delete user</button>
+        </div>
+      )}
+      {msg && <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>{msg}</span>}
+    </Section>
+  )
+}
+
 function Section({ title, children, empty }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -69,9 +154,10 @@ function Rows({ items, cols }) {
   )
 }
 
-function UserDetail({ id, onClose }) {
+function UserDetail({ id, onClose, onChanged }) {
   const [d, setD] = useState(null)
   const [err, setErr] = useState('')
+  const [rev, setRev] = useState(0)
 
   useEffect(() => {
     // Clearing before refetching is the point: opening a second user must not
@@ -79,12 +165,14 @@ function UserDetail({ id, onClose }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setD(null); setErr('')
     api.adminUserDetail(id).then(setD).catch(e => setErr(e.message))
-  }, [id])
+  }, [id, rev])
+
+  const changed = () => { setRev(r => r + 1); onChanged() }
 
   return (
     <div className="panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       <div className="flex items-center justify-between" style={{ gap: '1rem' }}>
-        <strong style={{ fontSize: '1rem' }}>{d?.email || `User #${id}`}</strong>
+        <strong style={{ fontSize: '1rem' }}>{d?.email || `User #${id}`}{d?.blocked && <span className="badge" style={{ marginLeft: 8, background: 'var(--danger)', color: '#fff' }}>blocked</span>}</strong>
         <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
       </div>
       {err && <div className="alert alert-danger">{err}</div>}
@@ -111,6 +199,8 @@ function UserDetail({ id, onClose }) {
               {d.is_admin && ' · admin'}
             </div>
           </Section>
+
+          <Controls key={rev} d={d} onChanged={changed} onDeleted={() => { onChanged(); onClose() }} />
 
           <Section title={`Profile facts (${d.facts.length})`} empty="Nothing captured yet.">
             {d.facts.length > 0 && (
@@ -178,7 +268,8 @@ export default function AdminUsers() {
   const [sort, setSort] = useState('tokens')
   const [openId, setOpenId] = useState(null)
 
-  useEffect(() => { api.adminUsers().then(setData).catch(e => setError(e.message)) }, [])
+  const load = () => api.adminUsers().then(setData).catch(e => setError(e.message))
+  useEffect(() => { load() }, [])
 
   const rows = useMemo(() => {
     if (!data) return []
@@ -209,6 +300,8 @@ export default function AdminUsers() {
         <Stat label="Output tokens" value={num(t.output_tokens)} />
         <Stat label="Resumes" value={t.resumes} />
       </div>
+
+      <DefaultLimits limits={data.limits} onSaved={load} />
 
       <div className="flex items-center gap-sm" style={{ flexWrap: 'wrap' }}>
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter by email…"
@@ -242,6 +335,7 @@ export default function AdminUsers() {
                 <td style={{ padding: '0.5rem 0.6rem' }}>
                   {u.email}
                   {u.is_admin && <span className="badge" style={{ marginLeft: 6, background: 'var(--surface-2)', color: 'var(--fg-muted)' }}>admin</span>}
+                  {u.blocked && <span className="badge" style={{ marginLeft: 6, background: 'var(--danger)', color: '#fff' }}>blocked</span>}
                   <div style={{ fontSize: '0.72rem', color: 'var(--fg-subtle)' }}>
                     #{u.id} · {u.signup_method} · joined {u.created_at?.slice(0, 10) || '—'}
                   </div>
@@ -280,7 +374,7 @@ export default function AdminUsers() {
         </table>
       </div>
 
-      {openId && <UserDetail id={openId} onClose={() => setOpenId(null)} />}
+      {openId && <UserDetail id={openId} onClose={() => setOpenId(null)} onChanged={load} />}
     </div>
   )
 }

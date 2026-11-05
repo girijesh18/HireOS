@@ -196,7 +196,8 @@ def cards_due(db, user_id: int, since: datetime = None, limit: int = BATCH, sent
 def _user_for_chat(db, chat_id: int):
     m = _m()
     row = db.query(m.Settings).filter(m.Settings.key == CHAT_KEY, m.Settings.value == str(chat_id)).first()
-    return db.query(m.User).get(row.user_id) if row else None
+    user = db.query(m.User).get(row.user_id) if row else None
+    return user if user and not user.blocked else None
 
 
 def link_chat(db, code: str, chat_id: int, now: datetime):

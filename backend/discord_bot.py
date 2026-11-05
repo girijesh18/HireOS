@@ -141,7 +141,8 @@ def user_for(db, channel_id: str, author_id: str, guild_id: str = None):
     for row in db.query(m.Settings).filter(m.Settings.key == USER_KEY, m.Settings.value == str(author_id)).all():
         if m._setting(db, row.user_id, CHANNEL_KEY) == str(channel_id) or \
                 (guild_id and m._setting(db, row.user_id, GUILD_KEY) == str(guild_id)):
-            return db.query(m.User).get(row.user_id)
+            user = db.query(m.User).get(row.user_id)
+            return user if user and not user.blocked else None
     return None
 
 

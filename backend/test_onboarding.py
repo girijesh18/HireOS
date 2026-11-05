@@ -219,6 +219,59 @@ def test_require_admin_rejects_everyone_not_on_the_list():
     db.close()
 
 
+def test_admin_block_limits_and_delete():
+    from fastapi.security import HTTPAuthorizationCredentials
+    from database import Job, ResumeVersion
+    db = fresh_db()
+    boss = make_user(db, "boss@hireos.test")
+    u = make_user(db, "victim@x.com")
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=main._create_token(u.email))
+    assert main.get_current_user(creds, db).id == u.id
+
+    # block: no request and no login gets through; unblock restores both
+    main.admin_update_user(u.id, main.AdminUserPatch(blocked=True), db, boss)
+    for call in (lambda: main.get_current_user(creds, db),):
+        try:
+            call(); raise AssertionError("a blocked user must be refused")
+        except HTTPException as e:
+            assert e.status_code == 403
+    main.admin_update_user(u.id, main.AdminUserPatch(blocked=False), db, boss)
+    assert main.get_current_user(creds, db).id == u.id
+
+    # an admin can't block or delete themself
+    for call in (lambda: main.admin_update_user(boss.id, main.AdminUserPatch(blocked=True), db, boss),
+                 lambda: main.admin_delete_user(boss.id, db, boss)):
+        try:
+            call(); raise AssertionError("self-lockout must be refused")
+        except HTTPException as e:
+            assert e.status_code == 400
+
+    # per-user limits + default + clearing the override
+    main.admin_set_default_limits(main.TokenLimitsIn(input=9000, output=3000), db, boss)
+    out = main.admin_update_user(u.id, main.AdminUserPatch(set_limits=True, token_limit_input=50, token_limit_output=20), db, boss)
+    assert out["token_limits"] == {"input": 50, "output": 20} and out["custom_limits"]
+    out = main.admin_update_user(u.id, main.AdminUserPatch(set_limits=True), db, boss)
+    assert out["token_limits"] == {"input": 9000, "output": 3000} and not out["custom_limits"]
+    u.free_input_tokens_used = 77; db.commit()
+    main.admin_update_user(u.id, main.AdminUserPatch(reset_usage=True), db, boss)
+    assert u.free_input_tokens_used == 0
+    row = next(r for r in main.admin_users(db, boss)["users"] if r["id"] == u.id)
+    assert row["token_limits"] == {"input": 9000, "output": 3000} and row["blocked"] is False
+
+    # delete takes every owned row with it, and nobody else's
+    job = Job(company="Acme", title="DS", user_id=u.id); db.add(job); db.commit()
+    db.add(ResumeVersion(job_id=job.id, version=1, content_md="x", user_id=u.id))
+    db.add(Settings(key="k", value="v", user_id=u.id))
+    db.add(Settings(key="k", value="boss", user_id=boss.id)); db.commit()
+    main.admin_delete_user(u.id, db, boss)
+    assert db.query(User).filter_by(id=u.id).first() is None
+    assert db.query(Job).filter_by(user_id=u.id).count() == 0
+    assert db.query(ResumeVersion).filter_by(user_id=u.id).count() == 0
+    assert db.query(Settings).filter_by(user_id=u.id).count() == 0
+    assert db.query(Settings).filter_by(user_id=boss.id, key="k").count() == 1
+    db.close()
+
+
 def test_auth_me_carries_the_flags_the_ui_branches_on():
     """Caught in a browser run: the nav and the model picker both branch on
     /auth/me, and login set neither -- an admin saw no Admin item until they

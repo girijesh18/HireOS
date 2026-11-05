@@ -25,7 +25,7 @@ import imaplib
 import httpx
 from jose import JWTError, jwt
 import bcrypt as _bcrypt
-from pydantic import BaseModel as _BaseModel
+from pydantic import BaseModel as _BaseModel, Field
 
 from database import (
     init_db, get_db, SessionLocal, Job, ApplicationEvent, ApplicationFormEntry, ResumeVersion,
@@ -199,6 +199,8 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_bearer
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if user.blocked:
+        raise HTTPException(status_code=403, detail="This account has been blocked.")
     if payload.get("typ") == "mcp":
         row = db.query(Settings).filter(
             Settings.key == MCP_TOKEN_JTI_KEY, Settings.user_id == user.id
@@ -317,6 +319,8 @@ def login(data: _AuthBody, db: Session = Depends(get_db)):
         raise HTTPException(401, "Invalid email or password")
     if not _verify_pw(password, user.password_hash):
         raise HTTPException(401, "Invalid email or password")
+    if user.blocked:
+        raise HTTPException(403, "This account has been blocked.")
     return {"token": _create_token(email), "email": email}
 
 
@@ -2147,7 +2151,7 @@ def admin_usage(db: Session = Depends(get_db), _: User = Depends(require_admin))
     rows.sort(key=lambda r: r["input_tokens"] + r["output_tokens"], reverse=True)
     return {
         "users": rows,
-        "limits": {"input": billing.FREE_INPUT_TOKENS, "output": billing.FREE_OUTPUT_TOKENS},
+        "limits": billing.default_token_limits(db),
         "totals": {
             "input": sum(r["input_tokens"] for r in rows),
             "output": sum(r["output_tokens"] for r in rows),
@@ -5494,7 +5498,8 @@ def _own_providers(db: Session, user_id: int) -> List[str]:
 
 
 def _user_row(u: User, counts: dict, latest: dict, providers: List[str],
-              onboarding: dict, limits: dict) -> dict:
+              onboarding: dict) -> dict:
+    limits = billing.token_limits(u)
     used_in = u.free_input_tokens_used or 0
     used_out = u.free_output_tokens_used or 0
     pct = 0
@@ -5515,6 +5520,9 @@ def _user_row(u: User, counts: dict, latest: dict, providers: List[str],
         "output_tokens": used_out,
         "quota_pct": min(pct, 100),
         "quota_exhausted": not billing.has_token_quota(u),
+        "token_limits": limits,
+        "custom_limits": u.token_limit_input is not None or u.token_limit_output is not None,
+        "blocked": bool(u.blocked),
         "own_providers": providers,
         "on_platform_key": not providers,
         "is_admin": is_admin(u),
@@ -5546,8 +5554,6 @@ def admin_users(db: Session = Depends(get_db), _: User = Depends(require_admin))
         r.user_id: r.value for r in
         db.query(Settings).filter(Settings.key == ONBOARDING_DONE_KEY).all()
     }
-    limits = {"input": billing.FREE_INPUT_TOKENS, "output": billing.FREE_OUTPUT_TOKENS}
-
     rows = []
     for u in users:
         try:
@@ -5560,13 +5566,12 @@ def admin_users(db: Session = Depends(get_db), _: User = Depends(require_admin))
             latest,
             _own_providers(db, u.id),
             {"done": done_rows.get(u.id) == "1", "facts": facts},
-            limits,
         ))
 
     active = [r for r in rows if r["last_active"]]
     return {
         "users": rows,
-        "limits": limits,
+        "limits": billing.default_token_limits(db),
         "totals": {
             "accounts": len(rows),
             "active": len(active),
@@ -5578,6 +5583,69 @@ def admin_users(db: Session = Depends(get_db), _: User = Depends(require_admin))
             **{label: sum(r["counts"][label] for r in rows) for _, label in _USER_COUNT_TABLES},
         },
     }
+
+
+class TokenLimitsIn(_BaseModel):
+    input: int = Field(ge=0)
+    output: int = Field(ge=0)
+
+
+class AdminUserPatch(_BaseModel):
+    blocked: Optional[bool] = None
+    # Both null clears the override, so the user follows the default again.
+    token_limit_input: Optional[int] = Field(default=None, ge=0)
+    token_limit_output: Optional[int] = Field(default=None, ge=0)
+    set_limits: bool = False        # the two fields above apply only when true
+    reset_usage: bool = False
+
+
+@app.put("/api/admin/token-limits")
+def admin_set_default_limits(payload: TokenLimitsIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """The budget every account without its own override gets."""
+    set_platform_setting(db, billing.DEFAULT_LIMIT_KEYS["input"], str(payload.input))
+    set_platform_setting(db, billing.DEFAULT_LIMIT_KEYS["output"], str(payload.output))
+    return billing.default_token_limits(db)
+
+
+def _admin_target(db: Session, user_id: int, admin: User) -> User:
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    if u.id == admin.id:
+        raise HTTPException(status_code=400, detail="You can't do that to your own account.")
+    return u
+
+
+@app.patch("/api/admin/users/{user_id}")
+def admin_update_user(user_id: int, payload: AdminUserPatch, db: Session = Depends(get_db),
+                      admin: User = Depends(require_admin)):
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.blocked is not None:
+        u = _admin_target(db, user_id, admin)     # never lock yourself out
+        u.blocked = payload.blocked
+    if payload.set_limits:
+        u.token_limit_input, u.token_limit_output = payload.token_limit_input, payload.token_limit_output
+    if payload.reset_usage:
+        u.free_input_tokens_used = u.free_output_tokens_used = 0
+    db.commit()
+    return {"id": u.id, "blocked": bool(u.blocked), "token_limits": billing.token_limits(u),
+            "custom_limits": u.token_limit_input is not None or u.token_limit_output is not None}
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """The account and every row it owns. Irreversible.
+    ponytail: generated PDFs on disk are left behind; sweep OUTPUT_DIR if space matters."""
+    u = _admin_target(db, user_id, admin)
+    from database import _TENANT_TABLES
+    # Child tables first: most of them reference jobs as well as users.
+    for table in [t for t in _TENANT_TABLES if t != "jobs"] + ["application_form_entries", "jobs", "settings"]:
+        db.execute(text(f"DELETE FROM {table} WHERE user_id = :uid"), {"uid": u.id})
+    db.delete(u)
+    db.commit()
+    return {"status": "deleted", "id": user_id}
 
 
 @app.get("/api/admin/users/{user_id}")
@@ -5608,7 +5676,6 @@ def admin_user_detail(user_id: int, db: Session = Depends(get_db), _: User = Dep
     row = _user_row(
         u, counts, latest, _own_providers(db, user_id),
         {"done": bool(done_row and done_row.value == "1"), "facts": len(facts)},
-        {"input": billing.FREE_INPUT_TOKENS, "output": billing.FREE_OUTPUT_TOKENS},
     )
 
     jobs = db.query(Job).filter(Job.user_id == user_id).order_by(Job.created_at.desc()).limit(25).all()
@@ -5627,6 +5694,7 @@ def admin_user_detail(user_id: int, db: Session = Depends(get_db), _: User = Dep
 
     return {
         **row,
+        "default_limits": billing.default_token_limits(db),
         "job_status_mix": status_mix,
         # Profile facts are the user's own words about themselves, so they are
         # shown as-is; nothing here exposes credentials.

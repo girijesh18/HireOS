@@ -285,4 +285,7 @@ export const api = {
   adminUsage: () => req('GET', '/admin/usage'),
   adminUsers: () => req('GET', '/admin/users'),
   adminUserDetail: (id) => req('GET', `/admin/users/${id}`),
+  adminUpdateUser: (id, patch) => req('PATCH', `/admin/users/${id}`, patch),
+  adminDeleteUser: (id) => req('DELETE', `/admin/users/${id}`),
+  adminSetDefaultLimits: (input, output) => req('PUT', '/admin/token-limits', { input, output }),
 }

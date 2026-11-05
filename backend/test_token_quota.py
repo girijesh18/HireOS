@@ -164,6 +164,34 @@ def test_a_broken_meter_never_breaks_a_generation():
     assert asyncio.run(router._complete_one("p", "gemini", None, 100, 0.3)) == "the resume"
 
 
+def test_admin_limits_default_then_override():
+    db = fresh_db()
+    u = make_user(db)
+    assert billing.token_limits(u) == {"input": 1000, "output": 400}          # env bootstrap
+    db.add(billing.Settings(key="free_input_tokens", value="5000", user_id=None))
+    db.add(billing.Settings(key="free_output_tokens", value="2000", user_id=None))
+    db.commit()
+    assert billing.token_limits(u) == {"input": 5000, "output": 2000}         # admin default wins
+    u.free_input_tokens_used = 1500
+    assert billing.has_token_quota(u), "1500 < 5000: the env 1000 must no longer apply"
+    u.token_limit_input, u.token_limit_output = 1200, 2000                    # per-user override
+    db.commit()
+    assert not billing.has_token_quota(u)
+    u.token_limit_input = 0                                                   # 0 is a real limit, not "unset"
+    assert billing.token_limits(u)["input"] == 0
+    db.close()
+
+
+def test_blocked_user_has_no_quota_even_on_pro():
+    db = fresh_db()
+    u = make_user(db, plan="pro")
+    assert billing.has_token_quota(u)
+    u.blocked = True
+    db.commit()
+    assert not billing.has_token_quota(u)
+    db.close()
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

@@ -18,9 +18,9 @@ from typing import Optional, Tuple
 
 import httpx
 from loguru import logger
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
-from database import User
+from database import Settings, User
 
 STRIPE_API = "https://api.stripe.com/v1"
 
@@ -129,13 +129,36 @@ def consume_resume_credit(db: Session, user_id: int) -> None:
     db.commit()
 
 
+DEFAULT_LIMIT_KEYS = {"input": "free_input_tokens", "output": "free_output_tokens"}
+
+
+def default_token_limits(db: Session) -> dict:
+    """The admin's default (a platform setting), else the env bootstrap."""
+    out = {}
+    for side, key in DEFAULT_LIMIT_KEYS.items():
+        row = db.query(Settings).filter(Settings.key == key, Settings.user_id.is_(None)).first() if db else None
+        out[side] = int(row.value) if row and (row.value or "").isdigit() else \
+            (FREE_INPUT_TOKENS if side == "input" else FREE_OUTPUT_TOKENS)
+    return out
+
+
+def token_limits(user: User) -> dict:
+    """This user's budget: their own override where the admin set one, else the default."""
+    default = default_token_limits(object_session(user))
+    return {
+        "input": user.token_limit_input if user.token_limit_input is not None else default["input"],
+        "output": user.token_limit_output if user.token_limit_output is not None else default["output"],
+    }
+
+
 def tokens_remaining(user: User) -> Optional[dict]:
     """Platform-key tokens left on the free tier, or None when unlimited."""
     if is_pro(user):
         return None
+    lim = token_limits(user)
     return {
-        "input": max(0, FREE_INPUT_TOKENS - (user.free_input_tokens_used or 0)),
-        "output": max(0, FREE_OUTPUT_TOKENS - (user.free_output_tokens_used or 0)),
+        "input": max(0, lim["input"] - (user.free_input_tokens_used or 0)),
+        "output": max(0, lim["output"] - (user.free_output_tokens_used or 0)),
     }
 
 
@@ -143,10 +166,13 @@ def has_token_quota(user: User) -> bool:
     """False once either budget is spent. Either one alone is enough to stop
     work — an account out of output tokens cannot finish a resume however much
     input allowance is left."""
+    if user.blocked:
+        return False
     if is_pro(user):
         return True
-    return ((user.free_input_tokens_used or 0) < FREE_INPUT_TOKENS
-            and (user.free_output_tokens_used or 0) < FREE_OUTPUT_TOKENS)
+    lim = token_limits(user)
+    return ((user.free_input_tokens_used or 0) < lim["input"]
+            and (user.free_output_tokens_used or 0) < lim["output"])
 
 
 def consume_tokens(db: Session, user_id: int, in_tokens: int, out_tokens: int) -> None:
@@ -174,7 +200,7 @@ def plan_snapshot(user: User) -> dict:
         "free_limit": FREE_RESUME_LIMIT,
         "free_used": min(user.free_resumes_used or 0, FREE_RESUME_LIMIT),
         "resumes_remaining": resumes_remaining(user),
-        "token_limits": {"input": FREE_INPUT_TOKENS, "output": FREE_OUTPUT_TOKENS},
+        "token_limits": token_limits(user),
         "tokens_used": {
             "input": user.free_input_tokens_used or 0,
             "output": user.free_output_tokens_used or 0,

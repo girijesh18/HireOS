@@ -307,6 +307,11 @@ class User(Base):
     # combined number would hide where the money actually goes.
     free_input_tokens_used = Column(Integer, default=0, nullable=False)
     free_output_tokens_used = Column(Integer, default=0, nullable=False)
+    # Admin controls. A NULL limit means "the platform default" (Admin -> Users);
+    # a blocked account can neither log in nor spend the platform key.
+    token_limit_input = Column(Integer, nullable=True)
+    token_limit_output = Column(Integer, nullable=True)
+    blocked = Column(Boolean, default=False, nullable=False)
 
 
 class StripeEvent(Base):
@@ -473,6 +478,11 @@ def migrate_token_quota():
                 conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {col} INTEGER DEFAULT 0")
             # Same reason as migrate_billing: ALTER ... DEFAULT leaves existing rows NULL.
             conn.exec_driver_sql(f"UPDATE users SET {col} = 0 WHERE {col} IS NULL")
+        for col, ddl in (("token_limit_input", "INTEGER"), ("token_limit_output", "INTEGER"),
+                         ("blocked", "BOOLEAN DEFAULT 0")):
+            if not _column_exists(conn, "users", col):
+                conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+        conn.exec_driver_sql("UPDATE users SET blocked = 0 WHERE blocked IS NULL")
 
 
 def init_db():

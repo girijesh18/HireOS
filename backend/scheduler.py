@@ -276,6 +276,8 @@ class Scheduler:
         now = datetime.utcnow()
         keys = (self.m.telegram_bot.CHAT_KEY, self.m.discord_bot.CHANNEL_KEY)
         for (uid,) in db.query(self.m.Settings.user_id).filter(self.m.Settings.key.in_(keys)).distinct().all():
+            if getattr(db.get(self.m.User, uid), "blocked", True):
+                continue
             stale, waiting = self.m.stuck_jobs(db, uid, now)
             a = self._user(uid)
             for w in waiting:
@@ -306,7 +308,7 @@ class Scheduler:
         now_utc = now_utc or datetime.now(timezone.utc)
         for (uid,) in db.query(self.m.Settings.user_id).filter(self.m.Settings.key == discovery.TARGETS_KEY).all():
             slot = discovery_slot(now_utc, self.m._apply_config(db, uid)["timezone"])
-            if not slot or uid in self.discovering or self.m._setting(db, uid, DISCOVERY_LAST_KEY) == slot:
+            if not slot or uid in self.discovering or getattr(db.get(self.m.User, uid), "blocked", True) or self.m._setting(db, uid, DISCOVERY_LAST_KEY) == slot:
                 continue
             self.m._put_setting(db, uid, DISCOVERY_LAST_KEY, slot)     # claimed before it starts: never twice a slot
             db.commit()
