@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useMemo, useState, useCallback } from 'react'
 import { api } from '../api/client'
 import SmartSearchBar from '../components/SmartSearchBar'
 
@@ -9,11 +9,36 @@ const StarIcon = ({ filled }) => (
   </svg>
 )
 
+// created_at is when HireOS found / tracked the job (listed_at is never filled).
+const added = (j) => (j.created_at ? new Date(j.created_at.replace(' ', 'T') + (/[Z+]/.test(j.created_at.slice(19)) ? '' : 'Z')) : null)
+const SORTS = {
+  newest: (a, b) => (added(b) || 0) - (added(a) || 0),
+  oldest: (a, b) => (added(a) || 0) - (added(b) || 0),
+  match: (a, b) => (b.match_score ?? -1) - (a.match_score ?? -1),
+  updated: (a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')),
+}
+const SORT_KEY = 'hireos_jobs_sort'
+
+function addedLabel(j) {
+  const d = added(j)
+  if (!d) return '--'
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000)
+  if (days < 1) return 'Today'
+  if (days < 2) return 'Yesterday'
+  if (days < 7) return `${days}d ago`
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(days > 300 ? { year: 'numeric' } : {}) })
+}
+
 export default function JobList({ onOpenJob }) {
   const [jobs, setJobs] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState({ status: '', platform: '', starred: '', remote: '' })
+  const [sort, setSortState] = useState(() => {
+    try { return SORTS[localStorage.getItem(SORT_KEY)] ? localStorage.getItem(SORT_KEY) : 'newest' } catch { return 'newest' }
+  })
+  const setSort = (v) => { setSortState(v); try { localStorage.setItem(SORT_KEY, v) } catch { /* private mode */ } }
+  const sorted = useMemo(() => [...jobs].sort(SORTS[sort]), [jobs, sort])
 
   // Model selection now lives in the global top-bar selector (App.jsx).
 
@@ -95,7 +120,7 @@ export default function JobList({ onOpenJob }) {
               <option key={p} value={p}>{p}</option>
             ))}
           </select>
-          <select style={{ width:110 }} value={filter.remote} onChange={e => handleFilterChange('remote', e.target.value)}>
+          <select style={{ width:140 }} value={filter.remote} onChange={e => handleFilterChange('remote', e.target.value)}>
             <option value="">All Locations</option>
             <option value="true">Remote Only</option>
             <option value="false">Onsite</option>
@@ -103,6 +128,12 @@ export default function JobList({ onOpenJob }) {
           <select style={{ width:120 }} value={filter.starred} onChange={e => handleFilterChange('starred', e.target.value)}>
             <option value="">All Jobs</option>
             <option value="true">Starred Only</option>
+          </select>
+          <select style={{ width:165 }} value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort jobs">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="match">Best match</option>
+            <option value="updated">Recently updated</option>
           </select>
           <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:'0.5rem' }}>
             <span style={{ fontSize:'0.8rem', color:'var(--fg-subtle)' }}>
@@ -124,7 +155,7 @@ export default function JobList({ onOpenJob }) {
           padding:'0.625rem 1.25rem',
           borderBottom:'1px solid var(--surface-border)',
           fontSize:'0.7rem', color:'var(--fg-subtle)',
-          display:'grid', gridTemplateColumns:'1fr 130px 90px 110px 80px 36px',
+          display:'grid', gridTemplateColumns:'1fr 130px 90px 110px 80px 90px 36px',
           letterSpacing:'0.06em', textTransform:'uppercase', fontWeight:700
         }}>
           <span>Role</span>
@@ -132,6 +163,7 @@ export default function JobList({ onOpenJob }) {
           <span>Match</span>
           <span>Platform</span>
           <span>Salary</span>
+          <span>Added</span>
           <span></span>
         </div>
 
@@ -147,7 +179,7 @@ export default function JobList({ onOpenJob }) {
               : 'No jobs tracked yet. Click "Track New Job" to add your first one.'}
           </div>
         ) : (
-          jobs.map(job => (
+          sorted.map(job => (
             <div
               key={job.id}
               className="job-table-row"
@@ -155,7 +187,7 @@ export default function JobList({ onOpenJob }) {
               style={{
                 padding:'0.875rem 1.25rem',
                 borderBottom:'1px solid var(--surface-border)',
-                display:'grid', gridTemplateColumns:'1fr 130px 90px 110px 80px 36px',
+                display:'grid', gridTemplateColumns:'1fr 130px 90px 110px 80px 90px 36px',
                 alignItems:'center', cursor:'pointer', transition:'background 0.12s'
               }}
               onMouseEnter={e => e.currentTarget.style.background='var(--surface-hover)'}
@@ -187,6 +219,10 @@ export default function JobList({ onOpenJob }) {
               {/* Salary */}
               <span style={{ color: job.salary_min ? 'var(--success)' : 'var(--fg-subtle)', fontSize:'0.8rem', fontWeight: job.salary_min ? 600 : 400 }}>
                 {job.salary_min ? `$${Math.round(job.salary_min/1000)}K` : '--'}
+              </span>
+              {/* Added */}
+              <span title={added(job)?.toLocaleString() || ''} style={{ color:'var(--fg-muted)', fontSize:'0.8rem', whiteSpace:'nowrap' }}>
+                {addedLabel(job)}
               </span>
               {/* Star */}
               <button
