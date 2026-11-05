@@ -181,6 +181,7 @@ export const api = {
     req('POST', `/agent/compare/${jobId}`, { task, providers }),
 
   // Search: full-text job search
+  archiveJobs: (ids, archived = true) => req('POST', '/jobs/archive', { ids, archived }),
   searchJobs: (q, params = {}) => {
     const all = { ...(q ? { q } : {}), ...params }
     const qs = new URLSearchParams(

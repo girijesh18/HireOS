@@ -720,8 +720,8 @@ select.btn { appearance: auto; }
     gap: 0.4rem 0.7rem;
     position: relative;
   }
-  .job-table-row > div:first-child { flex: 1 1 100%; padding-right: 2rem; }
-  .job-table-row > button { position: absolute; top: 0.75rem; right: 1rem; }
+  .job-table-row > .job-role { flex: 1 1 calc(100% - 2.5rem); padding-right: 5rem; }
+  .job-table-row > .job-actions { position: absolute; top: 0.4rem; right: 0.5rem; }
 
   /* Two-part rows (info on one side, a button group on the other) overflow
      when the button group can't wrap. stack-mobile drops them to a column and

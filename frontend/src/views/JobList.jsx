@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback } from 'react'
 import { api } from '../api/client'
 import SmartSearchBar from '../components/SmartSearchBar'
 
-const STATUSES = ['found','analyzing','pending','approved','applying','waiting_human','needs_human','applied','screening','interview_1','interview_2','offer','rejected','withdrawn']
+const STATUSES = ['found','analyzing','pending','approved','applying','waiting_human','needs_human','applied','screening','interview_1','interview_2','offer','rejected','withdrawn','archived']
 const StarIcon = ({ filled }) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
     <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z" />
@@ -29,6 +29,19 @@ function addedLabel(j) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(days > 300 ? { year: 'numeric' } : {}) })
 }
 
+const ArchiveIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="4" width="18" height="4" /><path d="M5 8v12h14V8M10 12h4" />
+  </svg>
+)
+const RestoreIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" />
+  </svg>
+)
+const GRID = '28px 1fr 130px 90px 110px 80px 90px 80px'
+const iconBtn = { background:'none', border:'none', cursor:'pointer', minWidth:36, minHeight:44, display:'inline-flex', alignItems:'center', justifyContent:'center' }
+
 export default function JobList({ onOpenJob }) {
   const [jobs, setJobs] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -39,6 +52,22 @@ export default function JobList({ onOpenJob }) {
   })
   const setSort = (v) => { setSortState(v); try { localStorage.setItem(SORT_KEY, v) } catch { /* private mode */ } }
   const sorted = useMemo(() => [...jobs].sort(SORTS[sort]), [jobs, sort])
+  const [selected, setSelected] = useState(() => new Set())
+  const [notice, setNotice] = useState('')
+  const toggleSel = (id) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const allSelected = sorted.length > 0 && sorted.every(j => selected.has(j.id))
+
+  // Archive or restore; the job leaves the current view either way unless it still matches the filter.
+  const setArchived = async (ids, archived) => {
+    try {
+      const { changed } = await api.archiveJobs(ids, archived)
+      const viewingArchived = filter.status === 'archived'
+      setJobs(js => js.filter(j => !ids.includes(j.id) || j.status === 'applying' || (archived ? viewingArchived : !viewingArchived)))
+      setSelected(new Set())
+      setNotice(`${changed} job${changed === 1 ? '' : 's'} ${archived ? 'archived' : 'restored'}${archived ? ' — find them under All Statuses → archived' : ''}`)
+      setTimeout(() => setNotice(''), 5000)
+    } catch (e) { setNotice(e.message) }
+  }
 
   // Model selection now lives in the global top-bar selector (App.jsx).
 
@@ -80,6 +109,7 @@ export default function JobList({ onOpenJob }) {
   const handleFilterChange = (key, val) => {
     const newFilter = { ...filter, [key]: val }
     setFilter(newFilter)
+    setSelected(new Set())
     loadJobs(searchQuery, newFilter)
   }
 
@@ -149,15 +179,30 @@ export default function JobList({ onOpenJob }) {
         </div>
       </div>
 
+      {(selected.size > 0 || notice) && (
+        <div className="panel" style={{ padding:'0.6rem 1.25rem', display:'flex', alignItems:'center', gap:'0.75rem', flexWrap:'wrap' }}>
+          {selected.size > 0 && <>
+            <strong style={{ fontSize:'0.85rem' }}>{selected.size} selected</strong>
+            {filter.status === 'archived'
+              ? <button className="btn btn-outline btn-sm" onClick={() => setArchived([...selected], false)}>Restore {selected.size} selected</button>
+              : <button className="btn btn-primary btn-sm" onClick={() => setArchived([...selected], true)}>Archive {selected.size} selected</button>}
+            <button className="btn btn-ghost btn-sm" onClick={() => setSelected(new Set())}>Clear</button>
+          </>}
+          {notice && <span style={{ fontSize:'0.8rem', color:'var(--fg-muted)' }}>{notice}</span>}
+        </div>
+      )}
+
       {/* Jobs Table */}
       <div className="panel">
         <div className="job-table-head" style={{
           padding:'0.625rem 1.25rem',
           borderBottom:'1px solid var(--surface-border)',
           fontSize:'0.7rem', color:'var(--fg-subtle)',
-          display:'grid', gridTemplateColumns:'1fr 130px 90px 110px 80px 90px 36px',
+          display:'grid', gridTemplateColumns:GRID,
           letterSpacing:'0.06em', textTransform:'uppercase', fontWeight:700
         }}>
+          <input type="checkbox" aria-label="Select all" checked={allSelected}
+            onChange={() => setSelected(allSelected ? new Set() : new Set(sorted.map(j => j.id)))} />
           <span>Role</span>
           <span>Status</span>
           <span>Match</span>
@@ -187,14 +232,16 @@ export default function JobList({ onOpenJob }) {
               style={{
                 padding:'0.875rem 1.25rem',
                 borderBottom:'1px solid var(--surface-border)',
-                display:'grid', gridTemplateColumns:'1fr 130px 90px 110px 80px 90px 36px',
+                display:'grid', gridTemplateColumns:GRID,
                 alignItems:'center', cursor:'pointer', transition:'background 0.12s'
               }}
               onMouseEnter={e => e.currentTarget.style.background='var(--surface-hover)'}
               onMouseLeave={e => e.currentTarget.style.background='transparent'}
             >
+              <input type="checkbox" aria-label={`Select ${job.title}`} checked={selected.has(job.id)}
+                onClick={e => e.stopPropagation()} onChange={() => toggleSel(job.id)} />
               {/* Role */}
-              <div>
+              <div className="job-role">
                 <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                   <span style={{ fontWeight:600, fontSize:'0.875rem' }}>{job.title}</span>
                   {job.remote && <span style={{ fontSize:'0.65rem', color:'var(--info)', background:'var(--info-subtle)', padding:'1px 5px', }}>Remote</span>}
@@ -224,15 +271,26 @@ export default function JobList({ onOpenJob }) {
               <span title={added(job)?.toLocaleString() || ''} style={{ color:'var(--fg-muted)', fontSize:'0.8rem', whiteSpace:'nowrap' }}>
                 {addedLabel(job)}
               </span>
-              {/* Star */}
-              <button
-                onClick={e => toggleStar(e, job)}
-                style={{ background:'none', border:'none', cursor:'pointer', minWidth:44, minHeight:44, display:'inline-flex', alignItems:'center', justifyContent:'center', color: job.starred ? 'var(--fg)' : 'var(--fg-muted)' }}
-                aria-label={job.starred ? 'Unstar' : 'Star'}
-                title={job.starred ? 'Unstar' : 'Star'}
-              >
-                <StarIcon filled={job.starred} />
-              </button>
+              <div className="job-actions" style={{ display:'flex' }}>
+                <button
+                  onClick={e => toggleStar(e, job)}
+                  style={{ ...iconBtn, color: job.starred ? 'var(--fg)' : 'var(--fg-muted)' }}
+                  aria-label={job.starred ? 'Unstar' : 'Star'}
+                  title={job.starred ? 'Unstar' : 'Star'}
+                >
+                  <StarIcon filled={job.starred} />
+                </button>
+                {job.status !== 'applying' && (
+                  <button
+                    onClick={e => { e.stopPropagation(); setArchived([job.id], job.status !== 'archived') }}
+                    style={{ ...iconBtn, color:'var(--fg-muted)' }}
+                    aria-label={job.status === 'archived' ? 'Restore' : 'Archive as irrelevant'}
+                    title={job.status === 'archived' ? 'Restore' : 'Archive as irrelevant'}
+                  >
+                    {job.status === 'archived' ? <RestoreIcon /> : <ArchiveIcon />}
+                  </button>
+                )}
+              </div>
             </div>
           ))
         )}

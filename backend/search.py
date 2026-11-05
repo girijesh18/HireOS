@@ -155,6 +155,8 @@ def search_jobs(
     # Apply additional filters
     if status:
         query = query.filter(Job.status == status)
+    else:
+        query = query.filter(Job.status != "archived")     # hidden unless asked for
     if platform:
         query = query.filter(Job.platform == platform)
     if remote is not None:

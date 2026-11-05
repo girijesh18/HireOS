@@ -272,6 +272,30 @@ def test_admin_block_limits_and_delete():
     db.close()
 
 
+def test_archive_hides_restores_and_still_dedups():
+    from database import Job
+    db = fresh_db()
+    u, other = make_user(db, "u@x.com"), make_user(db, "o@x.com")
+    a = Job(company="Outlier", title="Photo Editor", url="https://x/1", status="pending", user_id=u.id)
+    b = Job(company="Acme", title="DS", url="https://x/2", status="applying", user_id=u.id)
+    c = Job(company="Theirs", title="DS", url="https://x/3", status="found", user_id=other.id)
+    db.add_all([a, b, c]); db.commit()
+
+    out = main.archive_jobs(main.ArchiveIn(ids=[a.id, b.id, c.id]), db, u)
+    assert out["changed"] == 1, out                       # mid-apply job and someone else's job untouched
+    db.refresh(a); db.refresh(b); db.refresh(c)
+    assert (a.status, b.status, c.status) == ("archived", "applying", "found")
+    listed = [j.id for j in main.list_jobs(db=db, current_user=u, status=None, platform=None, starred=None, priority=None, limit=100)]
+    assert a.id not in listed and b.id in listed
+    assert [j.id for j in main.list_jobs(db=db, current_user=u, status="archived", platform=None, starred=None, priority=None, limit=100)] == [a.id]
+    assert main._find_duplicate_job(db, u.id, url="https://x/1"), "discovery must still see an archived job as a duplicate"
+
+    main.archive_jobs(main.ArchiveIn(ids=[a.id], archived=False), db, u)
+    db.refresh(a)
+    assert a.status == "pending" and "pre_archive_status" not in (a.meta or {})
+    db.close()
+
+
 def test_auth_me_carries_the_flags_the_ui_branches_on():
     """Caught in a browser run: the nav and the model picker both branch on
     /auth/me, and login set neither -- an admin saw no Admin item until they

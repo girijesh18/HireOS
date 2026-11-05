@@ -1251,7 +1251,7 @@ def root():
 @app.get("/api/stats", response_model=DashboardStats)
 def get_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     uid = current_user.id
-    total = db.query(func.count(Job.id)).filter(Job.user_id == uid).scalar()
+    total = db.query(func.count(Job.id)).filter(Job.user_id == uid, Job.status != "archived").scalar()
     week_ago = datetime.utcnow() - timedelta(days=7)
 
     by_status = {
@@ -1293,6 +1293,8 @@ def list_jobs(
     q = db.query(Job).filter(Job.user_id == current_user.id)
     if status:
         q = q.filter(Job.status == status)
+    else:
+        q = q.filter(Job.status != "archived")     # hidden unless asked for
     if platform:
         q = q.filter(Job.platform == platform)
     if starred is not None:
@@ -1312,6 +1314,33 @@ def create_job(job: JobCreate, db: Session = Depends(get_db), current_user: User
                f"Tracking started for {db_job.title} at {db_job.company}",
                new_value="found", source="user", user_id=current_user.id)
     return db_job
+
+
+class ArchiveIn(_BaseModel):
+    ids: List[int]
+    archived: bool = True
+
+
+@app.post("/api/jobs/archive")
+def archive_jobs(payload: ArchiveIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Archive (or restore) jobs. Archived jobs stay in the DB on purpose: discovery
+    dedups against them, so an irrelevant posting is never re-added. Restore puts
+    back the status the job had before. A job mid-apply is left alone."""
+    changed = 0
+    for job in db.query(Job).filter(Job.user_id == current_user.id, Job.id.in_(payload.ids[:1000])).all():
+        old, meta = job.status, dict(job.meta or {})
+        if payload.archived and old not in ("archived", "applying"):
+            meta["pre_archive_status"], job.status = old, "archived"
+        elif not payload.archived and old == "archived":
+            job.status = meta.pop("pre_archive_status", None) or "found"
+        else:
+            continue
+        job.meta, job.updated_at = meta, datetime.utcnow()
+        _log_event(db, job.id, "status_change", f"Status → {job.status}", f"Moved from {old} to {job.status}",
+                   old_value=old, new_value=job.status, source="user", user_id=current_user.id)
+        changed += 1
+    db.commit()
+    return {"changed": changed}
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobOut)
