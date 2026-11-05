@@ -50,11 +50,11 @@ function ProviderCard({ p, onSaved }) {
         <input type="password" value={key} onChange={e => setKey(e.target.value)}
           placeholder={p.configured ? 'Replace key…' : 'Paste API key'}
           style={{
-            flex: 1, padding: '0.45rem 0.6rem', fontSize: '0.85rem',
+            flex: 1, minWidth: 0, padding: '0.45rem 0.6rem', fontSize: '0.85rem',
             borderRadius: 'var(--radius)', border: '1px solid var(--surface-border)',
             background: 'var(--bg)', color: 'var(--fg)',
           }} />
-        <button className="btn btn-outline btn-sm" onClick={save} disabled={busy || !key.trim()}>
+        <button className="btn btn-outline btn-sm" style={{ flexShrink: 0 }} onClick={save} disabled={busy || !key.trim()}>
           {busy ? '…' : 'Save'}
         </button>
       </div>
