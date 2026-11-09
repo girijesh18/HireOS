@@ -126,6 +126,48 @@ def test_find_ats():
     assert asyncio.run(go({li: (200, LI_OPEN)})) == {"route": "company_site", "careers_url": None}
 
 
+def test_find_ats_without_linkedins_help():
+    """LinkedIn hides the apply link and 403s the company page: built-in boards, then a guessed
+    domain, then the model's answer lead to the ATS."""
+    li = ("GET", "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/7")
+    url = "https://www.linkedin.com/jobs/view/7"
+    wd_job = {"jobPostings": [{"title": "Data Scientist", "externalPath": "/job/Toronto/DS_R1", "locationsText": "Toronto, ON"}]}
+
+    async def go(job, routes, t=None):
+        async with client(routes) as c:
+            return await d.find_ats(c, job, t or {})
+    allstate = ("POST", "https://allstate.wd5.myworkdayjobs.com/wday/cxs/allstate/allstate_careers/jobs")
+    hit = asyncio.run(go(Job(company="Allstate Canada", title="Data Scientist", location="Toronto, ON", url=url),
+                         {li: (200, LI_OPEN), allstate: (200, wd_job)}))
+    assert hit["url"] == "https://allstate.wd5.myworkdayjobs.com/en-US/allstate_careers/job/Toronto/DS_R1"
+    office = [{"title": "Data Scientist", "location": "Canadian Head Office", "url": "u1"},
+              {"title": "Data Scientist II", "location": "USA - IL", "url": "u2"}]
+    assert d.same_job(office, "Data Scientist", "Toronto, Ontario, Canada")["url"] == "u1"
+    assert d.same_job(office, "Data Scientist", "Toronto, ON") is None                # no country: unsure
+    assert d.same_job(office + [{**office[0], "location": "USA", "url": "u3"}], "Data Scientist", "Toronto, Canada") is None
+    td = ("POST", "https://td.wd3.myworkdayjobs.com/wday/cxs/td/TD_Bank_Careers/jobs")
+    acme = Job(company="Acme Ltd", title="Data Scientist", location="Toronto, ON", url=url)
+    assert asyncio.run(go(acme, {li: (200, LI_OPEN), td: (200, wd_job)}))["route"] == "company_site"   # "td" in "ltd"
+
+    pad = " " * 2000
+    site = {li: (200, LI_OPEN),
+            ("GET", "https://www.acme.ca"): (200, "<title>Welcome to Acme</title><a href='/careers'>Careers</a>" + pad),
+            ("GET", "https://www.acme.ca/careers"): (200, '<link href="https://rmk.successfactors.com/x.css">'
+                                                          '<a href="https://acme.wd3.myworkdayjobs.com/en-US/Jobs">Jobs</a>'),
+            ("POST", "https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/Jobs/jobs"): (200, wd_job)}
+    assert asyncio.run(go(acme, site))["url"] == "https://acme.wd3.myworkdayjobs.com/en-US/Jobs/job/Toronto/DS_R1"
+
+    moved = {**site, ("GET", "https://www.acme.ca"): (404, "")}
+    asked = []
+
+    async def ask(company):
+        asked.append(company)
+        return "https://www.acme.ca/careers"
+    assert asyncio.run(go(acme, moved, {"ask_website": ask}))["platform"] == "workday"
+    assert asked == ["Acme Ltd"]
+    assert d.website_guesses("The Home Depot Canada")[:2] == ["https://www.homedepot.ca", "https://www.homedepot.com"]
+
+
 def _db_user():
     Base.metadata.drop_all(bind=engine)
     init_db()

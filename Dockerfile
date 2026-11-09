@@ -25,6 +25,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Playwright: installs Chromium + all its system deps automatically
 RUN playwright install --with-deps chromium
 
+# Lightpanda: a light headless browser for careers pages whose ATS link a script draws
+# (discovery.render, a fallback after plain fetches). Pinned; glibc >= 2.35 (bookworm is 2.36).
+RUN curl -fsSL -o /usr/local/bin/lightpanda \
+      https://github.com/lightpanda-io/browser/releases/download/1.0.2/lightpanda-x86_64-linux \
+    && chmod +x /usr/local/bin/lightpanda && lightpanda version
+
 # Backend source
 COPY backend/ ./
 

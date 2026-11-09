@@ -10,9 +10,12 @@ Targets are the user's `discovery_targets` setting (JSON):
   workday: {company name: "https://<tenant>.wdN.myworkdayjobs.com/<site>"}, workday_searches: [query]
   linkedin_searches: [{keywords, location?, limit?}]   (public guest API, never a LinkedIn login)
 """
+import asyncio
 import json
 import math
+import os
 import re
+import shutil
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -20,6 +23,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import httpx
 from fastapi import BackgroundTasks, HTTPException
 from loguru import logger
+from pydantic import BaseModel
 
 TARGETS_KEY = "discovery_targets"
 PREPARE_MAX = 30      # a run adds ~20; 12 let the backlog grow
@@ -28,6 +32,42 @@ ATS_HOSTS = ["myworkdayjobs.com", "avature.net", "successfactors", "icims.com", 
              "lever.co", "ashbyhq.com", "smartrecruiters.com", "oraclecloud.com", "jobvite.com", "bamboohr.com",
              "paylocity.com", "workable.com", "recruitee.com", "dayforcehcm.com", "ultipro.com", "adp.com",
              "breezy.hr", "rippling.com"]
+# Where big employers' Workday jobs live, checked against the live boards 2026-11-09. LinkedIn hides
+# the apply link from signed-out readers and tenants can't be guessed, so these are matched by name
+# (whole words) after the user's own `workday` targets and the boards learned from pasted links.
+# ponytail: hand-kept list; a board that moves just stops matching (the website walk still runs).
+KNOWN_WORKDAY = {
+    "TD": "https://td.wd3.myworkdayjobs.com/TD_Bank_Careers",
+    "Toronto Dominion": "https://td.wd3.myworkdayjobs.com/TD_Bank_Careers",
+    "RBC": "https://rbc.wd3.myworkdayjobs.com/RBCGLOBAL1",
+    "Royal Bank of Canada": "https://rbc.wd3.myworkdayjobs.com/RBCGLOBAL1",
+    "BMO": "https://bmo.wd3.myworkdayjobs.com/External",
+    "Bank of Montreal": "https://bmo.wd3.myworkdayjobs.com/External",
+    "CIBC": "https://cibc.wd3.myworkdayjobs.com/search",
+    "Manulife": "https://manulife.wd3.myworkdayjobs.com/MFCJH_Jobs",
+    "Sun Life": "https://sunlife.wd3.myworkdayjobs.com/Experienced-Jobs",
+    "Intact": "https://intactfc.wd3.myworkdayjobs.com/intactfc",
+    "Allstate": "https://allstate.wd5.myworkdayjobs.com/allstate_careers",
+    "Aviva": "https://aviva.wd1.myworkdayjobs.com/External",
+    "Desjardins": "https://desjardins.wd10.myworkdayjobs.com/Desjardins",
+    "Interac": "https://interac.wd3.myworkdayjobs.com/Interac",
+    "Fidelity Canada": "https://fil.wd3.myworkdayjobs.com/fidelitycanada",
+    "AXIS Capital": "https://axiscapital.wd1.myworkdayjobs.com/axiscareers",
+    "Capital One": "https://capitalone.wd12.myworkdayjobs.com/Capital_One",
+    "Mastercard": "https://mastercard.wd1.myworkdayjobs.com/CorporateCareers",
+    "Thomson Reuters": "https://thomsonreuters.wd5.myworkdayjobs.com/External_Career_Site",
+    "Canadian Tire": "https://canadiantirecorporation.wd3.myworkdayjobs.com/Enterprise_External_Careers_Site",
+    "Home Depot": "https://homedepot.wd5.myworkdayjobs.com/CareerDepotCanada",
+    "BDO": "https://bdo.wd3.myworkdayjobs.com/BDO",
+    "PwC": "https://pwc.wd3.myworkdayjobs.com/Global_Experienced_Careers",
+    "Accenture": "https://accenture.wd103.myworkdayjobs.com/AccentureCareers",
+    "Autodesk": "https://autodesk.wd1.myworkdayjobs.com/Ext",
+    "NVIDIA": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
+    "Cisco": "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers",
+    "Salesforce": "https://salesforce.wd12.myworkdayjobs.com/External_Career_Site",
+    "Ciena": "https://ciena.wd5.myworkdayjobs.com/Careers",
+    "Magna": "https://magna.wd3.myworkdayjobs.com/Magna",
+}
 COMPANY_NOISE = re.compile(r"\b(inc|ltd|llc|corp|corporation|canada|group|technologies|the)\b")
 
 
@@ -231,6 +271,27 @@ async def get_page(c: httpx.AsyncClient, url: str) -> dict:
     return {"url": str(r.url), "status": r.status_code, "html": r.text}
 
 
+LIGHTPANDA = os.getenv("LIGHTPANDA_BIN") or shutil.which("lightpanda")
+
+
+async def render(url: str, timeout: float = 30) -> str:
+    """The page's HTML after its JavaScript ran (lightpanda, a light headless browser), iframes
+    included; "" when lightpanda is missing, slow or fails. Only for careers pages whose ATS link
+    a script draws: plain fetches stay the default (faster, and most pages need nothing more)."""
+    if not LIGHTPANDA:
+        return ""
+    proc = await asyncio.create_subprocess_exec(
+        LIGHTPANDA, "fetch", "--dump", "html", "--with-frames", "--wait-until", "networkalmostidle",
+        "--wait-ms", "10000", url, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return ""
+    return out.decode("utf-8", "replace")
+
+
 async def linkedin_page(c: httpx.AsyncClient, url: str) -> Optional[dict]:
     """How a LinkedIn posting is applied to, from its public page: route 'company_site', 'easy_apply'
     (LinkedIn's own form, needs a LinkedIn login), 'closed' or 'unknown'. None for other URLs."""
@@ -258,32 +319,79 @@ def hrefs(base: str, html: str) -> List[str]:
 
 
 def is_ats(u: str) -> bool:
-    host = urlparse(u).hostname or ""
-    return any(a in host for a in ATS_HOSTS)
+    p = urlparse(u)
+    return any(a in (p.hostname or "") for a in ATS_HOSTS) and \
+        not re.search(r"\.(css|js|png|jpe?g|svg|gif|woff2?|ico)$", p.path, re.I)
 
 
-async def careers_site(c: httpx.AsyncClient, job_page: dict, location: str = "") -> Optional[dict]:
-    """Company website (from LinkedIn's public company page) -> its careers page (and the one for the
-    job's country or city, e.g. /careers/canada/) -> the ATS it links to: {careers_url, workday?} or
-    None. No search engine, no login."""
-    mo = re.search(r'href="(https://[a-z]+\.linkedin\.com/company/[^"?]+)', job_page["html"])
-    if not mo:
+LEGAL = re.compile(r"\b(inc|ltd|llc|corp|corporation|co|the|limited|plc)\b")
+
+
+def website_guesses(company: str) -> List[str]:
+    """allstate.ca, allstate.com... for "Allstate Canada": tried when LinkedIn hides the website."""
+    full = LEGAL.sub(" ", norm(company)).split()
+    core = [w for w in COMPANY_NOISE.sub(" ", norm(company)).split() if w]
+    bases = list(dict.fromkeys(b for b in ("".join(core), "".join(full), core[0] if core else "") if len(b) > 2))
+    return [f"https://www.{b}.{tld}" for b in bases for tld in ("ca", "com")]
+
+
+async def company_website(c: httpx.AsyncClient, job_page: dict, company: str, ask=None) -> Optional[str]:
+    """The company's own website: LinkedIn's company page, else a domain guessed from the name
+    (kept only when its page names the company), else ask(company) (the user's model)."""
+    mo = re.search(r'href="(https://[a-z]+\.linkedin\.com/company/[^"?]+)', (job_page or {}).get("html") or "")
+    if mo:
+        about = (await get_page(c, mo.group(1)))["html"]       # 403 for bots, often
+        rd = re.search(r'href="([^"]+)"[^>]*data-tracking-control-name="about_website"', about) or \
+            re.search(r'data-tracking-control-name="about_website"[^>]*href="([^"]+)"', about)
+        if rd:
+            redir = rd.group(1).replace("&amp;", "&")
+            return (parse_qs(urlparse(redir).query).get("url") or [redir])[0]
+    name = " ".join(LEGAL.sub(" ", norm(company)).split())     # "home depot", not just "home"
+    for url in website_guesses(company):
+        try:
+            page = await get_page(c, url)
+        except httpx.HTTPError:
+            continue
+        if page["status"] < 400 and name and name in norm(page["html"]):
+            return page["url"]
+    if ask:
+        try:
+            url = await ask(company)
+        except Exception as e:      # the model is a last resort; never fail the lookup over it
+            logger.debug(f"[discovery] website of {company!r}: {e}")
+            return None
+        if url and re.match(r"https?://[^/\s]+\.[a-z]{2,}", url):
+            return url
+    return None
+
+
+async def careers_site(c: httpx.AsyncClient, job_page: dict, location: str = "", company: str = "",
+                       ask=None, render=None) -> Optional[dict]:
+    """Company website -> its careers page (and the one for the job's country or city, e.g.
+    /careers/canada/) -> the ATS it links to: {careers_url} or None. No search engine,
+    no login. render(url) -> html runs the page's JavaScript (lightpanda), for pages whose ATS link
+    is drawn by a script."""
+    website = await company_website(c, job_page, company, ask)
+    if not website:
         return None
-    about = (await get_page(c, mo.group(1)))["html"]
-    rd = re.search(r'href="([^"]+)"[^>]*data-tracking-control-name="about_website"', about) or \
-        re.search(r'data-tracking-control-name="about_website"[^>]*href="([^"]+)"', about)
-    if not rd:
-        return None
-    redir = rd.group(1).replace("&amp;", "&")
-    website = (parse_qs(urlparse(redir).query).get("url") or [redir])[0]
     try:
         home = await get_page(c, website)
     except httpx.HTTPError:
         home = None
-    if not home or home["status"] >= 400 or len(home["html"]) < 2000:
+    if not home or home["status"] >= 400:
         return {"careers_url": website}                                  # bot-blocked: browse it
+
+    renders = [2]       # lightpanda takes seconds a page: the home and the first careers page only
+
+    async def links_of(url: str, html: str) -> List[str]:
+        links = hrefs(url, html)
+        if render and renders[0] and not any(is_ats(u) for u in links):
+            renders[0] -= 1
+            links += [u for u in hrefs(url, await render(url) or "") if u not in links]
+        return links
+
     domain = ".".join((urlparse(home["url"]).hostname or "").split(".")[-2:])
-    links = hrefs(home["url"], home["html"])
+    links = await links_of(home["url"], home["html"])
     ats = [u for u in links if is_ats(u)]
     careers = [u for u in links if re.search(r"career|carri[eè]re|/jobs|emploi|join-us|work-with-us", u, re.I)
                and (urlparse(u).hostname or "").endswith(domain)][:3]
@@ -293,7 +401,7 @@ async def careers_site(c: httpx.AsyncClient, job_page: dict, location: str = "")
         if ats:
             break
         try:
-            links = hrefs(cu, (await get_page(c, cu))["html"])
+            links = await links_of(cu, (await get_page(c, cu))["html"])
         except httpx.HTTPError:
             continue
         ats = [u for u in links if is_ats(u)]
@@ -302,12 +410,7 @@ async def careers_site(c: httpx.AsyncClient, job_page: dict, location: str = "")
             careers += [u for u in links if u not in seen and any(p in u.lower() for p in places)
                         and (urlparse(u).hostname or "").endswith(domain)][:2]
         seen.update(careers)
-    wd = next((u for u in ats if "myworkdayjobs.com" in u), None)
-    if wd:   # board = origin + site (first path segment that isn't a locale)
-        u = urlparse(wd)
-        site = next((p for p in u.path.split("/") if p and not re.fullmatch(r"[a-z]{2}-[A-Z]{2}", p)), None)
-        if site:
-            return {"careers_url": f"{u.scheme}://{u.netloc}/{site}", "workday": f"{u.scheme}://{u.netloc}/{site}"}
+    ats.sort(key=lambda u: board_of(u) is None)       # a board we can search first
     return {"careers_url": (ats or careers or [website])[0]}
 
 
@@ -321,7 +424,15 @@ def same_job(posts: List[dict], title: str, location: str) -> Optional[dict]:
     if exact:
         return exact[0]
     loose = [p for p in posts if (norm(p["title"]) in want or want in norm(p["title"])) and here(p)]
-    return loose[0] if len(loose) == 1 else None
+    if len(loose) == 1:
+        return loose[0]
+    # an office name instead of the city ("Canadian Head Office"): the one posting with this exact
+    # title, in the same country
+    country = norm((location or "").split(",")[-1])[:5]
+    only = [p for p in posts if norm(p["title"]) == want]
+    if len(only) == 1 and len(country) == 5 and country in norm(f"{only[0]['location']} {only[0]['url']}"):
+        return only[0]
+    return None
 
 
 def board_of(url: str):
@@ -371,27 +482,38 @@ async def find_ats(c: httpx.AsyncClient, job, t: dict) -> Dict[str, Any]:
             hit = same_job(posts, job.title, job.location)
             if hit:
                 return {"route": "found", "platform": platform, "url": hit["url"], "text": hit.get("text") or ""}
-    # Workday tenants can't be guessed from the name: they come from the targets' `workday` list,
-    # then from the company's own website.
-    boards = [b for name, b in (t.get("workday") or {}).items()
-              if norm(name) and (norm(name) in norm(job.company) or norm(job.company) in norm(name))][:1]
+    # Workday tenants can't be guessed from the name: they come from the targets' `workday` list and
+    # KNOWN_WORKDAY, then from the company's own website.
+    co = set(norm(job.company).split())
+    boards = list(dict.fromkeys(b for name, b in [*(t.get("workday") or {}).items(), *KNOWN_WORKDAY.items()]
+                                if norm(name) and set(norm(name).split()) <= co))[:2]
     if learned and learned[0] == "workday":
         boards.insert(0, learned[1])
-    site = None
-    if li:
-        try:
-            site = await careers_site(c, li, job.location or "")
-        except httpx.HTTPError:
-            site = None
-    if site and site.get("workday"):
-        boards.append(site["workday"])
-    for board in boards:
+    async def on_board(board):
         try:
             hit = same_job(await workday(c, board, job.title), job.title, job.location)
         except (httpx.HTTPError, ValueError, KeyError):
+            return None
+        return hit and {"route": "found", "platform": "workday", "url": hit["url"]}
+    for board in boards:
+        if found := await on_board(board):
+            return found
+    # not on a known board: walk the company's own website to its careers page and ATS
+    try:
+        site = await careers_site(c, li, job.location or "", job.company or "", t.get("ask_website"), render)
+    except httpx.HTTPError:
+        site = None
+    board = board_of((site or {}).get("careers_url") or "")
+    if board and board[0] == "workday" and board[1] not in boards:
+        if found := await on_board(board[1]):
+            return found
+    elif board and board[0] in FEEDS and board[1] not in slugs:
+        try:
+            hit = same_job(await FEEDS[board[0]](c, board[1]), job.title, job.location)
+        except (httpx.HTTPError, ValueError, KeyError):
             hit = None
         if hit:
-            return {"route": "found", "platform": "workday", "url": hit["url"]}
+            return {"route": "found", "platform": board[0], "url": hit["url"], "text": hit.get("text") or ""}
     return {"route": "company_site", "careers_url": (site or {}).get("careers_url")}
 
 
@@ -408,6 +530,20 @@ async def _run_endpoint(endpoint, job_id: int, payload: dict, db, user) -> None:
     await bt()
 
 
+class _Website(BaseModel):
+    website: str = ""
+
+
+async def ask_website(m, db, user_id: int, company: str) -> str:
+    """The employer's homepage from the user's model: a last resort when LinkedIn hides it and no
+    domain guess names the company. "" when the model isn't sure."""
+    out = await asyncio.wait_for(m.get_llm_router(db, user_id).structured_complete(
+        f'What is the official website (homepage URL) of the employer "{company}"? Reply as JSON '
+        '{"website": "https://..."}, with "" if you are not sure which company this is.',
+        _Website, llm=m.resolve_llm(db, user_id)), 60)
+    return out.website.strip()
+
+
 async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict, step=None) -> str:
     """One job: find its own posting (LinkedIn), score it, tailor a resume when it clears min_score.
     Returns a short outcome for the run summary."""
@@ -417,7 +553,8 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict, step=
     route = None
     if re.search(r"linkedin\.com/jobs/view|glassdoor\.|indeed\.", job.url or ""):
         step(f"#{job.id} {job.company}: finding where to apply")
-        route = await find_ats(c, job, {**t, "learned": json.loads(m._setting(db, user.id, "ats_boards") or "{}")})
+        route = await find_ats(c, job, {**t, "learned": json.loads(m._setting(db, user.id, "ats_boards") or "{}"),
+                                        "ask_website": lambda company: ask_website(m, db, user.id, company)})
         if route["route"] == "closed":
             _note(job, "[find-ats: LinkedIn says no longer accepting applications]")
             old, job.status = job.status, "withdrawn"
