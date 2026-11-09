@@ -266,8 +266,8 @@ def test_chat_actions():
     started = []
 
     class Sched:
-        def start_scoring(self, uid, ids, then):
-            started.append((uid, ids, then))
+        def start_scoring(self, uid, ids, then, links_only=False):
+            started.append((uid, ids, then, links_only))
             return "started" if len(started) == 1 else "queued"
     scheduler.CURRENT = Sched()
     try:
@@ -283,6 +283,18 @@ def test_chat_actions():
         assert "right after it" in ask({"action": "score_jobs", "params": {"since_hours": 48}})   # during a run
     finally:
         scheduler.CURRENT = None
+    li = Job(user_id=u.id, company="Allstate", title="DS", status="needs_human", url="https://www.linkedin.com/jobs/view/9")
+    db.add(li)
+    db.commit()
+    started.clear()
+    scheduler.CURRENT = Sched()
+    try:
+        reply = ask({"action": "find_links", "params": {"since_days": 72}})
+    finally:
+        scheduler.CURRENT = None
+    assert reply.startswith("Looking for the real apply link of 1 job(s)"), reply
+    assert started[0][1] == [li.id] and started[0][3] is True                      # only jobs still on LinkedIn
+    assert started[0][2](db).startswith("No new apply links among 1 job(s)")
     db.close()
 
 

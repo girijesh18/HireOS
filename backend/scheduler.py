@@ -98,7 +98,7 @@ def minutes_text(seconds: float) -> str:
 # How a finished job reads in the progress log: (mark, words)
 _OUTCOMES = {"resume ready": ("✓", "resume ready"), "below min score": ("·", "below your min score"),
              "closed": ("✗", "posting closed"), "Easy Apply only": ("·", "LinkedIn Easy Apply only"),
-             "error": ("✗", "couldn't be scored")}
+             "error": ("✗", "couldn't be scored"), "no link found": ("·", "no apply link found")}
 DISCORD_LOG_LINES = 10     # Discord can't collapse: the last few jobs, small and grey
 
 
@@ -192,7 +192,7 @@ class Scheduler:
         self.admin_alerts = Alerts(self._to_admins, now)
         self.user_alerts: Dict[int, Alerts] = {}
         self.discovering: set = set()
-        self.queued_scoring: dict = {}     # user -> (job ids, then): a score request made during a run
+        self.queued_scoring: dict = {}     # user -> (job ids, then, links_only): a request made during a run
         self.progress: dict = {}           # user -> the run in progress (progress_text), for updates and "status"
         # Telegram/Discord calls are blocking HTTP (10 s timeouts): they go to one thread, in order,
         # so a slow chat service never stalls the API's event loop. tick() waits for them, off the loop.
@@ -329,14 +329,15 @@ class Scheduler:
         self.loop.call_soon_threadsafe(self.start_discovery, uid)
         return True
 
-    def start_scoring(self, uid: int, job_ids: list, then) -> str:
-        """Score these jobs in the background, then send the user then(db). While a discovery or
-        scoring run is going for them it waits for that one ("queued"): both would prepare the same jobs."""
+    def start_scoring(self, uid: int, job_ids: list, then, links_only: bool = False) -> str:
+        """Score these jobs in the background (links_only: only find where to apply), then send the user
+        then(db). While a discovery or scoring run is going for them it waits for that one ("queued"):
+        both would prepare the same jobs."""
         if uid in self.discovering:
-            self.queued_scoring[uid] = (job_ids, then)
+            self.queued_scoring[uid] = (job_ids, then, links_only)
             return "queued"
         self.discovering.add(uid)
-        asyncio.get_running_loop().create_task(self._score(uid, job_ids, then))
+        asyncio.get_running_loop().create_task(self._score(uid, job_ids, then, links_only))
         return "started"
 
     async def _tracker(self, uid: int, what: str):
@@ -354,7 +355,7 @@ class Scheduler:
             if now is not None:
                 p["now"] = now
             if outcome:
-                mark, words = _OUTCOMES.get(outcome, ("·", outcome))
+                mark, words = _OUTCOMES.get(outcome, ("✓" if outcome.startswith("found") else "·", outcome))
                 p["log"].append(f"{mark} {detail or ''} · {words}")
             if self.now() - p["edited"] >= PROGRESS_EDIT_EVERY:
                 p["edited"] = self.now()
@@ -402,20 +403,25 @@ class Scheduler:
         if ids:
             self.sending.append(asyncio.get_running_loop().run_in_executor(self.outbox, go))
 
-    async def _score(self, uid: int, job_ids: list, then):
+    async def _score(self, uid: int, job_ids: list, then, links_only: bool = False):
         import discovery
+        what = "Finding apply links" if links_only else "Scoring"
         try:
-            s = await discovery.score(self.m, uid, job_ids, await self._tracker(uid, "Scoring"))
+            s = await (discovery.relink if links_only else discovery.score)(self.m, uid, job_ids,
+                                                                            await self._tracker(uid, what))
             p = self.progress[uid]
-            self._close_progress(uid, f"✅ Scoring done: {len(s['prepared'])}/{len(job_ids)} · {p['fits']} good fit(s) · "
-                                      f"took {minutes_text(self.now() - p['started'])}. Results below.")
+            found = sum(o.startswith("found") for _, o in s["prepared"])
+            self._close_progress(uid, f"✅ {what} done: {len(s['prepared'])}/{len(job_ids)} · " +
+                                 (f"{found} link(s) found · " if links_only else f"{p['fits']} good fit(s) · ") +
+                                 f"took {minutes_text(self.now() - p['started'])}. Results below.")
             db = self.m.SessionLocal()
             try:
                 text = then(db)
             finally:
                 db.close()
             if s["errors"]:
-                text += f"\n⚠️ {len(s['errors'])} couldn't be scored: " + "; ".join(s["errors"][:3])
+                verb = "failed" if links_only else "couldn't be scored"
+                text += f"\n⚠️ {len(s['errors'])} {verb}: " + "; ".join(s["errors"][:3])
             self._send(uid, text, None, "new-jobs")
         except Exception as e:
             logger.warning(f"[scheduler] scoring user {uid} failed: {e!r}")

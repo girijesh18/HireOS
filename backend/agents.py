@@ -66,6 +66,9 @@ Available actions:
   since_hours: "today" = 24, "this week" = 168. sort: "score" for best/top matches, else "recent". limit: "top 20" = 20 (max 25).
 - score_jobs: { "action": "score_jobs", "params": {"since_hours": 48, "min_score": 75} }  score unscored jobs now
   ("score all jobs in last 48 hrs and show ones above 75"); min_score filters the results it sends back.
+- find_links: { "action": "find_links", "params": {"since_days": 72} } or { "action": "find_links", "job_id": 571 }
+  look again for the real apply link (Workday, Greenhouse...) of open jobs still on a LinkedIn/Glassdoor/Indeed
+  link ("retry finding links for jobs from the past 72 days", "find the apply link for #571"). since_days: "past week" = 7.
 - approve_jobs: { "action": "approve_jobs", "params": {"job_ids": [154, 155]} }  only job numbers the user named.
 - run_discovery: { "action": "run_discovery" }  look for new jobs now.
 - status_summary: { "action": "status_summary", "params": {"since_hours": 168} }  "what's going on", progress,

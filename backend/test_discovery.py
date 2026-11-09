@@ -219,6 +219,42 @@ def test_careers_site_follows_the_jobs_country_page():
     assert asyncio.run(go()) == {"careers_url": "https://careers-x.icims.com/jobs/intro"}
 
 
+def test_relink():
+    """find_links: only the lookup, no scoring; a needs_human job found on Workday goes back to the agent."""
+    db, u = _db_user()
+    li = lambda n: f"https://www.linkedin.com/jobs/view/{n}"
+    jobs = [Job(user_id=u.id, company="Allstate Canada", title="Data Scientist", location="Toronto, Ontario, Canada",
+                url=li(1), status="needs_human", match_score=85),
+            Job(user_id=u.id, company="Gone", title="DS", url=li(2), status="pending", match_score=80),
+            Job(user_id=u.id, company="Nowhere", title="DS", url=li(3), status="found")]
+    db.add_all(jobs)
+    db.commit()
+    a, gone, nowhere = jobs
+    wd = {"jobPostings": [{"title": "Data Scientist", "externalPath": "/job/Canadian-Head-Office/DS_R34152",
+                           "locationsText": "Canadian Head Office"}]}
+    routes = {("GET", "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/1"): (200, LI_OPEN),
+              ("GET", "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/2"): (200, '<h2 class="topcard__title">x</h2>No longer accepting applications'),
+              ("GET", "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/3"): (200, LI_OPEN),
+              ("POST", "https://allstate.wd5.myworkdayjobs.com/wday/cxs/allstate/allstate_careers/jobs"): (200, wd)}
+    approved = []
+    real = main.approve_job
+    main.approve_job = lambda jid, db, user: approved.append(jid)
+    log = []
+    try:
+        out = asyncio.run(d.relink(main, u.id, [a.id, gone.id, nowhere.id], lambda *x: log.append(x), gap=0,
+                                   transport=transport(routes)))
+    finally:
+        main.approve_job = real
+    assert out["prepared"] == [(a.id, "found on Workday, back to the agent"), (gone.id, "closed"),
+                               (nowhere.id, "no link found")], out
+    db.expire_all()
+    assert db.get(Job, a.id).url == "https://allstate.wd5.myworkdayjobs.com/en-US/allstate_careers/job/Canadian-Head-Office/DS_R34152"
+    assert approved == [a.id] and db.get(Job, gone.id).status == "withdrawn"
+    assert db.get(Job, nowhere.id).match_score is None                                 # no scoring
+    assert "now on the employer's own posting" in main._relink_report(db, u.id, [a.id, gone.id, nowhere.id])
+    db.close()
+
+
 def test_prepare():
     db, u = _db_user()
     main._put_setting(db, u.id, main.aq.MIN_SCORE_KEY, "70")

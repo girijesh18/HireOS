@@ -544,6 +544,37 @@ async def ask_website(m, db, user_id: int, company: str) -> str:
     return out.website.strip()
 
 
+LINK_HIDDEN = re.compile(r"linkedin\.com/jobs/view|glassdoor\.|indeed\.")   # a board, not the employer's own posting
+
+
+async def route_job(m, c: httpx.AsyncClient, db, user, job, t: dict) -> Dict[str, Any]:
+    """Find where a LinkedIn/Glassdoor/Indeed job is really applied to and update the job: moved to
+    the found posting, withdrawn when LinkedIn says closed, or a note (Easy Apply, careers page)."""
+    route = await find_ats(c, job, {**t, "learned": json.loads(m._setting(db, user.id, "ats_boards") or "{}"),
+                                    "ask_website": lambda company: ask_website(m, db, user.id, company)})
+    if route["route"] == "closed":
+        _note(job, "[find-ats: LinkedIn says no longer accepting applications]")
+        old, job.status = job.status, "withdrawn"
+        db.commit()
+        m._log_event(db, job.id, "status_change", "Status → withdrawn", f"Moved from {old} to withdrawn (posting closed)",
+                     old_value=old, new_value="withdrawn", source="agent", user_id=user.id)
+        return route
+    if route["route"] == "easy_apply":
+        if "Easy Apply only" not in (job.notes or ""):
+            _note(job, "[find-ats: LinkedIn Easy Apply only — needs a LinkedIn login]")
+    elif route["route"] == "found":
+        _note(job, f"[find-ats: was {job.url}]")
+        job.url, job.platform = route["url"], route["platform"]
+        if (job.meta or {}).get("partial_jd") and len(route.get("text") or "") > len(job.job_description or ""):
+            # an alert email's snippet: score the real posting instead
+            job.job_description = route["text"]
+            job.meta = {k: v for k, v in job.meta.items() if k != "partial_jd"}
+    elif route.get("careers_url") and route["careers_url"] not in (job.notes or ""):
+        _note(job, f"[careers: {route['careers_url']}]")
+    db.commit()
+    return route
+
+
 async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict, step=None) -> str:
     """One job: find its own posting (LinkedIn), score it, tailor a resume when it clears min_score.
     Returns a short outcome for the run summary."""
@@ -551,29 +582,11 @@ async def prepare(m, c: httpx.AsyncClient, db, user, job_id: int, t: dict, step=
     step = step or (lambda text: None)          # what it's doing now, for the progress message
     payload = {}                     # the user's model
     route = None
-    if re.search(r"linkedin\.com/jobs/view|glassdoor\.|indeed\.", job.url or ""):
+    if LINK_HIDDEN.search(job.url or ""):
         step(f"#{job.id} {job.company}: finding where to apply")
-        route = await find_ats(c, job, {**t, "learned": json.loads(m._setting(db, user.id, "ats_boards") or "{}"),
-                                        "ask_website": lambda company: ask_website(m, db, user.id, company)})
+        route = await route_job(m, c, db, user, job, t)
         if route["route"] == "closed":
-            _note(job, "[find-ats: LinkedIn says no longer accepting applications]")
-            old, job.status = job.status, "withdrawn"
-            db.commit()
-            m._log_event(db, job.id, "status_change", "Status → withdrawn", f"Moved from {old} to withdrawn (posting closed)",
-                         old_value=old, new_value="withdrawn", source="agent", user_id=user.id)
             return "closed"
-        if route["route"] == "easy_apply":
-            _note(job, "[find-ats: LinkedIn Easy Apply only — needs a LinkedIn login]")
-        elif route["route"] == "found":
-            _note(job, f"[find-ats: was {job.url}]")
-            job.url, job.platform = route["url"], route["platform"]
-            if (job.meta or {}).get("partial_jd") and len(route.get("text") or "") > len(job.job_description or ""):
-                # an alert email's snippet: score the real posting instead
-                job.job_description = route["text"]
-                job.meta = {k: v for k, v in job.meta.items() if k != "partial_jd"}
-        elif route.get("careers_url") and route["careers_url"] not in (job.notes or ""):
-            _note(job, f"[careers: {route['careers_url']}]")
-        db.commit()
     if job.match_score is None:
         step(f"#{job.id} {job.company}: scoring the fit")
         await _run_endpoint(m.analyze_job, job_id, payload, db, user)
@@ -624,6 +637,49 @@ async def score(m, user_id: int, job_ids: List[int], progress=None) -> Dict[str,
         t = targets(m, db, user_id) or {}
         async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=12) as c:
             await _prepare_all(m, c, db, user, job_ids, t, out, progress)
+        return out
+    finally:
+        db.close()
+
+
+RELINK_GAP = 3       # seconds between jobs: LinkedIn rate-limits a burst of guest reads
+
+
+async def relink(m, user_id: int, job_ids: List[int], progress=None, gap: float = RELINK_GAP,
+                 transport: httpx.AsyncBaseTransport = None) -> Dict[str, Any]:
+    """route_job() for jobs already in HireOS (the chat's "find apply links"): only the link lookup,
+    no scoring or resumes. A job waiting on the user that turns out to be on a form the agent fills
+    goes back to it, as when the user replies with the link."""
+    import apply_queue
+    db = m.SessionLocal()
+    out: Dict[str, Any] = {"prepared": [], "errors": []}
+    try:
+        user = db.get(m.User, user_id)
+        t = targets(m, db, user_id) or {}
+        async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=12, transport=transport) as c:
+            for i, jid in enumerate(job_ids, 1):
+                if progress:
+                    progress(i - 1, len(job_ids), None, f"#{jid}: finding where to apply")
+                try:
+                    job = m.get_owned_job(db, jid, user)
+                    route = await route_job(m, c, db, user, job, t)
+                    if route["route"] == "found":
+                        outcome = f"found on {route['platform'].title()}"
+                        if job.status == "needs_human" and route["platform"] in apply_queue.WORKER_FILLS:
+                            m.approve_job(job.id, db, user)
+                            outcome += ", back to the agent"
+                    else:
+                        outcome = {"closed": "closed", "easy_apply": "Easy Apply only"}.get(route["route"], "no link found")
+                    out["prepared"].append((jid, outcome))
+                except Exception as e:
+                    db.rollback()
+                    outcome = "error"
+                    out["errors"].append(f"#{jid}: {str(e)[:200]}")
+                if progress:
+                    job = db.get(m.Job, jid)
+                    progress(i, len(job_ids), outcome, None, f"#{jid} {job.company if job else ''}")
+                if i < len(job_ids):
+                    await asyncio.sleep(gap)
         return out
     finally:
         db.close()

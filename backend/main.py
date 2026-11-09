@@ -4366,6 +4366,19 @@ Return cover letter markdown only."""
 
 # ── Agent: Floating Chat ───────────────────────────────────────────────────────
 
+_RELINK_STATUSES = ("found", "analyzing", "pending", "approved", "needs_human")
+
+
+def _relink_report(db: Session, uid: int, ids: list) -> str:
+    """After a find_links run: the jobs that moved off LinkedIn/Glassdoor/Indeed, and where to."""
+    moved = [j for j in db.query(Job).filter(Job.id.in_(ids), Job.user_id == uid).order_by(Job.id.desc())
+             if "[find-ats: was " in (j.notes or "") and j.platform]
+    if not moved:
+        return f"No new apply links among {len(ids)} job(s). Reply to a job's card with its link to teach HireOS."
+    lines = [f"• #{j.id} {j.company} — {j.title} · {j.platform} · {j.status}" for j in moved[:25]]
+    return f"{len(moved)} job(s) now on the employer's own posting:\n" + "\n".join(lines)
+
+
 def _chat_jobs(db: Session, uid: int, p: dict) -> str:
     """list_jobs for the chat: status / last N hours / min score / best score first, up to 25,
     with the total that matched (so "how many" is answered even past the limit)."""
@@ -4612,6 +4625,26 @@ async def chat(msg: ChatMessage, db: Session = Depends(get_db), current_user: Us
             else:
                 reply = (f"A discovery run is going right now. I'll score the {len(ids)} jobs from the last {hours:g}h "
                          "right after it and send the results here — no need to ask again.")
+
+        elif action_type == "find_links":
+            import discovery
+            import scheduler
+            p = action.get("params") or {}
+            days = p.get("since_days") if isinstance(p.get("since_days"), (int, float)) and p["since_days"] > 0 else 3
+            q = db.query(Job).filter(Job.user_id == uid, Job.status.in_(_RELINK_STATUSES))
+            q = q.filter(Job.id == action["job_id"]) if isinstance(action.get("job_id"), int) else \
+                q.filter(Job.created_at >= datetime.utcnow() - timedelta(days=days))
+            ids = [j.id for j in q.order_by(Job.id.desc()).limit(300) if discovery.LINK_HIDDEN.search(j.url or "")]
+            if not ids:
+                reply = "No open job there is still on a LinkedIn, Glassdoor or Indeed link."
+            elif not scheduler.CURRENT:
+                reply = "Finding links runs only on the instance with the scheduler on."
+            else:
+                started = scheduler.CURRENT.start_scoring(uid, ids, lambda d: _relink_report(d, uid, ids), links_only=True)
+                reply = (f"Looking for the real apply link of {len(ids)} job(s), newest first. That's about "
+                         f"{scheduler.minutes_text(len(ids) * 20)}: a progress line below updates as it goes."
+                         if started == "started" else
+                         f"A run is going right now. I'll look up the {len(ids)} job(s) right after it.")
 
         elif action_type == "status_summary":
             hours = (action.get("params") or {}).get("since_hours")
