@@ -249,6 +249,10 @@ def start_application(run):
     page.goto(run.job["url"], wait_until="domcontentloaded")
     settle(page)
     run.check()
+    try:      # the job loads after the page does (grey placeholder blocks): give its Apply button time
+        page.locator(A("adventureButton")).filter(visible=True).first.wait_for(timeout=20000)
+    except Exception:
+        pass
     if not visible(page, A("adventureButton")):
         body = page.locator("body").inner_text(timeout=5000)[:3000]
         if re.search(r"doesn.t exist|no longer (accepting|available|posted)|(job|posting) (has been |is )?(closed|filled|removed)", body, re.I):
